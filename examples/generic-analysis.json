@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "dataset": {"name": "generic-analysis-demo", "description": "Offline one-case demo."},
+  "cases": [
+    {
+      "case_key": "1",
+      "problem_statement": "A service crashes after configuration reload.",
+      "reference_answer": "A stale pointer retained after reload caused the service failure."
+    }
+  ]
+}

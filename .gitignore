@@ -1,0 +1,52 @@
+.env
+.env.local
+.venv/
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+data/
+case/
+*.sqlite3
+*.db
+*Zone.Identifier*
+
+# Database binary files
+$taskDb
+
+# Node.js
+node_modules/
+src/frontend/node_modules/
+
+# Frontend build output
+src/frontend/dist/
+src/frontend/.openai/
+
+# Python packaging
+*.egg-info/
+*.egg
+dist/
+build/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Claude Code local config
+.claude/settings.local.json
+.claude/plan.md
+.claude/plans/
+
+# OS files
+.DS_Store
+Thumbs.db

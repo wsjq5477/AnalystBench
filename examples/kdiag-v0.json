@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "dataset": {"name": "kdiag-v0-demo", "description": "Offline KDiag v0 fixtures."},
+  "cases": [
+    {"case_key": "1", "problem_statement": "Kernel panic follows reload.", "reference_answer": "A stale pointer after reload triggered the kernel panic."},
+    {"case_key": "2", "problem_statement": "A worker thread hangs during shutdown.", "reference_answer": "A lock-order inversion caused the shutdown hang."},
+    {"case_key": "3", "problem_statement": "The node is killed under load.", "reference_answer": "An unbounded allocation path caused the out-of-memory kill."}
+  ]
+}

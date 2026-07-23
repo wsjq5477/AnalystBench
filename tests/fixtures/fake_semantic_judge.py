@@ -1,0 +1,61 @@
+import json
+
+alignments = [
+    {
+        "gold_claim_id": "root",
+        "relation": "missing",
+        "confidence": 0.99,
+        "reason": "The report does not establish the REPICK root cause.",
+        "subject_match": False,
+        "predicate_match": False,
+        "causal_direction_match": False,
+        "missing_essential_facts": ["REPICK was not performed"],
+        "conclusion_similarity": None,
+    },
+    {
+        "gold_claim_id": "category",
+        "relation": "missing",
+        "confidence": 0.9,
+        "reason": "The report does not state the failure category.",
+        "subject_match": False,
+        "predicate_match": False,
+        "causal_direction_match": None,
+        "missing_essential_facts": ["HM_PANIC_SYSMGR"],
+        "conclusion_similarity": None,
+    },
+    {
+        "gold_claim_id": "chain-1",
+        "relation": "match",
+        "confidence": 0.98,
+        "reason": "The report states the same timeout-to-panic conclusion.",
+        "subject_match": True,
+        "predicate_match": True,
+        "causal_direction_match": True,
+        "missing_essential_facts": [],
+        "conclusion_similarity": 1.0,
+    },
+    {
+        "gold_claim_id": "chain-2",
+        "relation": "match",
+        "confidence": 0.95,
+        "reason": "The report identifies the same stuck sh process.",
+        "subject_match": True,
+        "predicate_match": True,
+        "causal_direction_match": None,
+        "missing_essential_facts": [],
+        "conclusion_similarity": 1.0,
+    },
+    {
+        "gold_claim_id": "chain-3",
+        "relation": "match",
+        "confidence": 0.96,
+        "reason": "The report identifies the same liblinux_remove_cpu schedule block.",
+        "subject_match": True,
+        "predicate_match": True,
+        "causal_direction_match": None,
+        "missing_essential_facts": [],
+        "conclusion_similarity": 1.0,
+    },
+]
+
+print(json.dumps({"result": json.dumps({"alignments": alignments})}))

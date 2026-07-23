@@ -1,0 +1,4 @@
+interface:
+  display_name: "AnalystBench 可选报告封装"
+  short_description: "仅在需要元数据或旧接口时，把原始报告封装成 Report JSON。"
+  default_prompt: "使用 $analystbench-report-draft 将这份 AI 报告可选地封装为带运行元数据的 Report JSON。"
