@@ -63,11 +63,62 @@ export type BenchmarkCaseRun = {
   error_code?: string | null;
 };
 
+export type LocalCaseTree = {
+  key: string;
+  name: string;
+  type: "test_set" | "category" | "case";
+  children?: LocalCaseTree[];
+  case_data?: {
+    case_key: string;
+    problem_statement: string;
+    category_key: string;
+    category_name: string;
+    test_set_key: string;
+    test_set_name: string;
+    result_count: number;
+    claims_count: number;
+  };
+};
+
 export type DirectResultListItem = {
   id: string;
   case_key: string;
   status: string;
+  source: "tmp" | "formal";
+  test_set: string;
+  category: string;
+  case_dir: string;
+  timestamp: string;
   reports: { candidate_name: string; score: string; passed: boolean }[];
+};
+
+export type StatsCandidate = {
+  name: string;
+  avg_score: number;
+};
+
+export type StatsCategory = {
+  key: string;
+  name: string;
+  case_count: number;
+  candidates: StatsCandidate[];
+};
+
+export type StatsTestSet = {
+  key: string;
+  name: string;
+  categories: StatsCategory[];
+  candidates: StatsCandidate[];
+};
+
+export type DirectResultStats = {
+  test_sets: StatsTestSet[];
+  candidates: StatsCandidate[];
+};
+
+export type AppSettings = {
+  results_tmp_path: string;
+  results_formal_path: string;
 };
 
 export type DirectResultClaim = {
@@ -197,8 +248,21 @@ export const analystBenchApi = {
   getBenchmarkCaseResult: (caseRunId: string) =>
     request<Record<string, unknown>>(`/benchmark-case-runs/${caseRunId}/result`),
   listDirectResults: () => request<DirectResultListItem[]>("/direct-results"),
+  getDirectResultStats: () => request<DirectResultStats>("/direct-results/stats"),
   getDirectResult: (resultId: string) =>
-    request<Record<string, unknown>>(`/direct-results/${resultId}`),
+    request<Record<string, unknown>>(`/direct-results/${encodeURIComponent(resultId)}`),
   deleteDirectResult: (resultId: string) =>
-    request<void>(`/direct-results/${resultId}`, { method: "DELETE" }),
+    request<void>(`/direct-results/${encodeURIComponent(resultId)}`, { method: "DELETE" }),
+  promoteDirectResult: (resultId: string, dest: { test_set: string; category: string; case_dir: string }) =>
+    request<{ old_id: string; new_id: string }>(`/direct-results/${encodeURIComponent(resultId)}/promote`, { method: "POST", body: JSON.stringify(dest) }),
+  moveDirectResult: (resultId: string, dest: { test_set: string; category: string; case_dir: string }) =>
+    request<{ old_id: string; new_id: string }>(`/direct-results/${encodeURIComponent(resultId)}/move`, { method: "POST", body: JSON.stringify(dest) }),
+  getBenchmarkRuns: () =>
+    request<BenchmarkRun[]>("/benchmark-runs"),
+  getAppSettings: () => request<AppSettings>("/settings"),
+  updateAppSettings: (payload: Partial<AppSettings>) =>
+    request<AppSettings>("/settings", { method: "PUT", body: JSON.stringify(payload) }),
+  getLocalCaseTree: () => request<LocalCaseTree[]>("/local-cases/tree"),
+  getLocalCase: (casePath: string) =>
+    request<Record<string, unknown>>(`/local-cases/${encodeURIComponent(casePath)}`),
 };

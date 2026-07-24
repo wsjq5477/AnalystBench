@@ -1,10 +1,12 @@
-"""Direct-file evaluation result APIs — reads local JSON files from data/results/."""
+"""Direct-file evaluation result APIs — reads local JSON from tmp and formal directories."""
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request, status
+from pydantic import BaseModel
 
 from analystbench.config import Settings
 from analystbench.errors import AnalystBenchError
@@ -12,31 +14,62 @@ from analystbench.errors import AnalystBenchError
 router = APIRouter(tags=["direct-results"])
 
 
-def results_dir(request: Request) -> Path:
-    """Resolve the results directory from the app's configured data path."""
+def results_dirs(request: Request) -> tuple[Path, Path]:
+    """Resolve the tmp and formal results directories from app settings."""
     settings: Settings = request.app.state.settings
-    data_dir = settings.content_store_path.parent
-    return data_dir / "results"
+    return settings.results_tmp_path, settings.results_formal_path
 
 
-def _find_result_files(dir_path: Path, clean_id: str) -> list[Path]:
-    """Find all files (json + md) belonging to a result by its short id."""
-    matched: list[Path] = []
-    for json_file in dir_path.glob("*.json"):
-        file_stem = json_file.stem
-        parts = file_stem.split("-", 1)
-        if len(parts) == 2 and parts[1] == clean_id:
-            matched.append(json_file)
-            md_file = dir_path / f"{file_stem}.md"
-            if md_file.is_file():
-                matched.append(md_file)
-            return matched
-    # Also try direct filename
-    for suffix in (".json", ".md"):
-        direct_file = dir_path / f"{clean_id}{suffix}"
-        if direct_file.is_file():
-            matched.append(direct_file)
-    return matched
+def _extract_result_meta(data: dict[str, Any], rel_path: Path, source: str) -> dict[str, Any]:
+    """Extract metadata from a result JSON and its relative path for listing."""
+    if source == "tmp":
+        # tmp format: {case_key}/{timestamp}/result.json
+        if len(rel_path.parts) >= 2:
+            case_dir = rel_path.parts[0]
+            timestamp = rel_path.parts[1]
+            result_id = f"tmp/{case_dir}/{timestamp}"
+        else:
+            result_id = str(rel_path.parent) if rel_path.parent != Path(".") else data.get("id", "")
+            case_dir = ""
+            timestamp = ""
+        test_set = ""
+        category = ""
+    elif rel_path.name == "result.json" and len(rel_path.parts) >= 4:
+        # Formal structured format: {test_set}/{category}/{case_dir}/{timestamp}/result.json
+        result_id = str(Path(*rel_path.parts[:-1]))
+        test_set = rel_path.parts[0]
+        category = rel_path.parts[1]
+        case_dir = rel_path.parts[2]
+        timestamp = rel_path.parts[3]
+    else:
+        # Legacy flat format
+        result_id = data.get("id", rel_path.stem)
+        test_set = ""
+        category = ""
+        case_dir = data.get("case_key", "") or ""
+        timestamp = ""
+
+    summary = data.get("summary", data)
+    reports_data = summary.get("reports", data.get("reports", []))
+
+    return {
+        "id": result_id,
+        "case_key": data.get("case_key", case_dir),
+        "status": data.get("status", ""),
+        "source": source,
+        "test_set": test_set,
+        "category": category,
+        "case_dir": case_dir,
+        "timestamp": timestamp,
+        "reports": [
+            {
+                "candidate_name": r.get("candidate_name", ""),
+                "score": r.get("score", ""),
+                "passed": r.get("passed", False),
+            }
+            for r in reports_data
+        ],
+    }
 
 
 def _migrate_report_fields(report: dict[str, Any]) -> dict[str, Any]:
@@ -57,84 +90,434 @@ def _migrate_report_fields(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
-class DirectResultListItem:
-    """Lightweight summary extracted from a full result JSON."""
+@router.get("/direct-results/stats")
+def get_direct_result_stats(request: Request) -> dict[str, Any]:
+    """Aggregate average scores per test_set, category, and case_dir from formal results."""
+    tmp_dir, formal_dir = results_dirs(request)
+    tmp_prefix = str(tmp_dir.resolve()) if tmp_dir.is_dir() else ""
 
-    __slots__ = ("id", "case_key", "status", "reports")
+    # Collect: test_set > category > case_dir > candidate > [scores]
+    ts_data: dict[str, dict[str, str]] = {}  # key -> name
+    cat_data: dict[str, dict[str, str]] = {}  # key -> name
+    scores: dict[str, dict[str, dict[str, dict[str, list[float]]]]] = {}  # ts > cat > case_dir > candidate -> [scores]
 
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.id = data.get("id", "")
-        self.case_key = data.get("case_key", "")
-        self.status = data.get("status", "")
-        self.reports = [
-            {
-                "candidate_name": r.get("candidate_name", ""),
-                "score": r.get("score", ""),
-                "passed": r.get("passed", False),
-            }
-            for r in data.get("summary", data).get("reports", data.get("reports", []))
+    if formal_dir.is_dir():
+        for json_file in formal_dir.rglob("result.json"):
+            if tmp_prefix and str(json_file.resolve()).startswith(tmp_prefix):
+                continue
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("mode") != "direct_file":
+                continue
+
+            rel_path = json_file.relative_to(formal_dir)
+            if len(rel_path.parts) < 4:
+                continue  # Not structured format
+
+            ts_key = rel_path.parts[0]
+            cat_key = rel_path.parts[1]
+            case_dir = rel_path.parts[2]
+
+            # Extract test_set/category names from case.json or result data
+            case_obj = data.get("case") or data.get("case_source") or {}
+            if isinstance(case_obj, dict):
+                ts_obj = case_obj.get("test_set") or {}
+                ts_name = ts_obj.get("name", ts_key) if isinstance(ts_obj, dict) else str(ts_obj)
+                cat_obj = case_obj.get("category") or {}
+                cat_name = cat_obj.get("name", cat_key) if isinstance(cat_obj, dict) else str(cat_obj)
+            else:
+                ts_name, cat_name = ts_key, cat_key
+
+            ts_data[ts_key] = {"key": ts_key, "name": ts_name}
+            cat_data[f"{ts_key}/{cat_key}"] = {"key": cat_key, "name": cat_name}
+
+            summary = data.get("summary") or data
+            reports = summary.get("reports") if isinstance(summary, dict) else data.get("reports", [])
+            for report in reports:
+                candidate_name = report.get("candidate_name", "")
+                score = float(report.get("score", 0))
+                if ts_key not in scores:
+                    scores[ts_key] = {}
+                if cat_key not in scores[ts_key]:
+                    scores[ts_key][cat_key] = {}
+                if case_dir not in scores[ts_key][cat_key]:
+                    scores[ts_key][cat_key][case_dir] = {}
+                if candidate_name not in scores[ts_key][cat_key][case_dir]:
+                    scores[ts_key][cat_key][case_dir][candidate_name] = []
+                scores[ts_key][cat_key][case_dir][candidate_name].append(score)
+
+    # Try to also read names from case.json files
+    if formal_dir.is_dir():
+        for case_file in formal_dir.rglob("case.json"):
+            if tmp_prefix and str(case_file.resolve()).startswith(tmp_prefix):
+                continue
+            try:
+                data = json.loads(case_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            rel_path = case_file.relative_to(formal_dir)
+            if len(rel_path.parts) < 3:
+                continue
+            ts_key = rel_path.parts[0]
+            cat_key = rel_path.parts[1]
+            case_obj = data.get("case") or {}
+            if isinstance(case_obj, dict):
+                ts_obj = case_obj.get("test_set") or {}
+                if isinstance(ts_obj, dict) and ts_obj.get("name"):
+                    ts_data[ts_key] = {"key": ts_key, "name": ts_obj.get("name", ts_key)}
+                cat_obj = case_obj.get("category") or {}
+                if isinstance(cat_obj, dict) and cat_obj.get("name"):
+                    cat_data[f"{ts_key}/{cat_key}"] = {"key": cat_key, "name": cat_obj.get("name", cat_key)}
+
+    # Build result structure
+    def _avg(lst: list[float]) -> float:
+        return sum(lst) / len(lst) if lst else 0.0
+
+    # Collect all candidate names across all results
+    all_candidate_names: list[str] = []
+    candidate_scores_global: dict[str, list[float]] = {}
+    for ts_key in sorted(scores.keys()):
+        for cat_key in sorted(scores[ts_key].keys()):
+            for case_dir in sorted(scores[ts_key][cat_key].keys()):
+                for c_name in scores[ts_key][cat_key][case_dir]:
+                    if c_name not in candidate_scores_global:
+                        candidate_scores_global[c_name] = []
+                        all_candidate_names.append(c_name)
+                    candidate_scores_global[c_name].extend(scores[ts_key][cat_key][case_dir][c_name])
+
+    # Sort candidates by global avg score descending
+    all_candidate_names.sort(key=lambda n: _avg(candidate_scores_global[n]), reverse=True)
+
+    result_test_sets: list[dict[str, Any]] = []
+    for ts_key in sorted(scores.keys()):
+        ts_info = ts_data.get(ts_key, {"key": ts_key, "name": ts_key})
+        categories: list[dict[str, Any]] = []
+        ts_candidate_scores: dict[str, list[float]] = {}
+        for cat_key in sorted(scores[ts_key].keys()):
+            cat_info = cat_data.get(f"{ts_key}/{cat_key}", {"key": cat_key, "name": cat_key})
+            case_dirs = scores[ts_key][cat_key]
+            # Category-level: average across all case_dirs for each candidate
+            cat_candidate_scores: dict[str, list[float]] = {}
+            case_count = len(case_dirs)
+            for case_dir in case_dirs:
+                for c_name in case_dirs[case_dir]:
+                    score_avg = _avg(case_dirs[case_dir][c_name])
+                    if c_name not in cat_candidate_scores:
+                        cat_candidate_scores[c_name] = []
+                    cat_candidate_scores[c_name].append(score_avg)
+                    if c_name not in ts_candidate_scores:
+                        ts_candidate_scores[c_name] = []
+                    ts_candidate_scores[c_name].append(score_avg)
+
+            cat_candidates = [
+                {"name": c_name, "avg_score": round(_avg(cat_candidate_scores.get(c_name, [])), 2)}
+                for c_name in all_candidate_names
+                if c_name in cat_candidate_scores
+            ]
+            categories.append({
+                "key": cat_info["key"],
+                "name": cat_info["name"],
+                "case_count": case_count,
+                "candidates": cat_candidates,
+            })
+
+        ts_candidates = [
+            {"name": c_name, "avg_score": round(_avg(ts_candidate_scores.get(c_name, [])), 2)}
+            for c_name in all_candidate_names
+            if c_name in ts_candidate_scores
         ]
+        result_test_sets.append({
+            "key": ts_info["key"],
+            "name": ts_info["name"],
+            "categories": categories,
+            "candidates": ts_candidates,
+        })
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "case_key": self.case_key,
-            "status": self.status,
-            "reports": self.reports,
-        }
+    global_candidates = [
+        {"name": c_name, "avg_score": round(_avg(candidate_scores_global[c_name]), 2)}
+        for c_name in all_candidate_names
+    ]
+
+    return {
+        "test_sets": result_test_sets,
+        "candidates": global_candidates,
+    }
 
 
 @router.get("/direct-results")
 def list_direct_results(request: Request) -> list[dict[str, Any]]:
-    """List all direct_file evaluation results in data/results/."""
-    dir_path = results_dir(request)
-    if not dir_path.is_dir():
-        return []
+    """List all direct_file evaluation results from both formal and tmp directories."""
+    tmp_dir, formal_dir = results_dirs(request)
     items: list[dict[str, Any]] = []
-    for json_file in sorted(dir_path.glob("*.json"), key=lambda f: f.name):
-        try:
-            data = json.loads(json_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if data.get("mode") != "direct_file":
-            continue
-        items.append(DirectResultListItem(data).to_dict())
+
+    # Scan formal results (structured directory format)
+    # Exclude tmp_dir if it's a subdirectory of formal_dir
+    tmp_prefix = str(tmp_dir.resolve()) if tmp_dir.is_dir() else ""
+    if formal_dir.is_dir():
+        for json_file in sorted(formal_dir.rglob("result.json"), key=lambda f: str(f)):
+            # Skip files inside tmp directory
+            if tmp_prefix and str(json_file.resolve()).startswith(tmp_prefix):
+                continue
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("mode") != "direct_file":
+                continue
+            rel_path = json_file.relative_to(formal_dir)
+            items.append(_extract_result_meta(data, rel_path, "formal"))
+
+    # Also scan legacy flat files in formal dir (backward compat)
+    seen_ids = {item["id"] for item in items}
+    if formal_dir.is_dir():
+        for json_file in sorted(formal_dir.glob("*.json"), key=lambda f: f.name):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("mode") != "direct_file":
+                continue
+            legacy_id = data.get("id", json_file.stem)
+            if legacy_id not in seen_ids:
+                rel_path = json_file.relative_to(formal_dir)
+                items.append(_extract_result_meta(data, rel_path, "formal"))
+
+    # Scan tmp results
+    if tmp_dir.is_dir():
+        for json_file in sorted(tmp_dir.rglob("result.json"), key=lambda f: str(f)):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("mode") != "direct_file":
+                continue
+            rel_path = json_file.relative_to(tmp_dir)
+            items.append(_extract_result_meta(data, rel_path, "tmp"))
+
+    # Sort by timestamp descending, then formal before tmp
+    items.sort(key=lambda x: (x.get("timestamp", "") or "", 0 if x["source"] == "formal" else 1), reverse=True)
     return items
 
 
-@router.get("/direct-results/{result_id}")
+@router.get("/direct-results/{result_id:path}")
 def get_direct_result(result_id: str, request: Request) -> dict[str, Any]:
     """Return the full evaluation result JSON for a given result_id."""
-    dir_path = results_dir(request)
-    clean_id = result_id.removeprefix("direct-")
-    files = _find_result_files(dir_path, clean_id)
-    json_file = next((f for f in files if f.suffix == ".json"), None)
-    if json_file:
-        try:
-            data = json.loads(json_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            raise AnalystBenchError("result_file_corrupt", f"评测结果文件 {json_file.name} 无法解析。")
-        return _migrate_summary(data)
+    tmp_dir, formal_dir = results_dirs(request)
+
+    # Determine which directory to look in based on result_id prefix
+    if result_id.startswith("tmp/"):
+        # Tmp result: result_id = "tmp/{case_key}/{timestamp}"
+        clean_id = result_id.removeprefix("tmp/")
+        candidate = tmp_dir / clean_id / "result.json"
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                raise AnalystBenchError("result_file_corrupt", f"评测结果文件无法解析。")
+            return _migrate_summary(data)
+    else:
+        # Formal result: result_id = "{test_set}/{category}/{case_dir}/{timestamp}"
+        candidate = formal_dir / result_id / "result.json"
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                raise AnalystBenchError("result_file_corrupt", f"评测结果文件无法解析。")
+            return _migrate_summary(data)
+
+    # Fallback: try both directories
+    for base_dir in [formal_dir, tmp_dir]:
+        for json_file in base_dir.rglob("result.json"):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("id") == result_id:
+                return _migrate_summary(data)
+
     raise AnalystBenchError(
         "result_not_found",
         f"找不到评测结果 {result_id}。",
-        {"available_files": sorted(f.name for f in dir_path.glob("*.json")) if dir_path.is_dir() else []},
     )
 
 
-@router.delete("/direct-results/{result_id}", status_code=status.HTTP_204_NO_CONTENT)
+class PromotePayload(BaseModel):
+    """Payload for promote/move specifying destination path."""
+    test_set: str
+    category: str
+    case_dir: str
+
+
+@router.post("/direct-results/{result_id:path}/promote")
+def promote_direct_result(result_id: str, payload: PromotePayload, request: Request) -> dict[str, Any]:
+    """Move a tmp result to the formal results directory. Only moves result files, not case.json."""
+    tmp_dir, formal_dir = results_dirs(request)
+
+    if not result_id.startswith("tmp/"):
+        raise AnalystBenchError("result_not_tmp", "只能归档临时结果（ID 以 tmp/ 开头）。")
+
+    clean_id = result_id.removeprefix("tmp/")
+    src_dir = tmp_dir / clean_id
+    result_json = src_dir / "result.json"
+
+    if not result_json.is_file():
+        raise AnalystBenchError("result_not_found", f"找不到临时评测结果 {result_id}。")
+
+    test_set = payload.test_set
+    category = payload.category
+    case_dir = payload.case_dir
+    timestamp = clean_id.split("/")[-1] if "/" in clean_id else ""
+
+    dest_dir = formal_dir / test_set / category / case_dir / timestamp
+    if dest_dir.exists():
+        raise AnalystBenchError("dest_conflict", f"目标目录已存在：{test_set}/{category}/{case_dir}/{timestamp}")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Move all files from src timestamp dir to dest (NOT case.json)
+    for item in src_dir.iterdir():
+        if item.name == "case.json":
+            continue  # Skip case.json
+        shutil.move(str(item), str(dest_dir / item.name))
+
+    # Clean up empty directories in tmp
+    if src_dir.is_dir() and not any(src_dir.iterdir()):
+        src_dir.rmdir()
+    parent = src_dir.parent
+    while parent != tmp_dir and parent.is_dir():
+        try:
+            if not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
+            else:
+                break
+        except OSError:
+            break
+
+    # Update result id
+    new_result_id = f"{test_set}/{category}/{case_dir}/{timestamp}"
+    result_data = json.loads((dest_dir / "result.json").read_text(encoding="utf-8"))
+    result_data["id"] = new_result_id
+    (dest_dir / "result.json").write_text(
+        json.dumps(result_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+
+    return {
+        "old_id": result_id,
+        "new_id": new_result_id,
+        "dest_path": str(dest_dir),
+    }
+
+
+@router.post("/direct-results/{result_id:path}/move")
+def move_direct_result(result_id: str, payload: PromotePayload, request: Request) -> dict[str, Any]:
+    """Move a formal result to a different test_set/category/case_dir. Only moves result files, not case.json."""
+    tmp_dir, formal_dir = results_dirs(request)
+
+    src_dir = formal_dir / result_id
+    if not (src_dir / "result.json").is_file():
+        raise AnalystBenchError("result_not_found", f"找不到正式评测结果 {result_id}。")
+
+    test_set = payload.test_set
+    category = payload.category
+    case_dir = payload.case_dir
+    timestamp = src_dir.name  # Last part of result_id is the timestamp
+
+    dest_dir = formal_dir / test_set / category / case_dir / timestamp
+    if dest_dir.exists():
+        raise AnalystBenchError("dest_conflict", f"目标目录已存在：{test_set}/{category}/{case_dir}/{timestamp}")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Move all files from src to dest (NOT case.json)
+    for item in src_dir.iterdir():
+        if item.name == "case.json":
+            continue
+        shutil.move(str(item), str(dest_dir / item.name))
+
+    # Clean up empty src dir and parents
+    if src_dir.is_dir() and not any(src_dir.iterdir()):
+        src_dir.rmdir()
+    parent = src_dir.parent
+    while parent != formal_dir and parent.is_dir():
+        try:
+            if not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
+            else:
+                break
+        except OSError:
+            break
+
+    # Update result id
+    new_result_id = f"{test_set}/{category}/{case_dir}/{timestamp}"
+    result_data = json.loads((dest_dir / "result.json").read_text(encoding="utf-8"))
+    result_data["id"] = new_result_id
+    (dest_dir / "result.json").write_text(
+        json.dumps(result_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+
+    return {
+        "old_id": result_id,
+        "new_id": new_result_id,
+        "dest_path": str(dest_dir),
+    }
+
+
+@router.delete("/direct-results/{result_id:path}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_direct_result(result_id: str, request: Request) -> None:
-    """Delete a direct_file evaluation result and its companion markdown file."""
-    dir_path = results_dir(request)
+    """Delete a direct_file evaluation result."""
+    tmp_dir, formal_dir = results_dirs(request)
+
+    if result_id.startswith("tmp/"):
+        # Delete tmp result
+        clean_id = result_id.removeprefix("tmp/")
+        target_dir = tmp_dir / clean_id
+        if target_dir.is_dir():
+            shutil.rmtree(target_dir)
+            # Clean up empty parent dirs
+            parent = target_dir.parent
+            while parent != tmp_dir and parent.is_dir():
+                try:
+                    if not any(parent.iterdir()):
+                        parent.rmdir()
+                        parent = parent.parent
+                    else:
+                        break
+                except OSError:
+                    break
+            return
+
+    # Delete formal result (timestamp directory)
+    target_dir = formal_dir / result_id
+    if target_dir.is_dir():
+        shutil.rmtree(target_dir)
+        # Clean up empty parent dirs
+        parent = target_dir.parent
+        while parent != formal_dir and parent.is_dir():
+            try:
+                if not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+                else:
+                    break
+            except OSError:
+                break
+        return
+
+    # Legacy flat file fallback
     clean_id = result_id.removeprefix("direct-")
-    files = _find_result_files(dir_path, clean_id)
-    if not files:
-        raise AnalystBenchError(
-            "result_not_found",
-            f"找不到评测结果 {result_id}。",
-        )
-    for f in files:
-        f.unlink()
+    for json_file in formal_dir.glob("*.json"):
+        file_stem = json_file.stem
+        parts = file_stem.split("-", 1)
+        if len(parts) == 2 and parts[1] == clean_id:
+            md_file = formal_dir / f"{file_stem}.md"
+            if md_file.is_file():
+                md_file.unlink()
+            json_file.unlink()
+            return
 
 
 def _migrate_summary(data: dict[str, Any]) -> dict[str, Any]:

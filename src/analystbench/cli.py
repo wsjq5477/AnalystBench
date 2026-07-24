@@ -4,8 +4,9 @@ import json
 import shutil
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 import uvicorn
@@ -495,6 +496,70 @@ def case_organize(
     )
 
 
+def _tmp_result_dir(
+    case_payload: dict[str, Any],
+    case_path: Path,
+) -> tuple[Path, str]:
+    """Compute the temporary output directory and result_id for a single evaluation run.
+
+    Returns (output_dir, result_id) where:
+      output_dir = {results_tmp_path}/{case_key}/{timestamp}/
+      result_id  = tmp/{case_key}/{timestamp}
+    """
+    case_key = case_path.stem
+    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+    settings = get_settings()
+    output_dir = settings.results_tmp_path / case_key / timestamp
+    result_id = f"tmp/{case_key}/{timestamp}"
+    return output_dir, result_id
+
+
+def _write_structured_result(
+    result: dict[str, Any],
+    output_dir: Path,
+    result_id: str,
+    case_path: Path | None,
+    case_payload: dict[str, Any] | None,
+    report_paths: list[Path],
+) -> None:
+    """Write evaluation result into the structured directory layout.
+
+    - Creates output_dir
+    - Copies case.json to parent directory (if not already present)
+    - Copies original report .md files into timestamp directory
+    - Writes result.json and result.md
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy original case.json to the case directory (parent of timestamp dir)
+    if case_path and case_path.is_file():
+        case_target = output_dir.parent / "case.json"
+        if not case_target.exists():
+            shutil.copy2(case_path, case_target)
+
+    # Copy original report files into the timestamp directory
+    for report_path in report_paths:
+        if report_path.is_file():
+            dest = output_dir / report_path.name
+            if not dest.exists():
+                shutil.copy2(report_path, dest)
+
+    # Write result.json
+    json_path = output_dir / "result.json"
+    json_path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+
+    # Write result.md
+    markdown_path = output_dir / "result.md"
+    markdown = render_markdown(result["summary"])
+    markdown_path.write_text(markdown, encoding="utf-8")
+
+    typer.echo(markdown)
+    typer.echo(f"人类可读报告：{markdown_path.resolve()}")
+    typer.echo(f"完整审计 JSON：{json_path.resolve()}")
+
+
 @app.command("evaluate")
 def evaluate_reports(
     case_ref: Annotated[
@@ -523,37 +588,44 @@ def evaluate_reports(
                     f"找不到本地 Case JSON：{case_path}",
                 )
             case_key = case_path.stem
+            case_payload = _read_json(case_path)
             result = evaluate_direct(
-                _read_json(case_path),
+                case_payload,
                 case_key,
                 reports,
                 get_settings(),
                 judge,
                 str(case_path.resolve()),
             )
-            result_id = str(result["id"]).removeprefix("direct-")
+            output_dir, result_id = _tmp_result_dir(case_payload, case_path)
+            # Override the id in result to use the tmp path
+            result["id"] = result_id
+            _write_structured_result(
+                result, output_dir, result_id, case_path, case_payload, report_paths
+            )
         else:
             case_key = case_ref
             service = evaluation_batch_service()
             batch = service.create_batch(case_key, report_payloads=reports, judge_runner=judge)
             result = service.process_pending(batch.id)
+            # Database mode still uses flat output for now
             result_id = batch.id[:8]
+            output_dir = Path("data/results")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            base_name = f"{case_key}-{result_id}"
+            json_path = output_dir / f"{base_name}.json"
+            markdown_path = output_dir / f"{base_name}.md"
+            json_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+            markdown = render_markdown(result["summary"])
+            markdown_path.write_text(markdown, encoding="utf-8")
+            typer.echo(markdown)
+            typer.echo(f"人类可读报告：{markdown_path.resolve()}")
+            typer.echo(f"完整审计 JSON：{json_path.resolve()}")
     except AnalystBenchError as exc:
         details = f"；详情：{exc.details}" if exc.details else ""
         raise typer.BadParameter(f"{exc.code}：{exc.message}{details}") from exc
-    output_dir = Path("data/results")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    base_name = f"{case_key}-{result_id}"
-    json_path = output_dir / f"{base_name}.json"
-    markdown_path = output_dir / f"{base_name}.md"
-    json_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
-    )
-    markdown = render_markdown(result["summary"])
-    markdown_path.write_text(markdown, encoding="utf-8")
-    typer.echo(markdown)
-    typer.echo(f"人类可读报告：{markdown_path.resolve()}")
-    typer.echo(f"完整审计 JSON：{json_path.resolve()}")
 
 
 @app.command("score-with-alignment")
@@ -582,9 +654,10 @@ def score_with_alignment(
         )
     reports = [_read_report_input(path) for path in report_paths]
     case_key = case_path.stem
+    case_payload = _read_json(case_path)
     try:
         result = evaluate_direct_with_alignment(
-            _read_json(case_path),
+            case_payload,
             case_key,
             reports,
             _read_json(alignment_path),
@@ -593,20 +666,129 @@ def score_with_alignment(
     except AnalystBenchError as exc:
         details = f"；详情：{exc.details}" if exc.details else ""
         raise typer.BadParameter(f"{exc.code}：{exc.message}{details}") from exc
-    result_id = str(result["id"]).removeprefix("direct-")
-    output_dir = Path("data/results")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    base_name = f"{case_key}-{result_id}"
-    json_path = output_dir / f"{base_name}.json"
-    markdown_path = output_dir / f"{base_name}.md"
-    json_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    output_dir, result_id = _tmp_result_dir(case_payload, case_path)
+    result["id"] = result_id
+    _write_structured_result(
+        result, output_dir, result_id, case_path, case_payload, report_paths
     )
-    markdown = render_markdown(result["summary"])
-    markdown_path.write_text(markdown, encoding="utf-8")
-    typer.echo(markdown)
-    typer.echo(f"人类可读报告：{markdown_path.resolve()}")
-    typer.echo(f"完整审计 JSON：{json_path.resolve()}")
+
+
+
+@app.command("promote")
+def promote_result(
+    result_id: Annotated[
+        str,
+        typer.Argument(help="临时结果的 ID，格式如 tmp/{case_key}/{timestamp}"),
+    ],
+    dest: Annotated[
+        str | None,
+        typer.Option("--dest", help="指定目标路径，格式如 {test_set}/{category}/{case_dir}。不指定则从 result.json 自动读取。"),
+    ] = None,
+) -> None:
+    """将临时评测结果归档到正式结果集目录。"""
+    settings = get_settings()
+    tmp_dir = settings.results_tmp_path
+    formal_dir = settings.results_formal_path
+
+    # Locate the tmp result
+    result_path = tmp_dir / result_id / "result.json"
+    if not result_path.is_file():
+        # Try without "tmp/" prefix
+        alt_path = tmp_dir / result_id.removeprefix("tmp/") / "result.json"
+        if alt_path.is_file():
+            result_path = alt_path
+            result_id = result_id.removeprefix("tmp/") if not result_id.startswith("tmp/") else result_id
+        else:
+            raise typer.BadParameter(f"找不到临时评测结果：{result_id}")
+
+    # Read result.json to extract metadata
+    try:
+        result_data = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise typer.BadParameter(f"评测结果文件无法解析：{exc}") from exc
+
+    # Determine destination path
+    if dest:
+        dest_parts = dest.split("/")
+        if len(dest_parts) < 3:
+            raise typer.BadParameter("目标路径格式应为 {test_set}/{category}/{case_dir}")
+        test_set, category, case_dir = dest_parts[0], dest_parts[1], dest_parts[2]
+    else:
+        # Extract from case JSON embedded in result
+        case_payload = result_data.get("case") or {}
+        # Or from the original case source
+        case_source = result_data.get("case_source") or {}
+        source_path = case_source.get("source_path", "")
+
+        test_set_obj = case_payload.get("test_set") or {}
+        if isinstance(test_set_obj, dict):
+            test_set = str(test_set_obj.get("key") or "default")
+        else:
+            test_set = str(test_set_obj) if test_set_obj else "default"
+
+        category_obj = case_payload.get("category") or {}
+        if isinstance(category_obj, dict):
+            category = str(category_obj.get("key") or "uncategorized")
+        else:
+            category = str(category_obj) if category_obj else "uncategorized"
+
+        # case_dir from source_path or case_key
+        if source_path:
+            case_dir = Path(source_path).parent.name
+        else:
+            case_dir = result_data.get("case_key", "case")
+
+    # Extract timestamp from current tmp result_id
+    timestamp = result_id.split("/")[-1] if "/" in result_id else ""
+
+    if not timestamp:
+        # Use current time if no timestamp in path
+        timestamp = datetime.now().strftime("%Y%m%d%H%M")
+
+    # Compute new path and result_id
+    formal_dest = formal_dir / test_set / category / case_dir / timestamp
+    new_result_id = f"{test_set}/{category}/{case_dir}/{timestamp}"
+
+    if formal_dest.exists():
+        raise typer.BadParameter(f"目标目录已存在：{new_result_id}")
+
+    # Move the entire timestamp directory
+    src_dir = result_path.parent
+    formal_dest.mkdir(parents=True, exist_ok=True)
+
+    for item in src_dir.iterdir():
+        shutil.move(str(item), str(formal_dest / item.name))
+
+    # Clean up empty parent directories in tmp
+    parent = src_dir.parent
+    while parent != tmp_dir and parent.is_dir():
+        try:
+            if not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
+            else:
+                break
+        except OSError:
+            break
+
+    # Copy case.json to formal parent directory if not already there
+    # Try to find the original case.json from result source path
+    source_path_str = (result_data.get("case_source") or {}).get("source_path", "")
+    if source_path_str:
+        original_case = Path(source_path_str)
+        if original_case.is_file():
+            case_target = formal_dest.parent / "case.json"
+            if not case_target.exists():
+                shutil.copy2(original_case, case_target)
+
+    # Update the id in result.json
+    result_data["id"] = new_result_id
+    formal_dest / "result.json" .write_text(
+        json.dumps(result_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+
+    typer.echo(f"已归档：{result_id} → {new_result_id}")
+    typer.echo(f"目标目录：{formal_dest}")
 
 
 @app.command("prepare-alignment")

@@ -40,6 +40,15 @@ class BenchmarkService:
         self.settings = settings
         self.jobs = JobQueue(session_factory)
 
+    def list_runs(self) -> list[BenchmarkRun]:
+        """List all benchmark runs ordered by creation time descending."""
+        with transaction(self.session_factory) as session:
+            return list(
+                session.scalars(
+                    select(BenchmarkRun).order_by(BenchmarkRun.created_at.desc())
+                )
+            )
+
     @staticmethod
     def _store_ref(session: Session, ref: ContentRef) -> None:
         if session.get(ContentBlob, ref.content_hash) is None:

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/analystbench.db"
     content_store_path: Path = Field(default=Path("./data/content"))
     workspace_root_path: Path = Field(default=Path("./data/workspaces"))
+    results_tmp_path: Path = Field(default=Path("./data/results/tmp"))
+    results_formal_path: Path = Field(default=Path("./data/results"))
     log_level: str = "INFO"
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
 
@@ -31,6 +33,8 @@ class Settings(BaseSettings):
         """Create only configured local directories needed by this process."""
         self.content_store_path.mkdir(parents=True, exist_ok=True)
         self.workspace_root_path.mkdir(parents=True, exist_ok=True)
+        self.results_tmp_path.mkdir(parents=True, exist_ok=True)
+        self.results_formal_path.mkdir(parents=True, exist_ok=True)
         if self.database_url.startswith("sqlite:///") and not self.database_url.endswith(
             ":memory:"
         ):

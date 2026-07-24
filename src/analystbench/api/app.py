@@ -13,6 +13,8 @@ from analystbench.agent_execution import AgentExecutionService
 from analystbench.api.routes.benchmarks import router as benchmark_router
 from analystbench.api.routes.case_library import router as case_library_router
 from analystbench.api.routes.direct_results import router as direct_results_router
+from analystbench.api.routes.cases_local import router as cases_local_router
+from analystbench.api.routes.settings import router as settings_router
 from analystbench.api.routes.catalog import router as catalog_router
 from analystbench.api.routes.comparisons import router as comparison_router
 from analystbench.api.routes.eval_specs import router as eval_specs_router
@@ -117,6 +119,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(evaluation_sessions_router, prefix="/api/v1")
     app.include_router(case_library_router, prefix="/api/v1")
     app.include_router(direct_results_router, prefix="/api/v1")
+    app.include_router(cases_local_router, prefix="/api/v1")
+    app.include_router(settings_router, prefix="/api/v1")
     return app
 
 

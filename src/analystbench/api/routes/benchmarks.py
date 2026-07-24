@@ -77,6 +77,14 @@ def benchmarks(request: Request) -> BenchmarkService:
     return request.app.state.benchmark_service
 
 
+@router.get("/benchmark-runs", response_model=list[BenchmarkRunResponse])
+def list_benchmark_runs(request: Request) -> list[BenchmarkRunResponse]:
+    """List all benchmark runs."""
+    service: BenchmarkService = request.app.state.benchmark_service
+    runs = service.list_runs()
+    return [BenchmarkRunResponse.from_model(r) for r in runs]
+
+
 @router.post(
     "/benchmark-runs", response_model=BenchmarkRunResponse, status_code=status.HTTP_202_ACCEPTED
 )
