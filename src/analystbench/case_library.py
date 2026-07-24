@@ -184,8 +184,8 @@ def _normalize_structured_reference(payload: dict[str, Any]) -> None:
     if category_match is None or root_match is None or not pairs:
         return
     category = category_match.group(1).strip()
-    if not isinstance(case.get("category"), dict):
-        case["category"] = {"key": category, "name": category}
+    if not isinstance(case.get("category"), str):
+        case["category"] = category
     claims: list[dict[str, Any]] = [
         {
             "id": "root",
@@ -261,10 +261,8 @@ class CaseLibraryService:
         runner_id: str = "claude-code",
         runner_configuration: dict[str, Any] | None = None,
         source_filename: str | None = None,
-        test_set_key: str | None = None,
-        test_set_name: str | None = None,
-        category_key: str | None = None,
-        category_name: str | None = None,
+        test_set: str | None = None,
+        category: str | None = None,
     ) -> CaseDraft:
         """Queue raw reference-answer conversion for a frontend or agent client."""
         if self.settings is None:
@@ -278,15 +276,15 @@ class CaseLibraryService:
             "runner_id": runner_id,
             "runner_configuration": runner_configuration or {},
             "source_filename": source_filename,
-            "test_set": {"key": test_set_key, "name": test_set_name or test_set_key},
-            "category": {"key": category_key, "name": category_name or category_key},
+            "test_set": test_set,
+            "category": category,
         }
         item = CaseDraft(
             id=str(uuid4()),
             case_key=case_key,
             source_filename=source_filename,
-            dataset_key=test_set_key,
-            category_key=category_key,
+            dataset_key=test_set,
+            category_key=category,
             status="generating",
             original_json=canonical_json(source),
             working_json="{}",
@@ -321,24 +319,23 @@ class CaseLibraryService:
             case_payload = payload.setdefault("case", {})
             if isinstance(case_payload, dict):
                 case_payload["reference_answer"] = source["reference_answer"]
-                if source.get("problem_statement"):
-                    case_payload["problem_statement"] = source["problem_statement"]
-                if source.get("case_key"):
-                    case_payload["case_key"] = source["case_key"]
-                if source.get("source_filename"):
-                    case_payload["case_key"] = Path(source["source_filename"]).stem
-                case_payload["test_set"] = source.get("test_set", {})
-                case_payload["category"] = source.get("category", {})
+                # Force-fill case_key and problem_statement from user input (required fields)
+                case_payload["case_key"] = source.get("case_key") or case_payload.get("case_key") or ""
+                case_payload["problem_statement"] = source.get("problem_statement") or case_payload.get("problem_statement") or ""
+                if source.get("test_set"):
+                    case_payload["test_set"] = source["test_set"]
+                if source.get("category"):
+                    case_payload["category"] = source["category"]
             _normalize_structured_reference(payload)
             questions = self._questions(payload)
             case = payload.get("case", {})
             with transaction(self.session_factory) as session:
                 stored = session.get(CaseDraft, draft_id)
                 assert stored is not None
-                stored.case_key = case.get("case_key") if isinstance(case, dict) else None
+                stored.case_key = source.get("case_key") or stored.case_key
                 stored.source_filename = source.get("source_filename")
-                stored.dataset_key = source.get("test_set", {}).get("key")
-                stored.category_key = source.get("category", {}).get("key")
+                stored.dataset_key = source.get("test_set") if isinstance(source.get("test_set"), str) else None
+                stored.category_key = source.get("category") if isinstance(source.get("category"), str) else None
                 stored.working_json = canonical_json(payload)
                 stored.questions_json = canonical_json(questions)
                 stored.status = "needs_confirmation"
@@ -355,12 +352,11 @@ class CaseLibraryService:
 
     @staticmethod
     def _generation_prompt(source: dict[str, Any], workspace: Path) -> str:
-        preferred_key = source.get("case_key") or "请根据问题生成小写英文连字符标识"
         problem = source.get("problem_statement") or "请从标准答案提炼中性问题描述"
         return f"""读取 {workspace / "reference-answer.txt"}，把其中唯一一份人工标准答案
 转换为 AnalystBench Case JSON。
 只输出一个 JSON 对象，不要 Markdown 或解释。顶层只能有 case 和 eval_spec_draft。
-case.case_key：{preferred_key}
+不要在 case 中包含 case_key 字段。
 case.problem_statement：{problem}
 case.reference_answer 必须逐字保留文件全文。
 不要包含 domain 或 tags 字段。
@@ -410,32 +406,34 @@ quote 必须是标准答案中的连续原文。
         self,
         payload: dict[str, Any],
         *,
+        case_key: str | None = None,
         source_filename: str | None = None,
-        test_set_key: str | None = None,
-        test_set_name: str | None = None,
-        category_key: str | None = None,
-        category_name: str | None = None,
+        test_set: str | None = None,
+        category: str | None = None,
     ) -> CaseDraft:
         if not isinstance(payload, dict):
             raise AnalystBenchError("draft_invalid", "Case draft must be a JSON object")
         working = copy.deepcopy(payload)
         case = working.get("case") if isinstance(working.get("case"), dict) else {}
-        if source_filename:
-            case["case_key"] = Path(source_filename).stem
-        if test_set_key:
-            case["test_set"] = {"key": test_set_key, "name": test_set_name or test_set_key}
-        if category_key:
-            case["category"] = {"key": category_key, "name": category_name or category_key}
+        effective_case_key = case_key or (
+            case.get("case_key") if isinstance(case.get("case_key"), str) else None
+        )
+        if effective_case_key:
+            case["case_key"] = effective_case_key
+        if test_set:
+            case["test_set"] = test_set
+        if category:
+            case["category"] = category
         _normalize_structured_reference(working)
         questions = self._questions(working)
-        test_set = case.get("test_set") if isinstance(case.get("test_set"), dict) else {}
-        category = case.get("category") if isinstance(case.get("category"), dict) else {}
+        test_set_value = case.get("test_set") if isinstance(case.get("test_set"), str) else None
+        category_value = case.get("category") if isinstance(case.get("category"), str) else None
         item = CaseDraft(
             id=str(uuid4()),
-            case_key=case.get("case_key") if isinstance(case.get("case_key"), str) else None,
+            case_key=effective_case_key,
             source_filename=source_filename,
-            dataset_key=test_set.get("key"),
-            category_key=category.get("key"),
+            dataset_key=test_set_value,
+            category_key=category_value,
             status="needs_confirmation",
             original_json=canonical_json(payload),
             working_json=canonical_json(working),
@@ -481,11 +479,10 @@ quote 必须是标准答案中的连续原文。
                 approved = approved or question["code"] == "approve_case"
             next_questions = [] if approved else self._questions(working)
             case = working.get("case", {})
-            item.case_key = case.get("case_key") if isinstance(case, dict) else None
-            test_set = case.get("test_set", {}) if isinstance(case, dict) else {}
-            category = case.get("category", {}) if isinstance(case, dict) else {}
-            item.dataset_key = test_set.get("key") if isinstance(test_set, dict) else None
-            item.category_key = category.get("key") if isinstance(category, dict) else None
+            test_set = case.get("test_set") if isinstance(case, dict) else None
+            category = case.get("category") if isinstance(case, dict) else None
+            item.dataset_key = test_set if isinstance(test_set, str) else None
+            item.category_key = category if isinstance(category, str) else None
             item.working_json = canonical_json(working)
             item.questions_json = canonical_json(next_questions)
             item.answers_json = canonical_json(audit)
@@ -504,9 +501,10 @@ quote 必须是标准答案中的连续原文。
         working = json.loads(item.working_json)
         case = working["case"]
         draft = working["eval_spec_draft"]
+        case_key = item.case_key or ""
         if supersedes_draft_id is None:
             try:
-                previous = self.get_published(case["case_key"])
+                previous = self.get_published(case_key)
             except NotFoundError:
                 previous = None
             if previous is not None and previous.id != draft_id:
@@ -514,25 +512,25 @@ quote 必须是标准答案中的连续原文。
         with transaction(self.session_factory) as session:
             duplicate = session.scalar(
                 select(CaseDraft).where(
-                    CaseDraft.case_key == case["case_key"],
+                    CaseDraft.case_key == case_key,
                     CaseDraft.status == "published",
                     CaseDraft.id != supersedes_draft_id,
                 )
             )
             if duplicate is not None and duplicate.id != draft_id:
-                raise ConflictError(f"published case_key '{case['case_key']}' already exists")
+                raise ConflictError(f"published case_key '{case_key}' already exists")
         revision_id: str | None = None
         dataset_version_id: str | None = None
         try:
             test_set = case["test_set"]
-            category_payload = case["category"]
+            category_key = case["category"]
             dataset = self.catalog.get_or_create_dataset(
-                test_set["key"], test_set["name"], "AnalystBench 测试集"
+                test_set, test_set, "AnalystBench 测试集"
             )
             category = self.catalog.get_or_create_category(
                 dataset.id,
-                category_payload["key"],
-                category_payload["name"],
+                category_key,
+                category_key,
             )
             existing_case_id: str | None = None
             if supersedes_draft_id is not None:
@@ -541,14 +539,14 @@ quote 必须是标准答案中的连续原文。
                 previous_test_set = previous_resources.get("test_set", {})
                 previous_category = previous_resources.get("category", {})
                 if (
-                    previous.case_key == case["case_key"]
+                    previous.case_key == case_key
                     and previous_test_set.get("id") == dataset.id
                     and previous_category.get("id") == category.id
                 ):
                     existing_case_id = previous_resources.get("case_id")
             revision = self.catalog.create_case_revision(
                 dataset.id,
-                case["case_key"],
+                case_key,
                 case["problem_statement"],
                 case["reference_answer"],
                 category_id=category.id,
@@ -589,7 +587,7 @@ quote 必须是标准答案中的连续原文。
             spec_payload = {
                 "schema_version": "1.0",
                 "case_revision_id": revision.id,
-                "suite": {"id": test_set["key"], "version": "1.0.0"},
+                "suite": {"id": test_set, "version": "1.0.0"},
                 "claims": claims,
                 "causal_edges": [
                     {**edge, "review_required": False} for edge in draft.get("causal_edges", [])
@@ -612,12 +610,10 @@ quote 必须是标准答案中的连续原文。
                 "test_set": {
                     "id": dataset.id,
                     "key": dataset.dataset_key,
-                    "name": dataset.name,
                 },
                 "category": {
                     "id": category.id,
                     "key": category.category_key,
-                    "name": category.name,
                 },
                 "source_filename": item.source_filename,
             }
@@ -747,10 +743,9 @@ quote 必须是标准答案中的连续原文。
         self,
         case_key: str,
         source_filename: str,
-        test_set_key: str,
-        test_set_name: str,
-        category_key: str,
-        category_name: str,
+        test_set: str,
+        category: str,
+        new_case_key: str | None = None,
     ) -> CaseDraft:
         """Republish approved content under the formal hierarchy without re-reviewing it."""
         previous = self.get_published(case_key)
@@ -758,9 +753,10 @@ quote 必须是标准答案中的连续原文。
         case = working.get("case")
         if not isinstance(case, dict):
             raise AnalystBenchError("draft_invalid", "published Case has no case object")
-        case["case_key"] = Path(source_filename).stem
-        case["test_set"] = {"key": test_set_key, "name": test_set_name}
-        case["category"] = {"key": category_key, "name": category_name}
+        case["test_set"] = test_set
+        case["category"] = category
+        effective_case_key = new_case_key or case_key
+        case["case_key"] = effective_case_key
         issues = [
             question for question in self._questions(working) if question["code"] != "approve_case"
         ]
@@ -772,10 +768,10 @@ quote 必须是标准答案中的连续原文。
             )
         replacement = CaseDraft(
             id=str(uuid4()),
-            case_key=case["case_key"],
+            case_key=effective_case_key,
             source_filename=source_filename,
-            dataset_key=test_set_key,
-            category_key=category_key,
+            dataset_key=test_set,
+            category_key=category,
             status="ready",
             original_json=previous.original_json,
             working_json=canonical_json(working),
@@ -804,8 +800,8 @@ quote 必须是标准答案中的连续原文。
             "id": item.id,
             "case_key": item.case_key,
             "source_filename": item.source_filename,
-            "test_set_key": item.dataset_key,
-            "category_key": item.category_key,
+            "test_set": item.dataset_key,
+            "category": item.category_key,
             "status": item.status,
             "questions": questions,
             "summary": {
@@ -838,7 +834,7 @@ quote 必须是标准答案中的连续原文。
                 )
             ]
         for field, label in (
-            ("case_key", "用例编号"),
+            ("case_key", "用例标识"),
             ("problem_statement", "问题描述"),
             ("reference_answer", "人工标准答案原文"),
         ):
@@ -849,27 +845,15 @@ quote 必须是标准答案中的连续原文。
                 )
         for field, label in (("test_set", "测试集"), ("category", "用例分类")):
             value = case.get(field)
-            if not isinstance(value, dict):
+            if not isinstance(value, str) or not value.strip():
                 issues.append(
                     _question(
                         f"case.{field}",
                         "missing_field",
-                        f"缺少{label}，需要提供 key 和 name。",
+                        f"缺少{label}标识。",
                         value,
                     )
                 )
-                continue
-            for child, child_label in (("key", "标识"), ("name", "名称")):
-                child_value = value.get(child)
-                if not isinstance(child_value, str) or not child_value.strip():
-                    issues.append(
-                        _question(
-                            f"case.{field}.{child}",
-                            "missing_field",
-                            f"{label}{child_label}不能为空。",
-                            child_value,
-                        )
-                    )
         reference = case.get("reference_answer", "")
         claims = draft.get("claims")
         if not isinstance(claims, list) or not claims:

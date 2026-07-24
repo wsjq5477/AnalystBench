@@ -13,6 +13,7 @@ authors = [{ name = "AnalystBench Contributors" }]
 dependencies = [
   "alembic>=1.14,<2",
   "fastapi>=0.115,<1",
+  "python-multipart>=0.0.9,<1",
   "pydantic-settings>=2.7,<3",
   "sqlalchemy>=2.0.36,<3",
   "typer>=0.15,<1",

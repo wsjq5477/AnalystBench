@@ -32,9 +32,8 @@ def case_payload(importance: str = "normal") -> dict:
     reference = "系统因 suspend-to-mem 超时触发 panic。根因是未执行 REPICK，线程可能跑错 CPU 核。"
     return {
         "case": {
-            "case_key": "1",
-            "test_set": {"key": "kdiag", "name": "Kdiag 内核诊断"},
-            "category": {"key": "SYSMGR_PANIC", "name": "SYSMGR Panic"},
+            "test_set": "kdiag",
+            "category": "SYSMGR_PANIC",
             "problem_statement": "分析 suspend 超时的根因。",
             "reference_answer": reference,
         },
@@ -99,7 +98,9 @@ def test_labeled_reference_is_normalized_to_root_category_and_three_equal_chain_
         "结论3：卡在liblinux_remove_cpu的schedule，怀疑调度相关"
     )
     with TestClient(create_app(settings)) as client:
-        created = client.post("/api/v1/case-drafts", json={"payload": payload}).json()
+        created = client.post(
+            "/api/v1/case-drafts", json={"payload": payload, "case_key": "1"}
+        ).json()
         assert created["summary"]["claim_count"] == 5
         assert created["questions"][0]["code"] == "approve_case"
         stored = client.app.state.case_library_service.get_draft(created["id"])
@@ -135,7 +136,10 @@ def test_case_field_question_explains_claim_and_then_asks_one_approval(
 ) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
-        created = client.post("/api/v1/case-drafts", json={"payload": case_payload("important")})
+        created = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": case_payload("important"), "case_key": "1"},
+        )
         assert created.status_code == 201
         question = created.json()["questions"][0]
         assert question["field_path"] == "eval_spec_draft.claims[0].importance"
@@ -155,7 +159,10 @@ def test_case_field_question_explains_claim_and_then_asks_one_approval(
 def test_published_case_is_reused_for_multi_report_batch(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
-        created = client.post("/api/v1/case-drafts", json={"payload": case_payload()}).json()
+        created = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": case_payload(), "case_key": "1"},
+        ).json()
         assert len(created["questions"]) == 1
         assert created["questions"][0]["code"] == "approve_case"
         ready = client.post(
@@ -255,8 +262,9 @@ def test_frontend_raw_conversion_uses_background_runner(tmp_path: Path) -> None:
                     "executable": sys.executable,
                     "extra_args": [str(fake)],
                 },
-                "test_set": {"key": "kernel-log-analysis", "name": "Kernel 日志分析"},
-                "category": {"key": "panic", "name": "Panic"},
+                "case_key": "1",
+                "test_set": "kernel-log-analysis",
+                "category": "panic",
             },
         )
         assert generated.status_code == 202
@@ -285,11 +293,10 @@ def test_frontend_raw_conversion_uses_background_runner(tmp_path: Path) -> None:
         assert converted.json()["issues"] == []
 
 
-def test_case_filename_and_hierarchy_are_persisted_in_one_test_set(tmp_path: Path) -> None:
+def test_case_hierarchy_is_persisted_in_one_test_set(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
         first_payload = case_payload()
-        first_payload["case"]["case_key"] = "ai-invented-key"
         first_payload["case"]["traces"] = [
             {
                 "trace_key": "panic-log",
@@ -302,9 +309,10 @@ def test_case_filename_and_hierarchy_are_persisted_in_one_test_set(tmp_path: Pat
             "/api/v1/case-drafts",
             json={
                 "payload": first_payload,
+                "case_key": "HM_PANIC_SYSMGR-case1",
                 "source_filename": "HM_PANIC_SYSMGR-case1.json",
-                "test_set": {"key": "kernel-log-analysis", "name": "Kernel 日志分析"},
-                "category": {"key": "panic", "name": "Panic"},
+                "test_set": "kernel-log-analysis",
+                "category": "panic",
             },
         ).json()
         assert first["case_key"] == "HM_PANIC_SYSMGR-case1"
@@ -319,9 +327,10 @@ def test_case_filename_and_hierarchy_are_persisted_in_one_test_set(tmp_path: Pat
             "/api/v1/case-drafts",
             json={
                 "payload": second_payload,
+                "case_key": "HM_LOWDOG-case2",
                 "source_filename": "HM_LOWDOG-case2.json",
-                "test_set": {"key": "kernel-log-analysis", "name": "Kernel 日志分析"},
-                "category": {"key": "lowdog", "name": "Lowdog"},
+                "test_set": "kernel-log-analysis",
+                "category": "lowdog",
             },
         ).json()
         ready = client.post(
@@ -361,7 +370,10 @@ def test_case_filename_and_hierarchy_are_persisted_in_one_test_set(tmp_path: Pat
 def test_published_case_can_be_reorganized_without_rechecking_claims(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
-        created = client.post("/api/v1/case-drafts", json={"payload": case_payload()}).json()
+        created = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": case_payload(), "case_key": "1"},
+        ).json()
         ready = client.post(
             f"/api/v1/case-drafts/{created['id']}/answers",
             json={"answers": [{"question_id": created["questions"][0]["id"], "value": "approved"}]},
@@ -372,11 +384,9 @@ def test_published_case_can_be_reorganized_without_rechecking_claims(tmp_path: P
             "/api/v1/benchmark-cases/1:organize",
             json={
                 "source_filename": "panic-repick.json",
-                "test_set": {
-                    "key": "kernel-log-analysis-v2",
-                    "name": "Kernel 日志分析 V2",
-                },
-                "category": {"key": "panic", "name": "Panic"},
+                "case_key": "panic-repick",
+                "test_set": "kernel-log-analysis-v2",
+                "category": "panic",
             },
         )
         assert organized.status_code == 200
@@ -388,7 +398,10 @@ def test_published_case_can_be_reorganized_without_rechecking_claims(tmp_path: P
 def test_same_case_can_publish_a_new_revision_from_an_approved_draft(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
-        first = client.post("/api/v1/case-drafts", json={"payload": case_payload()}).json()
+        first = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": case_payload(), "case_key": "1"},
+        ).json()
         first_ready = client.post(
             f"/api/v1/case-drafts/{first['id']}/answers",
             json={"answers": [{"question_id": first["questions"][0]["id"], "value": "approved"}]},
@@ -397,7 +410,10 @@ def test_same_case_can_publish_a_new_revision_from_an_approved_draft(tmp_path: P
 
         changed = case_payload()
         changed["case"]["problem_statement"] = "分析更新后的 suspend 超时问题。"
-        second = client.post("/api/v1/case-drafts", json={"payload": changed}).json()
+        second = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": changed, "case_key": "1"},
+        ).json()
         second_ready = client.post(
             f"/api/v1/case-drafts/{second['id']}/answers",
             json={"answers": [{"question_id": second["questions"][0]["id"], "value": "approved"}]},

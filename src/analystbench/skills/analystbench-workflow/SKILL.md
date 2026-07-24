@@ -17,16 +17,15 @@ description: 在 Claude 中用一个入口完成 AnalystBench Case 导入发布�
 
 ## 导入 Case
 
-1. 以文件名 stem 作为 `case_key`，不得另起名称或修改源 JSON。
-2. 从 JSON 的 `case.test_set`、`case.category` 读取测试集和分类；缺失时只询问这两项。
+1. 向用户确认 `case_key`（用户命名，如 `kdiag-SYSMGR_PANIC-1`），不从文件名推断。后端会把它写回入库后的 Case JSON（磁盘上的源文件保持不变）。
+2. 从 JSON 的 `case.test_set`、`case.category` 读取测试集和分类（纯字符串）；缺失时询问 `case_key`、测试集、分类这三项。
 3. 执行 `db-upgrade`，再执行：
 
    ```bash
    .venv/bin/analystbench case-import <case.json> \
-     --test-set <测试集key> \
-     --test-set-name <测试集名称> \
-     --category <分类key> \
-     --category-name <分类名称>
+     --case-key <用例标识> \
+     --test-set <测试集标识> \
+     --category <分类标识>
    ```
 
 4. 项目返回确认问题时，每次只展示第一项的字段路径、问题、当前值、建议值和选项，等待用户回答。不得直接修改 JSON 或替用户确认。

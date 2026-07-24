@@ -19,8 +19,8 @@ description: 将一份人工标准答案转换为 AnalystBench Case JSON，或�
 6. 根因 ID 固定为 `root`，问题分类固定为 `category`，分析链依次使用 `chain-1`、`chain-2`；其他通用评分项使用 `claim-1`、`claim-2`。禁止旧的 `g1`、`g2` 格式。
 7. 不确定信息写入 `unresolved_items`，不能替用户猜测。
 8. 用户只要求转换时，输出或按用户指定路径保存 JSON 后停止，不自动入库。
-9. `case.case_key` 为纯数字用例编号（如 `1`），由脚本或用户传入，不由 AI 生成。输出文件名格式为 `<测试集>-<问题类型>-<编号>.json`（如 `kdiag-SYSMGR_PANIC-1.json`）。
-10. 确认测试集、问题类型和用例编号，分别写入 `case.test_set`（测试集标识，如 `kdiag`）、`case.category`（问题类型，如 `SYSMGR_PANIC`）、`case.case_key`（编号）。这三项由脚本生成或用户填入。
+9. Case JSON 中**不得包含** `case_key` 字段。`case_key` 由用户在导入时通过 `--case-key` 参数命名，导入时由后端写回 `case.case_key` 作为自包含标识，不由 AI 生成。
+10. 确认测试集和问题分类，分别写入 `case.test_set`（测试集标识字符串，如 `kdiag`）、`case.category`（问题分类字符串，如 `SYSMGR_PANIC`）。这两个字段是纯字符串，不嵌套 `key`/`name`。
 11. 生成的 Case JSON 中**不得包含** `domain` 和 `tags` 字段。
 
 ## 阶段二：审核并发布
@@ -45,5 +45,5 @@ analystbench case-import <case.json> --yes
 - JSON 合法时只进行一次整体确认，不逐个确认 `review_required`。
 - 后端指出字段错误时，原样展示 Claim 上下文和字段含义。
 - 后端返回 `failed` 时，原样说明 `error.code` 和 `error.message`，不猜测修复值。
-- `case_key` 为纯数字用例编号，不由 AI 自行创造语义化名称。
+- `case_key` 由用户在 `case-import` 时命名，导入时后端写回 `case.case_key`；生成阶段不在 JSON 中写 `case_key`。
 - 发布前必须确认项目标准化后的评分项数量与原始结构一致。

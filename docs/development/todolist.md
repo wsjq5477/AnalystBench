@@ -159,7 +159,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 
 - [x] Dataset 明确作为测试集，并新增稳定 `dataset_key`。
 - [x] 新增测试集内的 CaseCategory 正式分类，不再使用 tags 代替。
-- [x] Case 保存源文件名，并以文件名 stem 作为 `case_key`。
+- [x] Case 保存源文件名，`case_key` 由用户在导入时命名（不再从文件名推断）。
 - [x] 新增 CaseTrace，持久化日志、snapshot、堆栈等原始材料引用。
 - [x] 同一测试集发布新 Case 时生成包含全部最新 Case Revision 的版本。
 - [x] `case-import` 与 Case Draft API 接收测试集、分类和源文件名。

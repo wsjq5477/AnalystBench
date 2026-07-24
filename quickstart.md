@@ -50,8 +50,8 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/analystbench case-import ./HM_PANIC_SYSMGR-case1.json \
+  --case-key HM_PANIC_SYSMGR-case1 \
   --test-set kernel-log-analysis \
-  --test-set-name "Kernel 日志分析测试集" \
   --category panic
 ```
 

@@ -9,7 +9,7 @@ description: 使用本地 Case JSON 或已发布的 Case，对一份或多份 AI
 
 ## 本地 Case JSON：推荐流程
 
-草稿路径必须包含 `${case_key}` 和 8 位随机 hex 后缀（如 `alignment-draft-case-1-a3f7b2c1.json`），避免并发冲突。case_key 取 case JSON 文件的 stem。
+草稿路径必须包含 `${case_key}` 和 8 位随机 hex 后缀（如 `alignment-draft-case-1-a3f7b2c1.json`），避免并发冲突。此处 `${case_key}` 是本地 Case JSON 文件名的 stem，仅用于本地临时结果目录命名，与数据库中用户命名的发布 `case_key` 无关。
 
 ### 第 1 步：生成 Python 评分草稿
 

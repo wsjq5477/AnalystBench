@@ -20,12 +20,13 @@ Case 只需审核并发布一次。之后用稳定的 `case_key` 对任意数量
 
 | 字段 | 必填 | 含义与推荐输入 |
 |---|---|---|
-| `case_key` | 是 | 用例编号，使用 Case JSON 文件名去掉 `.json` 后的完整名称（如 `HM_PANIC_SYSMGR-case1`）。由脚本或用户传入，不由 AI 另起名称。 |
-| `test_set` | 是 | 所属测试集，包含稳定的 `key` 和显示用 `name`。`key` 为测试集标识（如 `kdiag`）。也可以在 `case-import` 参数中填写。 |
-| `category` | 是 | 问题类型，包含 `key` 和 `name`。`key` 为问题类型标识（如 `SYSMGR_PANIC`）。也可以在 `case-import` 参数中填写。 |
+| `test_set` | 是 | 所属测试集标识（纯字符串，如 `kdiag`）。也可在 `case-import` 参数中填写。 |
+| `category` | 是 | 问题分类标识（纯字符串，如 `SYSMGR_PANIC`）。也可在 `case-import` 参数中填写。 |
 | `problem_statement` | 是 | 只描述待分析的问题和已知现象，不提前泄露标准答案。 |
 | `reference_answer` | 是 | 人工确认的标准答案完整原文，不得用 AI 报告替代或改写。 |
 | `traces` | 否 | 日志、snapshot、调用栈等原始材料数组；不需要时省略或填 `[]`。 |
+
+`case_key` 不由 AI 写入 Case JSON。用户在 `case-import` 时通过 `--case-key` 参数命名（如 `kdiag-SYSMGR_PANIC-1`），导入时后端把它写回 `case.case_key`，作为该 Case 文件自包含的稳定标识。后续重新导入同名 `case_key` 视为发布新 Revision。
 
 ### 根因、问题分类与分析链的标准化规则
 
@@ -91,9 +92,8 @@ Case 只需审核并发布一次。之后用稳定的 `case_key` 对任意数量
 ```json
 {
   "case": {
-    "case_key": "1",
-    "test_set": {"key": "kdiag", "name": "Kdiag 内核诊断"},
-    "category": {"key": "SYSMGR_PANIC", "name": "SYSMGR Panic"},
+    "test_set": "kdiag",
+    "category": "SYSMGR_PANIC",
     "problem_statement": "分析系统出现 suspend-to-mem 超时 panic 及 sh 进程卡住的根因。",
     "reference_answer": "问题分类：HM_PANIC_SYSMGR\n问题根因：调度问题，开抢占未REPICK，导致线程开抢占后可能跑错核\n分析链：\n证据1：suspend to mem is timeout\n结论1：休眠超时\n证据2：cpuhp: listener devmgr.actv handling cpu1 event: 2 enter\n结论2：cpuhp卡主\n证据3：liblinux_remove_cpu\n结论3：卡在liblinux_remove_cpu的schedule，怀疑调度相关"
   },
@@ -199,8 +199,8 @@ Report JSON 只是可选的元数据封装，适合旧接口或需要附加模�
 
 ```bash
 .venv/bin/analystbench case-import ./kdiag-SYSMGR_PANIC-1.json \
+  --case-key kdiag-SYSMGR_PANIC-1 \
   --test-set kdiag \
-  --test-set-name "Kdiag 内核诊断" \
   --category SYSMGR_PANIC
 ```
 

@@ -70,11 +70,11 @@ def _direct_spec(case_payload: dict[str, Any], case_key: str) -> dict[str, Any]:
         )
 
     test_set = case.get("test_set")
-    suite_id = test_set.get("key") if isinstance(test_set, dict) else "direct-file"
+    suite_id = test_set if isinstance(test_set, str) and test_set else "direct-file"
     payload = {
         "schema_version": "1.0",
         "case_revision_id": f"direct:{case_key}",
-        "suite": {"id": suite_id or "direct-file", "version": "1.0.0"},
+        "suite": {"id": suite_id, "version": "1.0.0"},
         "claims": formal_claims,
         "causal_edges": [
             {**edge, "review_required": False} for edge in draft.get("causal_edges", [])

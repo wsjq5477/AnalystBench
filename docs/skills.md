@@ -66,7 +66,7 @@ analystbench-evaluate ──→ 分数、通过状态、解释和多报告对比
 - 分类 Claim ID 固定为 `category`，权重为 20；
 - 分析链依次使用 `chain-1`、`chain-2`，等分且合计 60；
 - 不确定信息写入 `unresolved_items`，不能替用户猜测；
-- `case_key` 使用输出文件名去掉 `.json` 后的完整名称；
+- `case_key` 由用户在导入时通过 `--case-key` 命名，导入时后端写回 `case.case_key`，AI 生成阶段不写；
 - 发布前确认测试集、分类、评分项数量和关键根因。
 
 ## `analystbench-report-draft`

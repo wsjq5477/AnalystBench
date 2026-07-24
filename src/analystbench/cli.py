@@ -372,39 +372,36 @@ def _read_report_input(path: Path) -> dict:
 @app.command("case-import")
 def case_import(
     case_path: Path,
-    test_set: str | None = typer.Option(None, "--test-set", help="测试集稳定标识"),
-    test_set_name: str | None = typer.Option(None, "--test-set-name", help="测试集显示名称"),
-    category: str | None = typer.Option(None, "--category", help="用例分类稳定标识"),
-    category_name: str | None = typer.Option(None, "--category-name", help="分类显示名称"),
+    case_key: str | None = typer.Option(None, "--case-key", help="用例稳定标识，用户命名"),
+    test_set: str | None = typer.Option(None, "--test-set", help="测试集标识"),
+    category: str | None = typer.Option(None, "--category", help="用例分类标识"),
     auto_approve: bool = typer.Option(False, "--yes", help="自动批准所有确认项并发布"),
 ) -> None:
     """审核一份 Case JSON，并在整体确认后发布到本地基准库。"""
     service = case_library_service()
-    case_key = case_path.stem
+    payload = _read_json(case_path)
+    case = payload.get("case", {}) if isinstance(payload.get("case"), dict) else {}
+    embedded_test_set = case.get("test_set") if isinstance(case.get("test_set"), str) else None
+    embedded_category = case.get("category") if isinstance(case.get("category"), str) else None
+    test_set = test_set or embedded_test_set
+    category = category or embedded_category
+    if not case_key:
+        case_key = typer.prompt("请输入用例标识（例如 kdiag-SYSMGR_PANIC-1）")
+    if not test_set:
+        test_set = typer.prompt("请输入测试集标识（例如 kernel-log-analysis）")
+    if not category:
+        category = typer.prompt("请输入用例分类（例如 panic、lowdog、highdog）")
     previous = None
     try:
         previous = service.get_published(case_key)
     except NotFoundError:
         pass
-    payload = _read_json(case_path)
-    case = payload.get("case", {}) if isinstance(payload.get("case"), dict) else {}
-    embedded_test_set = case.get("test_set", {}) if isinstance(case.get("test_set"), dict) else {}
-    embedded_category = case.get("category", {}) if isinstance(case.get("category"), dict) else {}
-    test_set = test_set or embedded_test_set.get("key")
-    category = category or embedded_category.get("key")
-    if not test_set:
-        test_set = typer.prompt("请输入测试集标识（例如 kernel-log-analysis）")
-    if not category:
-        category = typer.prompt("请输入用例分类（例如 panic、lowdog、highdog）")
-    test_set_name = test_set_name or embedded_test_set.get("name") or test_set
-    category_name = category_name or embedded_category.get("name") or category
     item = service.create_draft(
         payload,
+        case_key=case_key,
         source_filename=case_path.name,
-        test_set_key=test_set,
-        test_set_name=test_set_name,
-        category_key=category,
-        category_name=category_name,
+        test_set=test_set,
+        category=category,
     )
     while item.status == "needs_confirmation":
         question = service.view(item)["questions"][0]
@@ -438,19 +435,25 @@ def case_import(
     )
     view = service.view(published)
 
-    # Sync case.json to the formal results directory so the frontend can see it
+    # Sync the published Case JSON to the formal results directory so the frontend
+    # can see it. Write the published working JSON (which has the back-filled
+    # case_key) so the file is self-contained, rather than copying the raw input.
     settings = get_settings()
     ts_key = view["resources"]["test_set"]["key"]
     cat_key = view["resources"]["category"]["key"]
-    case_dir = case_path.parent.name  # directory containing the input file
-    formal_case_dir = settings.results_formal_path / ts_key / cat_key / case_dir
+    formal_case_dir = settings.results_formal_path / ts_key / cat_key / case_key
     formal_case_dir.mkdir(parents=True, exist_ok=True)
     formal_case_file = formal_case_dir / "case.json"
-    if not formal_case_file.exists():
-        shutil.copy2(case_path, formal_case_file)
-        typer.echo(f"已同步到 {formal_case_file}")
-    else:
-        typer.echo(f"文件已存在，跳过同步：{formal_case_file}")
+    published_draft = service.get_draft(published.id)
+    formal_case_file.write_text(
+        json.dumps(
+            json.loads(published_draft.working_json),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    typer.echo(f"已同步到 {formal_case_file}")
 
     typer.echo(
         json.dumps(
@@ -458,8 +461,8 @@ def case_import(
                 "status": "published",
                 "case_key": view["case_key"],
                 "case_version": view["resources"]["case_version"],
-                "test_set": view["resources"]["test_set"],
-                "category": view["resources"]["category"],
+                "test_set": view["resources"]["test_set"]["key"],
+                "category": view["resources"]["category"]["key"],
             },
             ensure_ascii=False,
             indent=2,
@@ -474,8 +477,8 @@ def case_list() -> None:
         {
             "case_key": item.case_key,
             "case_version": json.loads(item.resources_json).get("case_version"),
-            "test_set": json.loads(item.resources_json).get("test_set"),
-            "category": json.loads(item.resources_json).get("category"),
+            "test_set": json.loads(item.resources_json).get("test_set", {}).get("key"),
+            "category": json.loads(item.resources_json).get("category", {}).get("key"),
         }
         for item in case_library_service().list_published()
     ]
@@ -486,19 +489,17 @@ def case_list() -> None:
 def case_organize(
     case_key: str,
     case_path: Path,
-    test_set: str = typer.Option(..., "--test-set", help="测试集稳定标识"),
-    category: str = typer.Option(..., "--category", help="用例分类稳定标识"),
-    test_set_name: str | None = typer.Option(None, "--test-set-name", help="测试集显示名称"),
-    category_name: str | None = typer.Option(None, "--category-name", help="分类显示名称"),
+    test_set: str = typer.Option(..., "--test-set", help="测试集标识"),
+    category: str = typer.Option(..., "--category", help="用例分类标识"),
+    new_case_key: str | None = typer.Option(None, "--new-case-key", help="重新命名后的用例标识"),
 ) -> None:
-    """把已发布的旧 Case 按源文件名、测试集和分类重新归档。"""
+    """把已发布的旧 Case 按测试集和分类重新归档。"""
     item = case_library_service().organize_published(
         case_key,
         case_path.name,
         test_set,
-        test_set_name or test_set,
         category,
-        category_name or category,
+        new_case_key,
     )
     view = CaseLibraryService.view(item)
     typer.echo(
@@ -507,8 +508,8 @@ def case_organize(
                 "status": view["status"],
                 "case_key": view["case_key"],
                 "case_version": view["resources"]["case_version"],
-                "test_set": view["resources"]["test_set"],
-                "category": view["resources"]["category"],
+                "test_set": view["resources"]["test_set"]["key"],
+                "category": view["resources"]["category"]["key"],
             },
             ensure_ascii=False,
             indent=2,
@@ -740,17 +741,8 @@ def promote_result(
         case_source = result_data.get("case_source") or {}
         source_path = case_source.get("source_path", "")
 
-        test_set_obj = case_payload.get("test_set") or {}
-        if isinstance(test_set_obj, dict):
-            test_set = str(test_set_obj.get("key") or "default")
-        else:
-            test_set = str(test_set_obj) if test_set_obj else "default"
-
-        category_obj = case_payload.get("category") or {}
-        if isinstance(category_obj, dict):
-            category = str(category_obj.get("key") or "uncategorized")
-        else:
-            category = str(category_obj) if category_obj else "uncategorized"
+        test_set = str(case_payload.get("test_set") or "default")
+        category = str(case_payload.get("category") or "uncategorized")
 
         # case_dir from source_path or case_key
         if source_path:
@@ -867,19 +859,17 @@ def evaluation_report(batch_id: str) -> None:
 @app.command("case-draft-create", hidden=True)
 def case_draft_create(
     case_path: Path,
+    case_key: str = typer.Option(..., "--case-key"),
     test_set: str = typer.Option(..., "--test-set"),
     category: str = typer.Option(..., "--category"),
-    test_set_name: str | None = typer.Option(None, "--test-set-name"),
-    category_name: str | None = typer.Option(None, "--category-name"),
 ) -> None:
     """Create a machine-readable Case Draft for an agent client."""
     item = case_library_service().create_draft(
         _read_json(case_path),
+        case_key=case_key,
         source_filename=case_path.name,
-        test_set_key=test_set,
-        test_set_name=test_set_name or test_set,
-        category_key=category,
-        category_name=category_name or category,
+        test_set=test_set,
+        category=category,
     )
     typer.echo(json.dumps(CaseLibraryService.view(item), ensure_ascii=False, indent=2, default=str))
 

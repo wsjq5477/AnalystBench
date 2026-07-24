@@ -19,9 +19,10 @@ import {
   IconTerminal2,
   IconTrash,
   IconClipboardData,
+  IconFlask,
 } from "@tabler/icons-vue";
 import ChartCanvas from "./components/ChartCanvas.vue";
-import { analystBenchApi, ApiError, type AppSettings, type CaseCategory, type CaseRevisionContent, type Dataset, type DatasetCase, type DirectResultListItem, type DirectResultReportSummary, type DirectResultClaim, type DirectResultComparison, type DirectResultSummary, type DirectResultStats, type StatsTestSet, type StatsCandidate, type LocalCaseTree } from "./api";
+import { analystBenchApi, ApiError, type AppSettings, type CaseCategory, type CaseRevisionContent, type Dataset, type DatasetCase, type DirectResultListItem, type DirectResultReportSummary, type DirectResultClaim, type DirectResultComparison, type DirectResultSummary, type DirectResultStats, type StatsTestSet, type StatsCandidate, type LocalCaseTree, type EvaluateResponse, type CaseDraftView } from "./api";
 
 type ViewName = "dashboard" | "dataset" | "results" | "settings";
 type Tone = "agent" | "skill" | "native";
@@ -54,6 +55,21 @@ const localCaseTree = ref<LocalCaseTree[]>([]);
 const selectedLocalCasePath = ref("");
 const selectedLocalCaseData = ref<Record<string, unknown> | null>(null);
 
+// ─── Evaluate dialog ───
+const showEvaluateDialog = ref(false);
+const evaluateForm = reactive({ judge: "lexical" });
+const evaluateFiles = ref<File[]>([]);
+const evaluateRunning = ref(false);
+
+// ─── Create Case dialog ───
+const showCreateCaseDialog = ref(false);
+const showCaseReviewDialog = ref(false);
+const caseCreateForm = reactive({ reference_answer: "", problem_statement: "", case_key: "", test_set: "", category: "" });
+const caseDraftId = ref<string | null>(null);
+const caseDraftView = ref<CaseDraftView | null>(null);
+const caseCreateRunning = ref(false);
+const caseReviewStep = ref(0); // 0=reviewing questions, 1=ready to publish
+
 async function loadLocalCaseTree() {
   try {
     localCaseTree.value = await analystBenchApi.getLocalCaseTree();
@@ -74,6 +90,166 @@ async function selectLocalCase(tsKey: string, catKey: string, csKey: string, csN
     selectedLocalCaseData.value = null;
     showToast(error instanceof Error ? error.message : "读取 Case 失败");
   }
+}
+
+function openEvaluateDialog() {
+  if (!selectedLocalCasePath.value) return showToast("请先选择一个 Case");
+  showEvaluateDialog.value = true;
+  evaluateForm.judge = "lexical";
+  evaluateFiles.value = [];
+}
+
+function onEvaluateFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  evaluateFiles.value = Array.from(input.files ?? []);
+}
+
+async function runEvaluate() {
+  if (!selectedLocalCasePath.value) return;
+  if (!evaluateFiles.value.length) return showToast("请选择至少一份日志文件");
+  evaluateRunning.value = true;
+  try {
+    const result = await analystBenchApi.evaluateLocalCase(
+      selectedLocalCasePath.value,
+      evaluateForm.judge,
+      evaluateFiles.value,
+    );
+    showEvaluateDialog.value = false;
+    evaluateFiles.value = [];
+    // Switch to tmp results view immediately
+    resultSource.value = "tmp";
+    activeView.value = "results";
+    await refreshDirectResults();
+    // Start polling for completion
+    pollResultUntilDone(result.result_id);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "评分失败");
+  } finally {
+    evaluateRunning.value = false;
+  }
+}
+
+async function pollResultUntilDone(resultId: string) {
+  const maxAttempts = 120; // up to ~10 minutes at 5s interval
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      const data = await analystBenchApi.getDirectResult(resultId);
+      const status = String(data.status ?? "");
+      if (status === "completed") {
+        showToast(`评分完成：${resultId}`);
+        await refreshDirectResults();
+        // Auto-select the completed result
+        selectedResultId.value = resultId;
+        selectedResultData.value = data;
+        return;
+      }
+      if (status === "failed") {
+        const errorMsg = (data.error as Record<string, unknown>)?.message ?? "评分失败";
+        showToast(`评分失败：${String(errorMsg)}`);
+        await refreshDirectResults();
+        return;
+      }
+      // status is "running" — refresh the list so user sees the running indicator
+      if (i % 3 === 0) await refreshDirectResults();
+    } catch {
+      // Polling error — may be transient, continue
+    }
+  }
+  showToast("评分超时");
+}
+
+// ─── Create Case from text ───
+async function submitCreateCase() {
+  if (!caseCreateForm.reference_answer.trim()) return showToast("请输入参考答案文本");
+  if (!caseCreateForm.case_key.trim()) return showToast("请输入 Case Key");
+  if (!caseCreateForm.test_set.trim()) return showToast("请输入测试集");
+  if (!caseCreateForm.category.trim()) return showToast("请输入问题分类");
+  caseCreateRunning.value = true;
+  try {
+    const draft = await analystBenchApi.generateCaseDraft({
+      reference_answer: caseCreateForm.reference_answer,
+      problem_statement: caseCreateForm.problem_statement || undefined,
+      case_key: caseCreateForm.case_key,
+      test_set: caseCreateForm.test_set,
+      category: caseCreateForm.category,
+    });
+    caseDraftId.value = draft.id;
+    caseDraftView.value = draft;
+    showCreateCaseDialog.value = false;
+    // If generating, poll until needs_confirmation
+    if (draft.status === "generating") {
+      showCaseReviewDialog.value = true;
+      await pollCaseDraftUntilReady(draft.id);
+    } else if (draft.status === "needs_confirmation") {
+      showCaseReviewDialog.value = true;
+    } else {
+      showToast(`创建失败：${draft.status}`);
+    }
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "创建 Case 失败");
+  } finally {
+    caseCreateRunning.value = false;
+  }
+}
+
+async function pollCaseDraftUntilReady(draftId: string) {
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      const draft = await analystBenchApi.getCaseDraft(draftId);
+      caseDraftView.value = draft;
+      if (draft.status === "needs_confirmation" || draft.status === "ready") return;
+      if (draft.status === "failed") {
+        showToast(`生成失败：${draft.error?.message ?? "未知错误"}`);
+        return;
+      }
+    } catch { /* continue polling */ }
+  }
+  showToast("生成超时");
+}
+
+async function approveCaseDraft() {
+  if (!caseDraftView.value) return;
+  try {
+    // Auto-approve all questions with suggested values
+    const answers = caseDraftView.value.questions.map((q) => ({
+      question_id: q.id,
+      value: q.suggested_value ?? "approved",
+    }));
+    const updated = await analystBenchApi.submitCaseDraftAnswers(caseDraftView.value.id, answers);
+    caseDraftView.value = updated;
+    if (updated.status === "ready") {
+      // Publish the draft
+      try {
+        const published = await analystBenchApi.publishCaseDraft(updated.id);
+        caseDraftView.value = published;
+        showToast(`Case 发布成功：${published.case_key}`);
+        showCaseReviewDialog.value = false;
+        await loadLocalCaseTree();
+      } catch (publishError) {
+        // Publish failed — refresh draft state to show actual status
+        const refreshed = await analystBenchApi.getCaseDraft(updated.id);
+        caseDraftView.value = refreshed;
+        const msg = publishError instanceof Error ? String(publishError.message) : "发布失败";
+        showToast(msg);
+      }
+    } else if (updated.status === "needs_confirmation") {
+      // More questions — continue reviewing
+      caseReviewStep.value = 0;
+    }
+  } catch (error) {
+    // Answers submission failed — refresh draft state
+    try { caseDraftView.value = await analystBenchApi.getCaseDraft(caseDraftView.value!.id); } catch {}
+    const msg = error instanceof Error ? String(error.message) : "审核失败";
+    showToast(msg);
+  }
+}
+
+async function rejectCaseDraft() {
+  showCaseReviewDialog.value = false;
+  caseDraftView.value = null;
+  caseDraftId.value = null;
 }
 
 // ─── Direct Results view ───
@@ -716,7 +892,7 @@ onMounted(() => { void loadLocalCaseTree(); void loadDashboardData(); });
       </section>
 
       <section v-else-if="activeView === 'dataset'" class="work-page">
-        <div class="work-heading"><div><p class="eyebrow">CASE LIBRARY</p><h1>测试集</h1><p>浏览本地 case.json 文件，按测试集和问题分类组织。</p></div><button class="ghost-button" @click="loadLocalCaseTree"><IconRefresh :size="16" />刷新</button></div>
+        <div class="work-heading"><div><p class="eyebrow">CASE LIBRARY</p><h1>测试集</h1><p>浏览本地 case.json 文件，按测试集和问题分类组织。</p></div><button class="ghost-button" @click="loadLocalCaseTree"><IconRefresh :size="16" />刷新</button><button class="primary-button" @click="showCreateCaseDialog = true"><IconPlus :size="16" />创建 Case</button></div>
         <div v-if="localCaseTree.length === 0 && !loading" class="empty-state surface" style="min-height:200px"><IconFolder :size="30" /><p>暂无本地 Case</p><span>将 case.json 放入 data/results/{test_set}/{category}/{case_dir}/ 目录后刷新即可查看。</span></div>
         <div v-else class="dataset-layout">
           <section class="surface tree-panel">
@@ -737,7 +913,7 @@ onMounted(() => { void loadLocalCaseTree(); void loadDashboardData(); });
             </div>
           </section>
           <section class="surface detail-panel">
-            <div class="panel-heading"><h2>Case 详情</h2><span>{{ selectedLocalCasePath || '未选择' }}</span></div>
+            <div class="panel-heading"><h2>Case 详情</h2><span>{{ selectedLocalCasePath || '未选择' }}</span><button v-if="selectedLocalCasePath" class="ghost-button" @click="openEvaluateDialog"><IconFlask :size="16" />评分</button></div>
             <template v-if="selectedLocalCaseData">
               <dl>
                 <div><dt>Case Key</dt><dd>{{ (selectedLocalCaseData.case as Record<string,unknown>)?.case_key ?? '—' }}</dd></div>
@@ -766,18 +942,26 @@ onMounted(() => { void loadLocalCaseTree(); void loadDashboardData(); });
               <div class="panel-heading"><h2><IconFolder :size="17" />临时结果</h2><span>{{ directResultList.length }} 条</span></div>
               <div v-if="directResultList.length" class="result-list">
                 <div v-for="item in directResultList" :key="item.id" class="result-tree-leaf-row">
-                  <div :class="['result-tree-leaf', { selected: selectedResultId === item.id }]" @click="loadDirectResult(item)">
+                  <div :class="['result-tree-leaf', { selected: selectedResultId === item.id }]" @click="item.status !== 'running' && loadDirectResult(item)">
                     <span class="result-tree-leaf-name">{{ formatResultId(item) }}</span>
-                    <span class="result-tree-leaf-meta"><span :class="item.status === 'completed' ? 'tag-match' : 'tag-missing'">{{ item.status }}</span></span>
+                    <span class="result-tree-leaf-meta"><span :class="item.status === 'completed' ? 'tag-match' : item.status === 'running' ? 'tag-partial' : 'tag-missing'">{{ item.status === 'running' ? '评分中' : item.status === 'failed' ? '失败' : item.status }}</span></span>
                   </div>
-                  <button class="ghost-button" title="归档到正式结果集" @click.stop="openMoveDialog(item, 'promote')"><IconCloudUpload :size="14" />归档</button>
+                  <button v-if="item.status === 'completed'" class="ghost-button" title="归档到正式结果集" @click.stop="openMoveDialog(item, 'promote')"><IconCloudUpload :size="14" />归档</button>
                   <button class="tree-delete" title="删除评测结果" @click.stop="deleteDirectResult(item)"><IconTrash :size="14" /></button>
                 </div>
               </div>
               <div v-else class="empty-state"><IconClipboardData :size="22" /><p>暂无结果</p></div>
             </section>
           <section v-if="selectedResultData" class="surface result-detail-panel">
-            <template v-if="parseSummary(selectedResultData)">
+            <template v-if="String(selectedResultData.status ?? '') === 'running'">
+              <div class="panel-heading"><h2>评分进行中</h2><span>{{ String(selectedResultData.case_key ?? '') }}</span></div>
+              <div class="empty-state"><IconFlask :size="30" /><p>语义评分正在执行，请稍候…</p><span>{{ String(selectedResultData.case_key ?? '') }}</span></div>
+            </template>
+            <template v-else-if="String(selectedResultData.status ?? '') === 'failed'">
+              <div class="panel-heading"><h2>评分失败</h2><span>{{ String(selectedResultData.case_key ?? '') }}</span></div>
+              <p class="engine-note" style="color:#e5b96a">{{ String((selectedResultData.error as Record<string,unknown>)?.message ?? '未知错误') }}</p>
+            </template>
+            <template v-else-if="parseSummary(selectedResultData)">
               <div class="panel-heading"><h2>评测结果详情</h2><span>{{ String(selectedResultData.case_key ?? '') }} · {{ String(selectedResultData.id ?? '') }}</span></div>
               <p class="engine-note">{{ parseSummary(selectedResultData)!.engine_note }}</p>
               <section class="surface result-score-panel">
@@ -1057,6 +1241,111 @@ onMounted(() => { void loadLocalCaseTree(); void loadDashboardData(); });
           <button class="ghost-button" @click="showMoveDialog = false">取消</button>
           <button class="primary-button" @click="confirmMoveDialog" :disabled="!moveForm.test_set || !moveForm.category || !moveForm.case_dir"><IconCloudUpload v-if="moveDialogMode === 'promote'" :size="16" /><IconChevronRight v-else :size="16" />{{ moveDialogMode === 'promote' ? '归档' : '移动' }}</button>
         </div>
+      </section>
+    </div>
+
+    <!-- Evaluate dialog -->
+    <div v-if="showEvaluateDialog" class="dialog-overlay" @click.self="showEvaluateDialog = false">
+      <section class="surface dialog-card">
+        <div class="panel-heading"><h2>评分</h2><span>{{ selectedLocalCasePath }}</span></div>
+        <p class="form-note">选择一份或多份 AI 日志报告，对该 Case 进行评分。评分结果会保存到临时结果目录。</p>
+        <label>评分引擎
+          <select v-model="evaluateForm.judge">
+            <option value="lexical">词法评分（lexical，最快）</option>
+            <option value="claude-code">语义评分（claude-code，需 LLM）</option>
+            <option value="opencode">语义评分（opencode，需 LLM）</option>
+          </select>
+        </label>
+        <label>日志文件
+          <input type="file" multiple accept=".md,.json,.txt" @change="onEvaluateFileChange" />
+          <span v-if="evaluateFiles.length" class="file-count">{{ evaluateFiles.length }} 份已选择</span>
+        </label>
+        <div class="dialog-actions">
+          <button class="ghost-button" @click="showEvaluateDialog = false">取消</button>
+          <button class="primary-button" @click="runEvaluate" :disabled="!evaluateFiles.length || evaluateRunning"><IconFlask :size="16" />{{ evaluateRunning ? '评分中…' : '开始评分' }}</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Create Case from text dialog -->
+    <div v-if="showCreateCaseDialog" class="dialog-overlay" @click.self="showCreateCaseDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>从文本创建 Case</h2></div>
+        <p class="form-note">输入参考答案和问题描述，LLM 将自动转换为 Case JSON 并生成评分项。审核确认后发布到测试集。</p>
+        <label>Case Key（必填）
+          <input v-model="caseCreateForm.case_key" placeholder="chmod_hung" required />
+        </label>
+        <label>测试集（必填）
+          <input v-model="caseCreateForm.test_set" placeholder="kdiag" required />
+        </label>
+        <label>问题分类（必填）
+          <input v-model="caseCreateForm.category" placeholder="SYSTEM_DEADLOCK" required />
+        </label>
+        <label>问题描述（可选，LLM 可从参考答案自动推导）
+          <input v-model="caseCreateForm.problem_statement" placeholder="系统出现死锁重启…" />
+        </label>
+        <label>参考答案（必填）
+          <textarea v-model="caseCreateForm.reference_answer" rows="8" placeholder="日志1：file_setattr&#10;结论1：chmod 进程卡在 file_setattr&#10;分类：SYSTEM_DEADLOCK&#10;根因：clusterapp 服务拉起时调用 chmod…" style="min-height:120px;resize:vertical"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button class="ghost-button" @click="showCreateCaseDialog = false">取消</button>
+          <button class="primary-button" @click="submitCreateCase" :disabled="!caseCreateForm.reference_answer.trim() || !caseCreateForm.case_key.trim() || !caseCreateForm.test_set.trim() || !caseCreateForm.category.trim() || caseCreateRunning"><IconSparkles :size="16" />{{ caseCreateRunning ? '生成中…' : '生成 Case' }}</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Case Draft Review dialog -->
+    <div v-if="showCaseReviewDialog" class="dialog-overlay" @click.self="showCaseReviewDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>审核 Case</h2><span :class="caseDraftView?.status === 'generating' ? '' : caseDraftView?.status === 'needs_confirmation' ? 'tag-partial' : caseDraftView?.status === 'ready' ? 'tag-match' : caseDraftView?.status === 'published' ? 'tag-match' : caseDraftView?.status === 'failed' ? 'tag-missing' : ''">{{ caseDraftView?.status === 'generating' ? '生成中' : caseDraftView?.status === 'needs_confirmation' ? '待确认' : caseDraftView?.status === 'ready' ? '已审核' : caseDraftView?.status === 'published' ? '已发布' : caseDraftView?.status === 'failed' ? '失败' : caseDraftView?.status }}</span></div>
+        <template v-if="caseDraftView?.status === 'generating'">
+          <div class="empty-state"><IconLoader2 :size="24" class="spin" /><p>LLM 正在生成 Case JSON…</p></div>
+        </template>
+        <template v-else-if="caseDraftView?.status === 'needs_confirmation'">
+          <p class="form-note">Case JSON 已生成，以下问题需要确认。点击"全部确认"自动采纳建议值。</p>
+          <div class="case-review-questions">
+            <div v-for="q in caseDraftView.questions" :key="q.id" class="case-review-q">
+              <strong>{{ q.field_path }}</strong>
+              <p>{{ q.question }}</p>
+              <span v-if="q.current_value != null" class="form-note">当前值：{{ JSON.stringify(q.current_value) }}</span>
+              <span v-if="q.suggested_value != null" class="form-note" style="color:#8fa9ca">建议值：{{ JSON.stringify(q.suggested_value) }}</span>
+            </div>
+          </div>
+          <div class="dialog-actions">
+            <button class="ghost-button" @click="rejectCaseDraft">取消</button>
+            <button class="primary-button" @click="approveCaseDraft"><IconCircleCheck :size="16" />全部确认</button>
+          </div>
+        </template>
+        <template v-else-if="caseDraftView?.status === 'ready'">
+          <p class="form-note">Case 已审核通过，点击"发布"将其写入测试集目录。</p>
+          <div class="case-info-grid">
+            <div class="case-info-item"><span class="case-info-label">Case Key</span><span class="case-info-value">{{ caseDraftView.case_key }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ caseDraftView.test_set }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">问题分类</span><span class="case-info-value">{{ caseDraftView.category }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">评分项数</span><span class="case-info-value">{{ caseDraftView.summary.claim_count }}</span></div>
+          </div>
+          <div class="dialog-actions">
+            <button class="ghost-button" @click="rejectCaseDraft">取消</button>
+            <button class="primary-button" @click="approveCaseDraft"><IconCloudUpload :size="16" />发布到测试集</button>
+          </div>
+        </template>
+        <template v-else-if="caseDraftView?.status === 'published'">
+          <p class="form-note" style="color:#74cc92">Case 已成功发布到测试集！</p>
+          <div class="case-info-grid">
+            <div class="case-info-item"><span class="case-info-label">Case Key</span><span class="case-info-value">{{ caseDraftView.case_key }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ caseDraftView.test_set }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">问题分类</span><span class="case-info-value">{{ caseDraftView.category }}</span></div>
+          </div>
+          <div class="dialog-actions">
+            <button class="primary-button" @click="showCaseReviewDialog = false; void loadLocalCaseTree()">完成</button>
+          </div>
+        </template>
+        <template v-else-if="caseDraftView?.status === 'failed'">
+          <p class="form-note" style="color:#e5b96a">生成失败：{{ caseDraftView.error?.message ?? '未知错误' }}</p>
+          <div class="dialog-actions">
+            <button class="ghost-button" @click="showCaseReviewDialog = false">关闭</button>
+          </div>
+        </template>
       </section>
     </div>
   </div>

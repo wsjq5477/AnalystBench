@@ -2,14 +2,18 @@
 
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from pydantic import BaseModel
 
+from analystbench.case_library import report_payload_from_text
 from analystbench.config import Settings
+from analystbench.direct_evaluation import evaluate_direct
 from analystbench.errors import AnalystBenchError
+from analystbench.reporting import render_markdown
 
 router = APIRouter(tags=["direct-results"])
 
@@ -527,3 +531,168 @@ def _migrate_summary(data: dict[str, Any]) -> dict[str, Any]:
         for report in summary.get("reports", []):
             _migrate_report_fields(report)
     return data
+
+
+@router.post("/evaluate-direct")
+async def evaluate_local_case(
+    case_path: str = Form(...),
+    judge: str = Form("lexical"),
+    reports: list[UploadFile] = File(...),
+    request: Request = None,
+) -> dict[str, Any]:
+    """Evaluate uploaded report files against a local Case JSON asynchronously.
+
+    Returns immediately with result_id and status='running'.
+    The actual evaluation runs in a background thread.
+    Poll GET /direct-results/{result_id} to check progress.
+    """
+    if not reports:
+        raise AnalystBenchError("report_invalid", "至少需要一份 AI 报告文件。")
+    if judge not in {"claude-code", "opencode", "lexical"}:
+        raise AnalystBenchError("validation_failed", "judge 必须是 claude-code、opencode 或 lexical。")
+
+    settings: Settings = request.app.state.settings
+    formal_dir = settings.results_formal_path
+
+    # Read case.json from formal directory
+    case_file = formal_dir / case_path / "case.json"
+    if not case_file.is_file():
+        raise AnalystBenchError("case_not_found", f"找不到 Case {case_path}。")
+
+    try:
+        case_payload = json.loads(case_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        raise AnalystBenchError("case_file_corrupt", "Case 文件无法解析。")
+
+    if not isinstance(case_payload, dict):
+        raise AnalystBenchError("direct_case_invalid", "Case JSON 顶层必须是 JSON 对象。")
+
+    # Determine case_key from case data or path
+    case_obj = case_payload.get("case") or {}
+    case_key = case_obj.get("case_key") if isinstance(case_obj, dict) else Path(case_path).name
+
+    # Parse uploaded report files — read raw bytes once, reuse for parsing and disk write
+    report_payloads: list[dict[str, Any]] = []
+    report_raw: list[tuple[str, bytes]] = []  # (filename, raw_bytes) for disk write
+    for upload in reports:
+        filename = upload.filename or "report.md"
+        raw = await upload.read()
+        report_raw.append((filename, raw))
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise AnalystBenchError("report_invalid", f"报告文件 {filename} 不是有效的 UTF-8 文本。")
+        if not text.strip():
+            raise AnalystBenchError("report_invalid", f"报告文件 {filename} 为空。")
+
+        # Try JSON wrapper format first
+        if filename.lower().endswith(".json"):
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("candidate_report"), str):
+                candidate = payload.setdefault("candidate", {})
+                if not isinstance(candidate, dict):
+                    raise AnalystBenchError("report_invalid", f"{filename} 的 candidate 必须是 JSON 对象。")
+                candidate["name"] = Path(filename).stem
+                metadata = candidate.setdefault("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata.setdefault("source_filename", filename)
+                report_payloads.append(payload)
+                continue
+
+        # Plain text / markdown report
+        report_payloads.append(report_payload_from_text(filename, text))
+
+    # Create output directory and result_id upfront (before evaluation starts)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+    output_dir = settings.results_tmp_path / str(case_key) / timestamp
+    result_id = f"tmp/{case_key}/{timestamp}"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure case.json exists in parent directory
+    case_target = output_dir.parent / "case.json"
+    if not case_target.exists():
+        shutil.copy2(case_file, case_target)
+
+    # Write report files into timestamp directory
+    for filename, raw in report_raw:
+        dest = output_dir / filename
+        if not dest.exists():
+            dest.write_bytes(raw)
+
+    # Write initial result.json with status=running so it appears in the list
+    running_result = {
+        "id": result_id,
+        "mode": "direct_file",
+        "case_key": case_key,
+        "status": "running",
+        "reports": [],
+        "comparisons": [],
+        "summary": {
+            "case_key": case_key,
+            "engine_note": f"评分引擎 {judge}，评分进行中…",
+            "ranking": [],
+            "reports": [
+                {"candidate_name": r.get("candidate", {}).get("name", "unknown"), "status": "running",
+                 "score": "0", "passed": False, "claim_count": 0, "hit_count": 0,
+                 "missing_chains": [], "metrics": {}, "claims": [], "warnings": []}
+                for r in report_payloads
+            ],
+            "comparisons": [],
+        },
+        "error": {},
+    }
+    (output_dir / "result.json").write_text(
+        json.dumps(running_result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+
+    # Launch evaluation in background thread
+    source_path = str(case_file.resolve())
+
+    def _run_evaluation() -> None:
+        """Run evaluation in a background thread and update result.json on completion."""
+        try:
+            result = evaluate_direct(
+                case_payload, case_key, report_payloads, settings, judge, source_path,
+            )
+            result["id"] = result_id
+            # Write completed result.json
+            (output_dir / "result.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+            # Write result.md
+            markdown = render_markdown(result["summary"])
+            (output_dir / "result.md").write_text(markdown, encoding="utf-8")
+        except Exception as exc:
+            # Write failed result.json
+            error_result = {
+                "id": result_id,
+                "mode": "direct_file",
+                "case_key": case_key,
+                "status": "failed",
+                "reports": [],
+                "comparisons": [],
+                "summary": {
+                    "case_key": case_key,
+                    "engine_note": f"评分失败：{exc}",
+                    "ranking": [],
+                    "reports": [],
+                    "comparisons": [],
+                },
+                "error": {"code": "evaluation_failed", "message": str(exc)},
+            }
+            (output_dir / "result.json").write_text(
+                json.dumps(error_result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _run_evaluation)
+
+    return {
+        "result_id": result_id,
+        "status": "running",
+    }

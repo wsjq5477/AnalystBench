@@ -1,6 +1,8 @@
 """Frontend-ready Case Library and multi-report evaluation endpoints."""
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request, status
@@ -12,20 +14,17 @@ from analystbench.case_library import (
     ReportDraftService,
     report_payload_from_text,
 )
+from analystbench.config import Settings
 
 router = APIRouter(tags=["case-library"])
 
 
-class HierarchyRef(BaseModel):
-    key: str = Field(min_length=1, max_length=255)
-    name: str = Field(min_length=1, max_length=255)
-
-
 class CaseDraftCreate(BaseModel):
     payload: dict[str, Any]
+    case_key: str | None = None
     source_filename: str | None = None
-    test_set: HierarchyRef | None = None
-    category: HierarchyRef | None = None
+    test_set: str | None = Field(default=None, min_length=1, max_length=255)
+    category: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class CaseDraftGenerate(BaseModel):
@@ -35,8 +34,8 @@ class CaseDraftGenerate(BaseModel):
     runner: str = "claude-code"
     runner_configuration: dict[str, Any] = Field(default_factory=dict)
     source_filename: str | None = None
-    test_set: HierarchyRef | None = None
-    category: HierarchyRef | None = None
+    test_set: str | None = Field(default=None, min_length=1, max_length=255)
+    category: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class Answer(BaseModel):
@@ -52,8 +51,8 @@ class CaseDraftResponse(BaseModel):
     id: str
     case_key: str | None
     source_filename: str | None
-    test_set_key: str | None
-    category_key: str | None
+    test_set: str | None
+    category: str | None
     status: str
     questions: list[dict[str, Any]]
     summary: dict[str, Any]
@@ -108,8 +107,9 @@ class EvaluationBatchCreate(BaseModel):
 
 class CaseOrganize(BaseModel):
     source_filename: str = Field(min_length=1)
-    test_set: HierarchyRef
-    category: HierarchyRef
+    case_key: str | None = Field(default=None, min_length=1, max_length=255)
+    test_set: str = Field(min_length=1, max_length=255)
+    category: str = Field(min_length=1, max_length=255)
 
 
 class EvaluationBatchResponse(BaseModel):
@@ -137,37 +137,51 @@ def batch_service(request: Request) -> EvaluationBatchService:
 
 @router.post("/case-drafts", response_model=CaseDraftResponse, status_code=status.HTTP_201_CREATED)
 def create_case_draft(payload: CaseDraftCreate, request: Request) -> dict[str, Any]:
-    test_set = payload.test_set
-    category = payload.category
     item = case_service(request).create_draft(
         payload.payload,
+        case_key=payload.case_key,
         source_filename=payload.source_filename,
-        test_set_key=test_set.key if test_set else None,
-        test_set_name=test_set.name if test_set else None,
-        category_key=category.key if category else None,
-        category_name=category.name if category else None,
+        test_set=payload.test_set,
+        category=payload.category,
     )
     return CaseLibraryService.view(item)
 
 
 @router.post(
-    "/case-drafts:generate",
+    "/case-drafts-generate",
     response_model=CaseDraftResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def generate_case_draft(payload: CaseDraftGenerate, request: Request) -> dict[str, Any]:
-    item = case_service(request).create_generation(
+async def generate_case_draft(payload: CaseDraftGenerate, request: Request) -> dict[str, Any]:
+    service = case_service(request)
+    item = service.create_generation(
         reference_answer=payload.reference_answer,
         problem_statement=payload.problem_statement,
         case_key=payload.case_key,
         runner_id=payload.runner,
         runner_configuration=payload.runner_configuration,
         source_filename=payload.source_filename,
-        test_set_key=payload.test_set.key if payload.test_set else None,
-        test_set_name=payload.test_set.name if payload.test_set else None,
-        category_key=payload.category.key if payload.category else None,
-        category_name=payload.category.name if payload.category else None,
+        test_set=payload.test_set,
+        category=payload.category,
     )
+    draft_id = item.id
+
+    # Run generation in a background thread immediately (no separate worker needed)
+    import asyncio
+    import logging
+
+    _logger = logging.getLogger(__name__)
+
+    def _run_generation() -> None:
+        try:
+            service.execute_generation(draft_id)
+            _logger.info("case_generation_completed", extra={"draft_id": draft_id})
+        except Exception as exc:
+            _logger.exception("case_generation_failed", extra={"draft_id": draft_id, "error": str(exc)})
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _run_generation)
+
     return CaseLibraryService.view(item)
 
 
@@ -184,9 +198,33 @@ def answer_case_draft(draft_id: str, payload: Answers, request: Request) -> dict
     return CaseLibraryService.view(item)
 
 
-@router.post("/case-drafts/{draft_id}:publish", response_model=CaseDraftResponse)
+@router.post("/case-drafts/{draft_id}/publish", response_model=CaseDraftResponse)
 def publish_case_draft(draft_id: str, request: Request) -> dict[str, Any]:
-    return CaseLibraryService.view(case_service(request).publish(draft_id))
+    service = case_service(request)
+    published = service.publish(draft_id)
+    view = CaseLibraryService.view(published)
+
+    # Sync published Case JSON to the formal results directory so the
+    # frontend local-cases/tree picks it up automatically.
+    settings: Settings = request.app.state.settings
+    resources = view.get("resources") or {}
+    ts_key = (resources.get("test_set") or {}).get("key", "default")
+    cat_key = (resources.get("category") or {}).get("key", "uncategorized")
+    case_key = view.get("case_key", "unknown")
+    formal_case_dir = settings.results_formal_path / ts_key / cat_key / case_key
+    formal_case_dir.mkdir(parents=True, exist_ok=True)
+    formal_case_file = formal_case_dir / "case.json"
+    published_draft = service.get_draft(published.id)
+    formal_case_file.write_text(
+        json.dumps(
+            json.loads(published_draft.working_json),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    return view
 
 
 @router.get("/benchmark-cases")
@@ -201,10 +239,9 @@ def organize_benchmark_case(
     item = case_service(request).organize_published(
         case_key,
         payload.source_filename,
-        payload.test_set.key,
-        payload.test_set.name,
-        payload.category.key,
-        payload.category.name,
+        payload.test_set,
+        payload.category,
+        payload.case_key,
     )
     return CaseLibraryService.view(item)
 

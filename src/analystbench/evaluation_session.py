@@ -178,7 +178,6 @@ class EvaluationSessionService:
             )
             draft = {}
         for field, label in (
-            ("case_key", "用例编号"),
             ("problem_statement", "问题描述"),
             ("reference_answer", "人工标准答案"),
         ):
@@ -527,13 +526,14 @@ class EvaluationSessionService:
             case = working["case_draft"]["case"]
             draft = working["case_draft"]["eval_spec_draft"]
             prefix = session_id[:8]
+            case_key = f"eval-{prefix}"
             dataset = self.catalog.create_dataset(
-                f"evaluation-{prefix}-{case['case_key']}"[:255],
+                f"evaluation-{prefix}"[:255],
                 "Created by an AnalystBench Evaluation Session.",
             )
             revision = self.catalog.create_case_revision(
                 dataset.id,
-                case["case_key"],
+                case_key,
                 case["problem_statement"],
                 case["reference_answer"],
             )

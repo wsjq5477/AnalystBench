@@ -61,21 +61,10 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
             continue
 
         case_obj = data.get("case") or {}
-        test_set_obj = case_obj.get("test_set") or {}
-        if isinstance(test_set_obj, dict):
-            ts_key = str(test_set_obj.get("key") or "default")
-            ts_name = str(test_set_obj.get("name") or ts_key)
-        else:
-            ts_key = str(test_set_obj) if test_set_obj else "default"
-            ts_name = ts_key
-
-        category_obj = case_obj.get("category") or {}
-        if isinstance(category_obj, dict):
-            cat_key = str(category_obj.get("key") or "uncategorized")
-            cat_name = str(category_obj.get("name") or cat_key)
-        else:
-            cat_key = str(category_obj) if category_obj else "uncategorized"
-            cat_name = cat_key
+        ts_key = str(case_obj.get("test_set") or "default")
+        ts_name = ts_key
+        cat_key = str(case_obj.get("category") or "uncategorized")
+        cat_name = cat_key
 
         # case_dir from path: case.json is in .../test_set/category/case_dir/case.json
         rel = case_file.relative_to(formal_dir)
@@ -84,7 +73,7 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
         if len(parts) >= 3:
             case_dir = parts[-2]  # Parent directory name
         else:
-            case_dir = case_obj.get("case_key", "unknown")
+            case_dir = "unknown"
 
         # Count result timestamps under this case_dir
         case_parent = case_file.parent
@@ -93,13 +82,12 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
             if timestamp_dir.is_dir() and (timestamp_dir / "result.json").is_file():
                 result_count += 1
 
+        case_key = case_obj.get("case_key") or case_dir
         case_summary = {
-            "case_key": case_obj.get("case_key", case_dir),
+            "case_key": case_key,
             "problem_statement": (case_obj.get("problem_statement") or "")[:200],
-            "category_key": cat_key,
-            "category_name": cat_name,
-            "test_set_key": ts_key,
-            "test_set_name": ts_name,
+            "category": cat_key,
+            "test_set": ts_key,
             "result_count": result_count,
             "claims_count": len((data.get("eval_spec_draft") or {}).get("claims", [])),
         }
@@ -113,19 +101,11 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
     # Build tree
     result = []
     for ts_key, categories in sorted(test_sets.items()):
-        ts_name = next(
-            (c["test_set_name"] for cats in categories.values() for c in cats.values()),
-            ts_key,
-        )
-        ts_node = CaseTreeNode(ts_key, ts_name, "test_set")
+        ts_node = CaseTreeNode(ts_key, ts_key, "test_set")
         for cat_key, cases in sorted(categories.items()):
-            cat_name = next(
-                (c["category_name"] for c in cases.values()),
-                cat_key,
-            )
-            cat_node = CaseTreeNode(cat_key, cat_name, "category")
+            cat_node = CaseTreeNode(cat_key, cat_key, "category")
             for case_dir, case_data in sorted(cases.items()):
-                case_node = CaseTreeNode(case_dir, case_data.get("case_key", case_dir), "case", case_data=case_data)
+                case_node = CaseTreeNode(case_dir, case_dir, "case", case_data=case_data)
                 cat_node.children.append(case_node)
             ts_node.children.append(cat_node)
         result.append(ts_node.to_dict())
@@ -141,8 +121,13 @@ def get_local_case(case_path: str, request: Request) -> dict[str, Any]:
 
     case_file = formal_dir / case_path / "case.json"
     if not case_file.is_file():
-        # Try searching by case_key
+        # Try searching by case directory name or case_key stored in JSON
         for cf in formal_dir.rglob("case.json"):
+            if cf.parent.name == case_path or cf.parent.parent.name == case_path:
+                try:
+                    return json.loads(cf.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
             try:
                 data = json.loads(cf.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):

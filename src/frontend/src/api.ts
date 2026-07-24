@@ -71,10 +71,8 @@ export type LocalCaseTree = {
   case_data?: {
     case_key: string;
     problem_statement: string;
-    category_key: string;
-    category_name: string;
-    test_set_key: string;
-    test_set_name: string;
+    category: string;
+    test_set: string;
     result_count: number;
     claims_count: number;
   };
@@ -119,6 +117,41 @@ export type DirectResultStats = {
 export type AppSettings = {
   results_tmp_path: string;
   results_formal_path: string;
+};
+
+export type EvaluateResponse = {
+  result_id: string;
+  status: string;
+};
+
+export type CaseDraftQuestion = {
+  id: string;
+  field_path: string;
+  code: string;
+  question: string;
+  current_value: unknown;
+  suggested_value: unknown;
+  options: unknown[];
+  required: boolean;
+};
+
+export type CaseDraftView = {
+  id: string;
+  case_key: string;
+  source_filename: string | null;
+  test_set: string;
+  category: string;
+  status: string;
+  questions: CaseDraftQuestion[];
+  summary: {
+    problem_statement: string;
+    claim_count: number;
+    root_cause_claims: number;
+  };
+  resources: Record<string, string>;
+  error: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 };
 
 export type DirectResultClaim = {
@@ -187,11 +220,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const isFormData = init.body instanceof FormData;
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
     headers: {
       Accept: "application/json",
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(isFormData ? {} : init.body ? { "Content-Type": "application/json" } : {}),
       ...init.headers,
     },
   });
@@ -265,4 +299,39 @@ export const analystBenchApi = {
   getLocalCaseTree: () => request<LocalCaseTree[]>("/local-cases/tree"),
   getLocalCase: (casePath: string) =>
     request<Record<string, unknown>>(`/local-cases/${encodeURIComponent(casePath)}`),
+  evaluateLocalCase: (casePath: string, judge: string, files: File[]) =>
+    request<EvaluateResponse>("/evaluate-direct", {
+      method: "POST",
+      body: (() => {
+        const formData = new FormData();
+        formData.append("case_path", casePath);
+        formData.append("judge", judge);
+        for (const file of files) formData.append("reports", file);
+        return formData;
+      })(),
+    }),
+  // ─── Case Draft lifecycle ───
+  generateCaseDraft: (payload: {
+    reference_answer: string;
+    problem_statement?: string;
+    case_key?: string;
+    runner?: string;
+    test_set?: string;
+    category?: string;
+  }) =>
+    request<CaseDraftView>("/case-drafts-generate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getCaseDraft: (draftId: string) =>
+    request<CaseDraftView>(`/case-drafts/${encodeURIComponent(draftId)}`),
+  submitCaseDraftAnswers: (draftId: string, answers: { question_id: string; value: unknown }[]) =>
+    request<CaseDraftView>(`/case-drafts/${encodeURIComponent(draftId)}/answers`, {
+      method: "POST",
+      body: JSON.stringify({ answers }),
+    }),
+  publishCaseDraft: (draftId: string) =>
+    request<CaseDraftView>(`/case-drafts/${encodeURIComponent(draftId)}/publish`, {
+      method: "POST",
+    }),
 };

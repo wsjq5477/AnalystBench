@@ -159,8 +159,8 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/analystbench case-import ./HM_PANIC_SYSMGR-case1.json \
+  --case-key HM_PANIC_SYSMGR-case1 \
   --test-set kernel-log-analysis \
-  --test-set-name "Kernel 日志分析测试集" \
   --category panic
 ```
 
@@ -171,8 +171,8 @@ python3 -m venv .venv
   "status": "published",
   "case_key": "HM_PANIC_SYSMGR-case1",
   "case_version": 1,
-  "test_set": {"key": "kernel-log-analysis", "name": "Kernel 日志分析测试集"},
-  "category": {"key": "panic", "name": "panic"}
+  "test_set": "kernel-log-analysis",
+  "category": "panic"
 }
 ```
 
@@ -182,7 +182,7 @@ python3 -m venv .venv
 .venv/bin/analystbench case-list
 ```
 
-同名文件再次 `case-import` 视为更新：发布新 Revision，保留旧版本。
+相同 `case_key` 再次 `case-import` 视为更新：发布新 Revision，保留旧版本。
 
 ## B4. 准备 AI 报告
 

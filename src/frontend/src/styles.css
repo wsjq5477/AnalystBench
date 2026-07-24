@@ -173,11 +173,24 @@ button { color: inherit; cursor: pointer; }
 
 /* ─── Dialog ─── */
 .dialog-overlay { position: fixed; z-index: 30; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; }
-.dialog-card { width: 420px; padding: 20px; display: grid; gap: 10px; }
+.dialog-card { width: 420px; padding: 20px; display: grid; gap: 10px; max-height: 85vh; overflow-y: auto; }
+.dialog-card-wide { width: 560px; }
 .dialog-card label { display: grid; gap: 5px; color: #c7ccd2; font-size: 12px; }
-.dialog-card input, .dialog-card select { border: 1px solid #303640; border-radius: 6px; outline: 0; background: #0d1014; color: #edf0f3; padding: 8px; font-size: 13px; }
+.dialog-card input, .dialog-card select, .dialog-card textarea { border: 1px solid #303640; border-radius: 6px; outline: 0; background: #0d1014; color: #edf0f3; padding: 8px; font-size: 13px; }
+.dialog-card textarea { line-height: 1.6; font-family: var(--font-ui); }
 .dialog-card select:disabled { color: #68717c; cursor: not-allowed; }
 .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; }
+.file-count { color: #74cc92; font-size: 12px; margin-top: 4px; }
+.case-review-questions { display: grid; gap: 8px; margin: 6px 0; }
+.case-review-q { padding: 10px; border: 1px solid #292e34; border-radius: 6px; background: #14171b; }
+.case-review-q strong { color: #e7e9ec; font-size: 13px; }
+.case-review-q p { margin: 4px 0 0; color: #c4c8ce; font-size: 12px; }
+.case-info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; margin: 12px 0; background: #292e34; border-radius: 6px; }
+.case-info-item { padding: 12px 14px; background: #14171b; display: flex; flex-direction: column; gap: 5px; }
+.case-info-label { color: #858c95; font-size: 11px; }
+.case-info-value { color: #e7e9ec; font-size: 14px; font-weight: 520; }
+.dialog-card input[type="file"] { border: 1px solid #303640; border-radius: 6px; background: #0d1014; color: #edf0f3; padding: 10px; font-size: 13px; cursor: pointer; }
+.dialog-card input[type="file"]::file-selector-button { border: 1px solid #3a4050; border-radius: 5px; background: #1d242c; color: #e4e6e9; padding: 6px 12px; font-size: 12px; cursor: pointer; margin-right: 10px; }
 
 /* ─── Direct Results view ─── */
 .source-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
