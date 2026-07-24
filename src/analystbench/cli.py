@@ -184,9 +184,14 @@ def worker(
 @app.command("db-upgrade")
 def db_upgrade() -> None:
     """Upgrade the configured database to the latest migration."""
+    settings = get_settings()
+    settings.ensure_local_directories()
     root = Path(__file__).resolve().parents[2]
-    config = Config(str(root / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", get_settings().database_url)
+    alembic_ini = root / "alembic.ini"
+    if not alembic_ini.is_file():
+        raise typer.BadParameter(f"找不到 alembic.ini：{alembic_ini}。请在项目根目录运行此命令。")
+    config = Config(str(alembic_ini))
+    config.set_main_option("sqlalchemy.url", settings.database_url)
     command.upgrade(config, "head")
 
 
