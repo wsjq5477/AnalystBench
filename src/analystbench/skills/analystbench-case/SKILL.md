@@ -28,31 +28,15 @@ description: 将一份人工标准答案转换为 AnalystBench Case JSON，或�
 当用户明确要求把某个 Case JSON 加入本地基准库时，在项目根目录执行：
 
 ```bash
-.venv/bin/analystbench db-upgrade
-.venv/bin/analystbench case-draft-create <case.json> \
-  --test-set <测试集key> \
-  --test-set-name <测试集名称> \
-  --category <分类key> \
-  --category-name <分类名称>
+analystbench case-import <case.json> --yes
 ```
 
-读取返回的 `questions`：
+此命令会：
+1. 审核 Case JSON 并自动确认所有审核项
+2. 发布到本地基准库（数据库）
+3. **自动同步 case.json 到 `data/results/{test_set}/{category}/{case_dir}/` 目录**，确保前端 `/local-cases/tree` 能立即看到
 
-- 每次只向用户展示第一项的字段路径、问题、当前值、建议值和可选值。
-- 字段问题必须由用户回答；不得直接编辑原 JSON 冒充用户确认。
-- `approve_case` 是一次整体审核，必须把后端给出的评分项数量和关键根因展示给用户，等用户明确同意。
-
-提交答案：
-
-```bash
-.venv/bin/analystbench case-draft-answer <draft-id> <question-id> '<JSON值>'
-```
-
-重复到状态为 `ready`，再执行：
-
-```bash
-.venv/bin/analystbench case-draft-publish <draft-id>
-```
+如需手动逐项确认，去掉 `--yes`。确认完成后命令同样会自动同步文件。
 
 最终只向用户报告 `case_key`、测试集、分类、版本和发布状态。内部 ID 不要求用户理解或保存。
 

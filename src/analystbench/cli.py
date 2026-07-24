@@ -432,6 +432,21 @@ def case_import(
         else service.publish(item.id)
     )
     view = service.view(published)
+
+    # Sync case.json to the formal results directory so the frontend can see it
+    settings = get_settings()
+    ts_key = view["resources"]["test_set"]["key"]
+    cat_key = view["resources"]["category"]["key"]
+    case_dir = case_path.parent.name  # directory containing the input file
+    formal_case_dir = settings.results_formal_path / ts_key / cat_key / case_dir
+    formal_case_dir.mkdir(parents=True, exist_ok=True)
+    formal_case_file = formal_case_dir / "case.json"
+    if not formal_case_file.exists():
+        shutil.copy2(case_path, formal_case_file)
+        typer.echo(f"已同步到 {formal_case_file}")
+    else:
+        typer.echo(f"文件已存在，跳过同步：{formal_case_file}")
+
     typer.echo(
         json.dumps(
             {
