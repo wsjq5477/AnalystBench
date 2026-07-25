@@ -311,10 +311,14 @@ function toneFromName(name: string): Tone {
 }
 
 function wrapName(name: string): string {
-  // Insert newline before parenthesis for long names: "hmdiagAgent(deepseek-v4-flash)" → "hmdiagAgent\n(deepseek-v4-flash)"
-  const parenIdx = name.indexOf("(");
-  if (parenIdx > 0 && name.length > 14) return name.slice(0, parenIdx) + "\n" + name.slice(parenIdx);
-  return name;
+  // Keep the first word on line 1, everything else on line 2:
+  // "codeAgent (glm5.1)-skill" → "codeAgent\n(glm5.1)-skill"
+  // "hmdiagAgent(deepseek-v4-flash)" → "hmdiagAgent\n(deepseek-v4-flash)"
+  const firstMatch = name.match(/^([a-zA-Z0-9_.]+)(.*)/);
+  if (!firstMatch) return name;
+  const rest = firstMatch[2].trim();
+  if (!rest) return name;
+  return firstMatch[1] + "\n" + rest;
 }
 
 function relationTagClass(relation: string): string {
@@ -881,12 +885,12 @@ onMounted(() => { void loadLocalCaseTree(); void loadDashboardData(); });
 
         <div class="chart-grid">
           <section class="surface chart-panel"><div class="panel-heading"><h2>按问题种类得分对比</h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />真实运行数据</span></div><ChartCanvas kind="bar" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
-          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分对比</h2></div><ChartCanvas kind="bar" :labels="dashboardScoreCards.map(c => c.label)" :series="[{name: '得分', values: dashboardScoreCards.map(c => c.score)}]" :height="276" /></section>
+          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分对比</h2></div><ChartCanvas kind="bar" :labels="['得分']" :series="dashboardScoreCards.map((c, idx) => ({ name: c.label, values: [c.score] }))" :height="276" /></section>
         </div>
 
         <section class="surface matrix-panel">
           <div class="panel-heading"><h2>按问题种类对比 <span>（各分类平均得分）</span></h2><button class="text-button" @click="navigate('results')">查看全部 <IconChevronRight :size="15" /></button></div>
-          <div class="matrix-scroll"><table class="score-matrix"><thead><tr><th>方案</th><th v-for="cat in activeCategories" :key="cat.key">{{ cat.name }}<small v-if="cat.case_count > 1">（{{ cat.case_count }} case）</small></th><th>总平均</th></tr></thead><tbody><tr v-for="row in categoryComparisonRows" :key="row.name" :style="{ '--row-color': row.color }"><th class="row-color-dot"><i></i>{{ row.name }}</th><td v-for="(score, index) in row.categoryScores" :key="`${row.name}-${index}`" class="row-color-text">{{ score.toFixed(1) }}</td><td class="average row-color-text">{{ row.average.toFixed(1) }}</td></tr></tbody></table></div>
+          <div class="matrix-scroll"><table class="score-matrix"><thead><tr><th>方案</th><th v-for="cat in activeCategories" :key="cat.key">{{ cat.name }}<small v-if="cat.case_count > 1">（{{ cat.case_count }} case）</small></th><th>总平均</th></tr></thead><tbody><tr v-for="row in categoryComparisonRows" :key="row.name" :style="{ '--row-color': row.color }"><th class="row-color-dot"><i></i><span v-html="row.name.replace(/\n/g, '<br>')"></span></th><td v-for="(score, index) in row.categoryScores" :key="`${row.name}-${index}`" class="row-color-text">{{ score.toFixed(1) }}</td><td class="average row-color-text">{{ row.average.toFixed(1) }}</td></tr></tbody></table></div>
         </section>
         </template>
       </section>
