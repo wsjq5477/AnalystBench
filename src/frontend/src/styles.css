@@ -15,6 +15,7 @@
 body { margin: 0; min-width: 1180px; min-height: 100vh; background: #08090b; }
 button, input, select, textarea { font: inherit; font-family: var(--font-ui); }
 button { color: inherit; cursor: pointer; }
+.ab-icon { display: inline-block; flex: 0 0 auto; width: 1em; text-align: center; line-height: 1; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 200px minmax(0, 1fr); background: radial-gradient(circle at 78% -10%, #14161a 0, #0a0b0d 32%, #08090b 66%); }
 .sidebar { background: rgba(9, 10, 12, .9); border-right: 1px solid #20242a; padding: 21px 14px 24px; display: flex; flex-direction: column; min-height: 100vh; }
