@@ -5,7 +5,7 @@ export default appOptions;
 </script>
 
 <template>
-  <div class="app-shell">
+  <div :class="['app-shell', `${theme}-theme`]">
     <aside class="sidebar">
       <div class="brand"><span>AnalystBench</span></div>
       <nav class="nav-list" aria-label="主导航">
@@ -23,6 +23,17 @@ export default appOptions;
         <div class="header-actions">
           <label class="date-input"><IconTerminal2 :size="15" /><input type="text" value="2025-06-22 ~ 2025-07-22" aria-label="时间范围" /></label>
           <button class="ghost-button"><IconFileExport :size="16" />导出报告</button>
+          <button
+            class="theme-toggle"
+            type="button"
+            :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
+            :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
+            @click="toggleTheme"
+          >
+            <IconSun v-if="theme === 'dark'" :size="17" />
+            <IconMoon v-else :size="17" />
+            <span>{{ theme === 'dark' ? '浅色' : '深色' }}</span>
+          </button>
           <button class="avatar" aria-label="用户菜单">A</button>
         </div>
       </header>
@@ -48,8 +59,8 @@ export default appOptions;
         </section>
 
         <div class="chart-grid">
-          <section class="surface chart-panel"><div class="panel-heading"><h2>按问题种类得分对比</h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />真实运行数据</span></div><ChartCanvas kind="bar" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
-          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分对比</h2></div><ChartCanvas kind="bar" :labels="['得分']" :series="dashboardScoreCards.map((c, idx) => ({ name: c.label, values: [c.score] }))" :height="276" /></section>
+          <section class="surface chart-panel"><div class="panel-heading"><h2>按问题种类得分对比</h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />真实运行数据</span></div><ChartCanvas kind="bar" :theme="theme" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
+          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分对比</h2></div><ChartCanvas kind="bar" :theme="theme" :labels="['得分']" :series="dashboardScoreCards.map((c) => ({ name: c.label, values: [c.score] }))" :height="276" /></section>
         </div>
 
         <section class="surface matrix-panel">
@@ -127,7 +138,7 @@ export default appOptions;
             </template>
             <template v-else-if="String(selectedResultData.status ?? '') === 'failed'">
               <div class="panel-heading"><h2>评分失败</h2><span>{{ String(selectedResultData.case_key ?? '') }}</span></div>
-              <p class="engine-note" style="color:#e5b96a">{{ String((selectedResultData.error)?.message ?? '未知错误') }}</p>
+              <p class="engine-note tone-warning">{{ String((selectedResultData.error)?.message ?? '未知错误') }}</p>
             </template>
             <template v-else-if="parseSummary(selectedResultData)">
               <div class="panel-heading"><h2>评测结果详情</h2><span>{{ String(selectedResultData.case_key ?? '') }} · {{ String(selectedResultData.id ?? '') }}</span></div>
@@ -476,7 +487,7 @@ export default appOptions;
               <strong>{{ q.field_path }}</strong>
               <p>{{ q.question }}</p>
               <span v-if="q.current_value != null" class="form-note">当前值：{{ JSON.stringify(q.current_value) }}</span>
-              <span v-if="q.suggested_value != null" class="form-note" style="color:#8fa9ca">建议值：{{ JSON.stringify(q.suggested_value) }}</span>
+              <span v-if="q.suggested_value != null" class="form-note tone-info">建议值：{{ JSON.stringify(q.suggested_value) }}</span>
             </div>
           </div>
           <div class="dialog-actions">
@@ -498,7 +509,7 @@ export default appOptions;
           </div>
         </template>
         <template v-else-if="caseDraftView?.status === 'published'">
-          <p class="form-note" style="color:#74cc92">Case 已成功发布到测试集！</p>
+          <p class="form-note tone-success">Case 已成功发布到测试集！</p>
           <div class="case-info-grid">
             <div class="case-info-item"><span class="case-info-label">Case Key</span><span class="case-info-value">{{ caseDraftView.case_key }}</span></div>
             <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ caseDraftView.test_set }}</span></div>
@@ -509,7 +520,7 @@ export default appOptions;
           </div>
         </template>
         <template v-else-if="caseDraftView?.status === 'failed'">
-          <p class="form-note" style="color:#e5b96a">生成失败：{{ caseDraftView.error?.message ?? '未知错误' }}</p>
+          <p class="form-note tone-warning">生成失败：{{ caseDraftView.error?.message ?? '未知错误' }}</p>
           <div class="dialog-actions">
             <button class="ghost-button" @click="showCaseReviewDialog = false">关闭</button>
           </div>

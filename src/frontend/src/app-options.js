@@ -1,17 +1,13 @@
 import ChartCanvas from "./components/ChartCanvas.vue";
 import { analystBenchApi } from "./api";
 import { analystBenchIcons } from "./icons";
-
-const RESULT_COLORS = [
-  "#e6b85f",
-  "#5eaeff",
-  "#b07dd8",
-  "#a4a4a7",
-  "#e6765f",
-  "#5ed4a7",
-  "#c8a45e",
-  "#7eb5d6",
-];
+import {
+  applyThemeToDocument,
+  getInitialTheme,
+  persistTheme,
+  THEME_PALETTES,
+  THEME_STORAGE_KEY,
+} from "./theme";
 
 const VIEW_PATHS = {
   dashboard: "/dashboard",
@@ -28,6 +24,7 @@ export default {
   },
   data() {
     return {
+      theme: getInitialTheme(),
       loading: false,
       toast: "",
       connection: "checking",
@@ -75,10 +72,12 @@ export default {
       dashboardStats: null,
       dashboardLoaded: false,
       selectedTestSet: "",
-      resultColors: RESULT_COLORS,
     };
   },
   computed: {
+    resultColors() {
+      return THEME_PALETTES[this.theme];
+    },
     activeView: {
       get() {
         return this.$store.state.analystbench.activeView;
@@ -189,14 +188,14 @@ export default {
         label: this.wrapName(candidate.name),
         score: candidate.avg_score,
         tone: this.toneFromRank(candidate.name),
-        color: RESULT_COLORS[index % RESULT_COLORS.length],
+        color: this.resultColors[index % this.resultColors.length],
         change: "",
       }));
     },
     categoryComparisonRows() {
       return this.activeCandidates.map((candidate, index) => ({
         name: this.wrapName(candidate.name),
-        color: RESULT_COLORS[index % RESULT_COLORS.length],
+        color: this.resultColors[index % this.resultColors.length],
         categoryScores: this.activeCategories.map((category) => {
           const value = category.candidates.find(
             (item) => item.name === candidate.name,
@@ -231,12 +230,57 @@ export default {
     },
   },
   mounted() {
+    this.applyTheme(this.theme);
+    if (window.matchMedia) {
+      this._themeMediaQuery = window.matchMedia(
+        "(prefers-color-scheme: light)",
+      );
+      this._themeMediaListener = (event) => {
+        let hasSavedPreference = false;
+        try {
+          hasSavedPreference = window.localStorage.getItem(THEME_STORAGE_KEY) != null;
+        } catch {
+          // A blocked storage API means system preference remains authoritative.
+        }
+        if (!hasSavedPreference) {
+          this.theme = event.matches ? "light" : "dark";
+          this.applyTheme(this.theme);
+        }
+      };
+      if (this._themeMediaQuery.addEventListener) {
+        this._themeMediaQuery.addEventListener(
+          "change",
+          this._themeMediaListener,
+        );
+      } else {
+        this._themeMediaQuery.addListener(this._themeMediaListener);
+      }
+    }
     this.loadLocalCaseTree();
     if (this.activeView === "dashboard") this.loadDashboardData();
     if (this.activeView === "results") this.refreshDirectResults();
     if (this.activeView === "settings") this.loadAppSettings();
   },
+  beforeDestroy() {
+    if (!this._themeMediaQuery || !this._themeMediaListener) return;
+    if (this._themeMediaQuery.removeEventListener) {
+      this._themeMediaQuery.removeEventListener(
+        "change",
+        this._themeMediaListener,
+      );
+    } else {
+      this._themeMediaQuery.removeListener(this._themeMediaListener);
+    }
+  },
   methods: {
+    applyTheme(theme) {
+      applyThemeToDocument(theme);
+    },
+    toggleTheme() {
+      this.theme = this.theme === "dark" ? "light" : "dark";
+      this.applyTheme(this.theme);
+      persistTheme(this.theme);
+    },
     showToast(message) {
       this.toast = message;
       window.setTimeout(() => {

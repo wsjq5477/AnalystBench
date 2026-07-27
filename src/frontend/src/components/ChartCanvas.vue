@@ -8,6 +8,7 @@ import {
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import * as echarts from "echarts/core";
+import { CHART_THEMES, THEME_PALETTES } from "../theme";
 
 use([
   BarChart,
@@ -18,21 +19,6 @@ use([
   CanvasRenderer,
 ]);
 
-const colors = {
-  Agent: "#e6b85f",
-  Skill: "#8fa9ca",
-  Native: "#a1a1a4",
-};
-const palette = [
-  "#e6b85f",
-  "#5eaeff",
-  "#b07dd8",
-  "#a4a4a7",
-  "#e6765f",
-  "#5ed4a7",
-  "#c8a45e",
-  "#7eb5d6",
-];
 const chartFont = '"Inter Variable", Inter, "Segoe UI", sans-serif';
 
 export default {
@@ -55,6 +41,11 @@ export default {
       type: Number,
       default: 280,
     },
+    theme: {
+      type: String,
+      default: "dark",
+      validator: (value) => ["dark", "light"].includes(value),
+    },
   },
   data() {
     return {
@@ -67,6 +58,8 @@ export default {
     chartOption() {
       const isSpark = this.kind === "spark";
       const isTrend = this.kind === "trend";
+      const chartTheme = CHART_THEMES[this.theme];
+      const palette = THEME_PALETTES[this.theme];
       return {
         animation: true,
         backgroundColor: "transparent",
@@ -83,11 +76,11 @@ export default {
           ? { show: false }
           : {
               trigger: "axis",
-              backgroundColor: "#12151a",
-              borderColor: "#2b3038",
+              backgroundColor: chartTheme.tooltipBg,
+              borderColor: chartTheme.tooltipBorder,
               borderWidth: 1,
               textStyle: {
-                color: "#f3f4f6",
+                color: chartTheme.tooltipText,
                 fontSize: 12,
                 fontFamily: chartFont,
                 fontWeight: 500,
@@ -103,7 +96,7 @@ export default {
               itemHeight: 2,
               itemGap: 20,
               textStyle: {
-                color: "#d5d8dd",
+                color: chartTheme.legend,
                 fontSize: 13,
                 fontFamily: chartFont,
                 fontWeight: 500,
@@ -114,10 +107,10 @@ export default {
           data: this.labels,
           boundaryGap: this.kind === "bar",
           show: !isSpark,
-          axisLine: { lineStyle: { color: "#2c3037" } },
+          axisLine: { lineStyle: { color: chartTheme.line } },
           axisTick: { show: false },
           axisLabel: {
-            color: "#a3a7af",
+            color: chartTheme.axis,
             fontSize: 11,
             margin: 12,
             fontFamily: chartFont,
@@ -134,17 +127,17 @@ export default {
           show: !isSpark,
           splitNumber: 4,
           axisLabel: {
-            color: "#91969f",
+            color: chartTheme.axis,
             fontSize: 11,
             fontFamily: chartFont,
             fontWeight: 450,
           },
           axisLine: { show: false },
           axisTick: { show: false },
-          splitLine: { lineStyle: { color: "#272b31", type: "dashed" } },
+          splitLine: { lineStyle: { color: chartTheme.split, type: "dashed" } },
         },
         series: this.series.map((item, index) => {
-          const color = colors[item.name] || palette[index % palette.length];
+          const color = palette[index % palette.length];
           return {
             name: item.name,
             type: this.kind === "bar" ? "bar" : "line",
