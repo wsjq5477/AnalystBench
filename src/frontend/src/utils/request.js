@@ -20,9 +20,20 @@ service.interceptors.response.use(
   (error) => {
     const response = error.response;
     const payload = response && response.data;
+    const validationMessage =
+      payload && Array.isArray(payload.detail)
+        ? payload.detail
+            .map((item) => {
+              const field = Array.isArray(item.loc)
+                ? item.loc.filter((part) => part !== "body").join(".")
+                : "";
+              return `${field ? `${field}：` : ""}${item.msg || "参数无效"}`;
+            })
+            .join("；")
+        : payload && payload.detail;
     const message =
       (payload && payload.error && payload.error.message) ||
-      (payload && payload.detail) ||
+      validationMessage ||
       error.message ||
       "请求失败";
     return Promise.reject(

@@ -35,7 +35,9 @@ from analystbench.jobs import JobQueue
 from analystbench.reporting import render_markdown
 from analystbench.services import transaction
 
-METHOD_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
+METHOD_KEY_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9])?$"
+)
 RESERVED_METHOD_KEYS = {"result", "run", "inputs", "artifacts", "_artifacts", "logs"}
 ALLOWED_PLACEHOLDERS = {"input", "input_dir", "workspace", "tool_dir"}
 SHELL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "2>", "2>>"}
@@ -173,7 +175,7 @@ class EvaluationMethodService:
     @staticmethod
     def _validate(
         method_key: str,
-        name: str,
+        name: str | None,
         command_template: str,
         tool_dir: str | None,
         timeout_seconds: int,
@@ -181,13 +183,14 @@ class EvaluationMethodService:
         concurrency_limit: int,
     ) -> list[str]:
         key = method_key.strip()
-        if not METHOD_KEY_RE.fullmatch(key) or key in RESERVED_METHOD_KEYS:
+        if not METHOD_KEY_RE.fullmatch(key) or key.lower() in RESERVED_METHOD_KEYS:
             raise AnalystBenchError(
                 "evaluation_method_invalid",
-                "测评方式 key 只能使用小写字母、数字、-、_，且不能使用保留名。",
+                "测评方式 key 必须以字母或数字开头和结尾，只能包含字母、数字、"
+                "点、括号、-、_，且不能使用保留名。",
             )
-        if not name.strip() or not command_template.strip():
-            raise AnalystBenchError("evaluation_method_invalid", "名称和命令不能为空。")
+        if not (name or "").strip() or not command_template.strip():
+            raise AnalystBenchError("evaluation_method_invalid", "Key 和命令不能为空。")
         try:
             argv = shlex.split(command_template, posix=True)
         except ValueError as exc:
@@ -226,13 +229,15 @@ class EvaluationMethodService:
     def create(
         self,
         method_key: str,
-        name: str,
+        name: str | None,
         command_template: str,
         tool_dir: str | None = None,
         timeout_seconds: int = 1800,
         max_output_bytes: int = 10 * 1024 * 1024,
         concurrency_limit: int = 1,
     ) -> EvaluationMethod:
+        method_key = method_key.strip()
+        name = (name or method_key).strip()
         tool_dir = self._validate_tool_dir(tool_dir)
         self._validate(
             method_key,
@@ -351,6 +356,26 @@ class EvaluationMethodService:
                 )
             item.status = "archived"
         return self.get(method_id)
+
+    def delete(self, method_id: str) -> None:
+        with transaction(self.session_factory) as session:
+            item = session.get(EvaluationMethod, method_id)
+            if item is None:
+                raise AnalystBenchError(
+                    "evaluation_method_not_found", "找不到测评方式。", status_code=404
+                )
+            usage_count = session.scalar(
+                select(func.count(EvaluationSubmissionMethodRun.id)).where(
+                    EvaluationSubmissionMethodRun.method_id == method_id
+                )
+            )
+            if usage_count:
+                raise AnalystBenchError(
+                    "evaluation_method_in_use",
+                    "该测评方式已被历史批次引用，不能删除，只能停用。",
+                    status_code=409,
+                )
+            session.delete(item)
 
     def revise(
         self,

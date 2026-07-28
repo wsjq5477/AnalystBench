@@ -154,7 +154,7 @@ export default appOptions;
               <button v-for="submission in evaluationSubmissions" :key="submission.id" :class="['submission-item', { active: selectedSubmissionId === submission.id }]" @click="selectEvaluationSubmission(submission.id)">
                 <strong>{{ submission.dataset_key }} · {{ submission.timestamp }}</strong>
                 <span :class="submission.status === 'completed' ? 'tag-match' : submission.status === 'failed' || submission.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ submission.status }}</span>
-                <small>{{ submission.case_count }} Case · {{ submission.methods.map((item) => item.name).join('、') }}</small>
+                <small>{{ submission.case_count }} Case · {{ submission.methods.map((item) => item.key).join('、') }}</small>
               </button>
             </div>
             <div class="submission-cases">
@@ -169,7 +169,7 @@ export default appOptions;
                   <strong>{{ caseRun.case_path }}</strong>
                   <small>打分：{{ caseRun.scoring_status }}</small>
                   <small class="method-run-links">
-                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.name }} {{ methodRun.status }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
+                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.key }} {{ methodRun.status }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
                   </small>
                 </div>
                 <span :class="caseRun.status === 'completed' ? 'tag-match' : caseRun.status === 'failed' || caseRun.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ caseRun.status }}</span>
@@ -459,14 +459,14 @@ export default appOptions;
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>测评方式</h2><button class="primary-button" @click="openMethodDialog"><IconPlus :size="16" />新建方式</button></div>
           <p class="form-note">命令在隔离目录执行，仅能看到本次复制的原始日志。标准输出会保存为对应的 Markdown 报告。</p>
-          <div v-if="evaluationMethods.length" class="method-list">
-            <div v-for="method in evaluationMethods" :key="method.id" class="method-row">
-              <div><strong>{{ method.name }} <small>v{{ method.version }}</small></strong><code>{{ method.command_template }}</code><span v-if="method.tool_dir">工具目录：{{ method.tool_dir }}</span></div>
+          <div v-if="visibleEvaluationMethods.length" class="method-list">
+            <div v-for="method in visibleEvaluationMethods" :key="method.id" class="method-row">
+              <div><strong>{{ method.key }} <small>v{{ method.version }}</small></strong><code>{{ method.command_template }}</code><span v-if="method.tool_dir">工具目录：{{ method.tool_dir }}</span></div>
               <span :class="method.status === 'frozen' ? 'tag-match' : method.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ method.status }}</span>
               <span :class="method.probe?.available ? 'tag-match' : 'tag-partial'">{{ method.probe?.available ? '命令可用' : '未检测' }}</span>
               <button v-if="method.status === 'draft'" class="ghost-button" @click="probeEvaluationMethod(method)">检测</button>
               <button v-if="method.status === 'draft'" class="primary-button" :disabled="!method.probe?.available" @click="freezeEvaluationMethod(method)">冻结</button>
-              <button v-if="method.status !== 'archived'" class="tree-delete" title="归档" @click="archiveEvaluationMethod(method)"><IconTrash :size="14" /></button>
+              <button class="tree-delete" title="删除" @click="deleteEvaluationMethod(method)"><IconTrash :size="14" /></button>
             </div>
           </div>
           <div v-else class="empty-state"><IconTerminal2 :size="26" /><p>暂无测评方式</p><span>新建并检测、冻结后，即可在结果页提交测评。</span></div>
@@ -519,7 +519,7 @@ export default appOptions;
             <legend>测评方式</legend>
             <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
               <input v-model="submissionForm.method_ids" type="checkbox" :value="method.id" />
-              <span><strong>{{ method.name }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
+              <span><strong>{{ method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
             </label>
             <p v-if="!frozenEvaluationMethods.length" class="form-note">没有可用方式，请先到设置页新建、检测并冻结。</p>
         </fieldset>
@@ -553,10 +553,8 @@ export default appOptions;
         <div class="panel-heading"><h2>新建测评方式</h2></div>
         <p class="form-note">支持 {input}、{input_dir}、{workspace}、{tool_dir}。命令不经过 Shell，不能使用管道或重定向。</p>
         <label>Key
-          <input v-model="methodForm.key" placeholder="claude" />
-        </label>
-        <label>显示名称
-          <input v-model="methodForm.name" placeholder="Claude" />
+          <span>同时作为列表名称和报告文件名；支持大小写字母、数字、点、括号、-、_</span>
+          <input v-model="methodForm.key" placeholder="codeAgent(glm5.1)-native" />
         </label>
         <label>工具目录（可选）
           <input v-model="methodForm.tool_dir" placeholder="/home/user/evaluation-tools" />

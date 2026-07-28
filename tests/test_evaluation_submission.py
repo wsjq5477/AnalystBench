@@ -205,6 +205,9 @@ def test_submission_requires_logs_and_runs_isolated_command_then_scores(
         assert artifacts.status_code == 200
         assert "系统死锁" in artifacts.json()["stdout"]
         assert artifacts.json()["stderr"] == ""
+        protected = client.delete(f"/api/v1/evaluation-methods/{method_id}")
+        assert protected.status_code == 409
+        assert protected.json()["error"]["code"] == "evaluation_method_in_use"
 
         queued = client.post(
             "/api/v1/evaluation-submissions",
@@ -287,6 +290,38 @@ def test_submission_supports_relative_results_path(
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "case_logs_missing"
+
+
+def test_method_key_is_display_name_and_accepts_safe_filename_characters(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "codeAgent(glm5.1)-native",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        )
+        unsafe = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "../escape",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        )
+        deleted = client.delete(f"/api/v1/evaluation-methods/{response.json()['id']}")
+        remaining = client.get("/api/v1/evaluation-methods").json()
+
+    assert response.status_code == 201
+    assert response.json()["key"] == "codeAgent(glm5.1)-native"
+    assert response.json()["name"] == "codeAgent(glm5.1)-native"
+    assert deleted.status_code == 204
+    assert all(item["id"] != response.json()["id"] for item in remaining)
+    assert unsafe.status_code == 400
+    assert unsafe.json()["error"]["code"] == "evaluation_method_invalid"
 
 
 def test_claude_command_resolves_vscode_extension_binary(

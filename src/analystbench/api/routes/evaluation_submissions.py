@@ -18,7 +18,7 @@ class EvaluationMethodCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str = Field(min_length=1, max_length=100)
-    name: str = Field(min_length=1, max_length=255)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     command_template: str = Field(min_length=1)
     tool_dir: str | None = None
     timeout_seconds: int = Field(default=1800, ge=1, le=7200)
@@ -93,7 +93,7 @@ def submissions(request: Request) -> EvaluationSubmissionService:
 def create_method(payload: EvaluationMethodCreate, request: Request) -> dict[str, Any]:
     item = methods(request).create(
         method_key=payload.key,
-        name=payload.name,
+        name=payload.name or payload.key,
         command_template=payload.command_template,
         tool_dir=payload.tool_dir,
         timeout_seconds=payload.timeout_seconds,
@@ -126,6 +126,14 @@ def freeze_method(method_id: str, request: Request) -> dict[str, Any]:
 @router.post("/evaluation-methods/{method_id}:archive", response_model=EvaluationMethodResponse)
 def archive_method(method_id: str, request: Request) -> dict[str, Any]:
     return EvaluationMethodService.view(methods(request).archive(method_id))
+
+
+@router.delete(
+    "/evaluation-methods/{method_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_method(method_id: str, request: Request) -> None:
+    methods(request).delete(method_id)
 
 
 @router.post("/evaluation-methods/{method_id}:revise", response_model=EvaluationMethodResponse)

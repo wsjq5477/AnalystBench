@@ -166,6 +166,12 @@ export const analystBenchApi = {
       method: "post",
     });
   },
+  deleteEvaluationMethod(methodId) {
+    return request({
+      url: `/evaluation-methods/${methodId}`,
+      method: "delete",
+    });
+  },
   listEvaluationSubmissions() {
     return request({ url: "/evaluation-submissions", method: "get" });
   },

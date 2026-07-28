@@ -75,7 +75,6 @@ export default {
       methodSaving: false,
       methodForm: {
         key: "",
-        name: "",
         tool_dir: "",
         command_template: "",
         timeout_seconds: 1800,
@@ -125,6 +124,9 @@ export default {
     },
     frozenEvaluationMethods() {
       return this.evaluationMethods.filter((item) => item.status === "frozen");
+    },
+    visibleEvaluationMethods() {
+      return this.evaluationMethods.filter((item) => item.status !== "archived");
     },
     selectedSubmission() {
       return this.evaluationSubmissions.find(
@@ -801,7 +803,6 @@ export default {
     openMethodDialog() {
       this.methodForm = {
         key: "",
-        name: "",
         tool_dir: "",
         command_template: "",
         timeout_seconds: 1800,
@@ -812,8 +813,8 @@ export default {
     },
     async createEvaluationMethod() {
       const form = this.methodForm;
-      if (!form.key.trim() || !form.name.trim() || !form.command_template.trim()) {
-        this.showToast("请填写 Key、名称和命令模板");
+      if (!form.key.trim() || !form.command_template.trim()) {
+        this.showToast("请填写 Key 和命令模板");
         return;
       }
       this.methodSaving = true;
@@ -821,7 +822,7 @@ export default {
         const created = await analystBenchApi.createEvaluationMethod({
           ...form,
           key: form.key.trim(),
-          name: form.name.trim(),
+          name: form.key.trim(),
           command_template: form.command_template.trim(),
           tool_dir: form.tool_dir.trim() || null,
         });
@@ -857,14 +858,30 @@ export default {
         this.showToast(error instanceof Error ? error.message : "冻结失败");
       }
     },
-    async archiveEvaluationMethod(method) {
-      if (!window.confirm(`归档测评方式 ${method.name} v${method.version} 吗？`)) return;
+    async deleteEvaluationMethod(method) {
+      if (!window.confirm(`删除测评方式 ${method.key} v${method.version} 吗？`)) return;
       try {
-        await analystBenchApi.archiveEvaluationMethod(method.id);
+        await analystBenchApi.deleteEvaluationMethod(method.id);
         await this.loadEvaluationMethods();
-        this.showToast("测评方式已归档");
+        this.showToast("测评方式已删除");
       } catch (error) {
-        this.showToast(error instanceof Error ? error.message : "归档失败");
+        if (
+          error &&
+          error.code === "evaluation_method_in_use" &&
+          window.confirm(`${error.message}\n\n是否停用并从设置列表隐藏？`)
+        ) {
+          try {
+            await analystBenchApi.archiveEvaluationMethod(method.id);
+            await this.loadEvaluationMethods();
+            this.showToast("测评方式已停用");
+          } catch (archiveError) {
+            this.showToast(
+              archiveError instanceof Error ? archiveError.message : "停用失败",
+            );
+          }
+          return;
+        }
+        this.showToast(error instanceof Error ? error.message : "删除失败");
       }
     },
     async openSubmitEvaluationDialog() {

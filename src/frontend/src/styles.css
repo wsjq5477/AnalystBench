@@ -1017,6 +1017,7 @@ a:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  color: var(--text-secondary);
 }
 .method-card { margin-top: 16px; }
 .method-row {
@@ -1027,8 +1028,16 @@ a:focus-visible,
   border: 1px solid var(--border-light);
   border-radius: 9px;
   background: var(--bg-control);
+  color: var(--text-primary);
 }
 .method-row > div { display: grid; flex: 1; min-width: 0; gap: 4px; }
+.method-row strong,
+.method-picker .check-row strong {
+  color: var(--text-primary);
+}
+.method-row strong small {
+  color: var(--text-muted);
+}
 .method-row code {
   overflow: hidden;
   color: var(--text-secondary);
@@ -1085,6 +1094,7 @@ a:focus-visible,
   padding: 8px;
   border-radius: 7px;
   background: var(--bg-control);
+  color: var(--text-primary);
 }
 .check-row input { width: auto; margin-top: 3px; }
 .check-row span { display: grid; gap: 4px; }
