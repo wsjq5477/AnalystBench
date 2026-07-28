@@ -1,5 +1,7 @@
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 from alembic.config import Config
@@ -91,6 +93,95 @@ def create_case_directory(settings: Settings) -> Path:
         json.dumps(case_payload(), ensure_ascii=False), encoding="utf-8"
     )
     return case_directory
+
+
+def test_worker_executes_method_runs_in_parallel_up_to_method_limit(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    settings.worker_concurrency_limit = 2
+    settings.worker_poll_interval_seconds = 0.02
+    first_case = create_case_directory(settings)
+    second_case = settings.results_formal_path / "kdiag" / "SYSTEM_DEADLOCK" / "chmod_hung_2"
+    second_case.mkdir(parents=True)
+    second_payload = case_payload()
+    second_payload["case"]["case_key"] = "chmod_hung_2"
+    (second_case / "case.json").write_text(
+        json.dumps(second_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    for case_directory in (first_case, second_case):
+        logs = case_directory / "logs"
+        logs.mkdir()
+        (logs / "log.txt").write_text("chmod hung", encoding="utf-8")
+
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    timing_path = tool_directory / "timings.log"
+    (tool_directory / "report.py").write_text(
+        "from pathlib import Path\n"
+        "import time\n"
+        "start = time.monotonic()\n"
+        "time.sleep(0.5)\n"
+        "end = time.monotonic()\n"
+        "timing = Path(__file__).parent / 'timings.log'\n"
+        "with timing.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(f'{start},{end}\\n')\n"
+        "print('问题分类：SYSTEM_DEADLOCK')\n"
+        "print('问题根因：chmod 进程发生系统死锁')\n"
+        "print('证据：chmod hung')\n"
+        "print('结论：chmod 进程长期阻塞')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "parallel-script",
+                "tool_dir": str(tool_directory),
+                "command_template": f"{sys.executable} {{tool_dir}}/report.py {{input}}",
+                "concurrency_limit": 2,
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze")
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": [method["id"]],
+                "judge_runner": "lexical",
+            },
+        ).json()
+
+    worker = LocalWorker(settings)
+    stop = threading.Event()
+    worker_thread = threading.Thread(target=worker.serve, args=(stop,))
+    worker_thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        status = "queued"
+        with TestClient(create_app(settings)) as client:
+            while time.monotonic() < deadline:
+                status = client.get(
+                    f"/api/v1/evaluation-submissions/{submission['id']}"
+                ).json()["status"]
+                if status == "completed":
+                    break
+                time.sleep(0.05)
+        assert status == "completed"
+    finally:
+        stop.set()
+        worker_thread.join(timeout=5)
+        worker.close()
+
+    intervals = [
+        tuple(float(value) for value in line.split(","))
+        for line in timing_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(intervals) == 2
+    assert max(start for start, _ in intervals) < min(end for _, end in intervals)
 
 
 def test_submission_requires_logs_and_runs_isolated_command_then_scores(

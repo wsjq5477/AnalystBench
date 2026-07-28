@@ -2,7 +2,9 @@
 
 import logging
 import os
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -13,6 +15,7 @@ from analystbench.benchmark import BenchmarkService
 from analystbench.case_library import CaseLibraryService
 from analystbench.config import Settings, get_settings
 from analystbench.content_store import ContentStore
+from analystbench.db.models import Job
 from analystbench.db.session import create_database_engine, create_session_factory
 from analystbench.evaluation_schedule import EvaluationScheduleService
 from analystbench.evaluation_submission import (
@@ -52,8 +55,23 @@ class LocalWorker:
 
     def run_once(self) -> bool:
         """Claim and execute one durable job; return false when the queue is idle."""
+        self._check_database()
+        self._scan_schedules()
+        job = self.jobs.claim(
+            self.worker_id,
+            lease_seconds=self.settings.worker_job_lease_seconds,
+        )
+        if job is None:
+            logger.info("worker_idle")
+            return False
+        self._execute_job(job)
+        return True
+
+    def _check_database(self) -> None:
         with self.engine.connect() as connection:
             connection.execute(text("SELECT 1"))
+
+    def _scan_schedules(self) -> None:
         try:
             self.evaluation_schedules.enqueue_due()
         except Exception:
@@ -61,10 +79,16 @@ class LocalWorker:
             # may briefly be locked. Scheduling must not take the worker down or
             # prevent it from draining jobs that are already durable.
             logger.exception("evaluation_schedule_scan_failed")
-        job = self.jobs.claim(self.worker_id)
-        if job is None:
-            logger.info("worker_idle")
-            return False
+
+    def _execute_job(self, job: Job) -> None:
+        lease_stop = threading.Event()
+        lease_thread = threading.Thread(
+            target=self._renew_lease,
+            args=(job.id, lease_stop),
+            name=f"job-lease-{job.id}",
+            daemon=True,
+        )
+        lease_thread.start()
         try:
             payload = self.jobs.payload(job)
             if job.kind == "agent_case_run":
@@ -88,25 +112,72 @@ class LocalWorker:
             else:
                 raise RuntimeError(f"unsupported job kind '{job.kind}'")
         except AgentRunnerError as exc:
-            self.jobs.fail(job.id, f"{exc.code}: {exc}", retryable=False)
+            self.jobs.fail(
+                job.id,
+                f"{exc.code}: {exc}",
+                retryable=False,
+                worker_id=self.worker_id,
+            )
             logger.warning("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         except EvaluationCommandError as exc:
-            self.jobs.fail(job.id, f"{exc.code}: {exc}", retryable=False)
+            self.jobs.fail(
+                job.id,
+                f"{exc.code}: {exc}",
+                retryable=False,
+                worker_id=self.worker_id,
+            )
             logger.warning("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         except Exception as exc:
-            self.jobs.fail(job.id, str(exc), retryable=True)
+            self.jobs.fail(
+                job.id,
+                str(exc),
+                retryable=True,
+                worker_id=self.worker_id,
+            )
             logger.exception("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         else:
-            self.jobs.complete(job.id)
+            self.jobs.complete(job.id, worker_id=self.worker_id)
             logger.info("job_succeeded", extra={"job_id": job.id, "attempt": job.attempts})
-        return True
+        finally:
+            lease_stop.set()
+            lease_thread.join()
 
-    def serve(self) -> None:
+    def _renew_lease(self, job_id: str, stop: threading.Event) -> None:
+        lease_seconds = self.settings.worker_job_lease_seconds
+        interval = max(1.0, lease_seconds / 3)
+        while not stop.wait(interval):
+            if not self.jobs.renew(job_id, self.worker_id, lease_seconds):
+                logger.warning("job_lease_lost", extra={"job_id": job_id})
+                return
+
+    def serve(self, stop: threading.Event | None = None) -> None:
+        stop = stop or threading.Event()
+        futures: set[Future[None]] = set()
         try:
-            while True:
-                processed = self.run_once()
-                if not processed:
-                    time.sleep(self.settings.worker_poll_interval_seconds)
+            with ThreadPoolExecutor(
+                max_workers=self.settings.worker_concurrency_limit,
+                thread_name_prefix="analystbench-job",
+            ) as executor:
+                while not stop.is_set():
+                    self._check_database()
+                    self._scan_schedules()
+                    futures = {future for future in futures if not future.done()}
+                    while len(futures) < self.settings.worker_concurrency_limit:
+                        job = self.jobs.claim(
+                            self.worker_id,
+                            lease_seconds=self.settings.worker_job_lease_seconds,
+                        )
+                        if job is None:
+                            break
+                        futures.add(executor.submit(self._execute_job, job))
+                    if futures:
+                        wait(
+                            futures,
+                            timeout=self.settings.worker_poll_interval_seconds,
+                            return_when=FIRST_COMPLETED,
+                        )
+                    else:
+                        time.sleep(self.settings.worker_poll_interval_seconds)
         finally:
             self.engine.dispose()
 

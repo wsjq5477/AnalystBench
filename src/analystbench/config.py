@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     service_startup_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     log_level: str = "INFO"
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
+    worker_concurrency_limit: int = Field(default=32, ge=1, le=32)
+    worker_job_lease_seconds: int = Field(default=120, ge=3, le=3600)
 
     def ensure_local_directories(self) -> None:
         """Create only configured local directories needed by this process."""
