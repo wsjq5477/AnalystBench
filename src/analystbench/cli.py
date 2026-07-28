@@ -1,9 +1,12 @@
 """AnalystBench command line interface."""
 
 import json
+import logging
 import shutil
 import sqlite3
+import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -35,11 +38,21 @@ from analystbench.errors import AnalystBenchError
 from analystbench.eval_spec import EvalSpecService
 from analystbench.evaluation_session import EvaluationSessionService
 from analystbench.reporting import render_markdown
+from analystbench.service_runtime import (
+    read_service_record,
+    remove_service_record,
+    service_is_running,
+    start_detached_service,
+    stop_detached_service,
+)
 from analystbench.services import CatalogService, NotFoundError
 from analystbench.suites import list_suites
 from analystbench.worker import LocalWorker
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
+service_app = typer.Typer(no_args_is_help=True, help="Manage the detached local service.")
+app.add_typer(service_app, name="service")
+logger = logging.getLogger(__name__)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -181,9 +194,7 @@ def worker(
         local_worker.close()
 
 
-@app.command("db-upgrade")
-def db_upgrade() -> None:
-    """Upgrade the configured database to the latest migration."""
+def _upgrade_database() -> None:
     settings = get_settings()
     settings.ensure_local_directories()
     root = Path(__file__).resolve().parents[2]
@@ -193,6 +204,113 @@ def db_upgrade() -> None:
     config = Config(str(alembic_ini))
     config.set_main_option("sqlalchemy.url", settings.database_url)
     command.upgrade(config, "head")
+
+
+@app.command("db-upgrade")
+def db_upgrade() -> None:
+    """Upgrade the configured database to the latest migration."""
+    _upgrade_database()
+
+
+def _run_combined_service(host: str, port: int) -> None:
+    worker_process = subprocess.Popen(
+        [sys.executable, "-m", "analystbench.cli", "worker"],
+        cwd=str(Path.cwd()),
+    )
+    server = uvicorn.Server(uvicorn.Config(create_app(), host=host, port=port))
+    shutting_down = threading.Event()
+
+    def watch_worker() -> None:
+        return_code = worker_process.wait()
+        if not shutting_down.is_set() and not server.should_exit:
+            logger.error("worker_stopped", extra={"return_code": return_code})
+            server.should_exit = True
+
+    monitor = threading.Thread(target=watch_worker, name="worker-monitor", daemon=True)
+    monitor.start()
+    try:
+        server.run()
+    finally:
+        shutting_down.set()
+        if worker_process.poll() is None:
+            worker_process.terminate()
+            try:
+                worker_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                worker_process.kill()
+                worker_process.wait()
+
+
+@app.command()
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        help="Run in the background and write output to the configured service log.",
+    ),
+    no_db_upgrade: bool = typer.Option(False, "--no-db-upgrade", hidden=True),
+    service_token: str | None = typer.Option(None, "--service-token", hidden=True),
+) -> None:
+    """Upgrade the database and run the API together with the Local Worker."""
+    settings = get_settings()
+    if detach:
+        if no_db_upgrade or service_token is not None:
+            raise typer.BadParameter("后台服务内部参数不能与 --detach 一起使用")
+        _upgrade_database()
+        try:
+            record = start_detached_service(settings, host, port)
+        except RuntimeError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        typer.echo(f"AnalystBench 已在后台启动（PID {record.pid}）")
+        typer.echo(f"API：http://{record.host}:{record.port}")
+        typer.echo(f"日志：{record.log_path}")
+        return
+
+    if not no_db_upgrade:
+        _upgrade_database()
+    try:
+        _run_combined_service(host, port)
+    finally:
+        if service_token is not None:
+            remove_service_record(settings, service_token)
+
+
+@service_app.command("status")
+def service_status() -> None:
+    """Show whether the detached API and Worker service is running."""
+    settings = get_settings()
+    record = read_service_record(settings)
+    if record is None:
+        typer.echo("AnalystBench 后台服务未运行")
+        return
+    if not service_is_running(record):
+        remove_service_record(settings)
+        typer.echo("AnalystBench 后台服务未运行（已清理过期 PID 记录）")
+        return
+    typer.echo(f"AnalystBench 后台服务运行中（PID {record.pid}）")
+    typer.echo(f"API：http://{record.host}:{record.port}")
+    typer.echo(f"启动时间：{record.started_at}")
+    typer.echo(f"日志：{record.log_path}")
+
+
+@service_app.command("stop")
+def service_stop() -> None:
+    """Stop the detached API and Worker service."""
+    settings = get_settings()
+    try:
+        record = stop_detached_service(settings)
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"AnalystBench 后台服务已停止（PID {record.pid}）")
+
+
+@service_app.command("logs")
+def service_logs() -> None:
+    """Print the detached service log path."""
+    settings = get_settings()
+    typer.echo(str(settings.service_log_path.resolve()))
 
 
 @app.command("dataset-export")

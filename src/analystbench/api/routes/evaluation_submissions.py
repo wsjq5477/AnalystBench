@@ -129,12 +129,9 @@ def archive_method(method_id: str, request: Request) -> dict[str, Any]:
     return EvaluationMethodService.view(methods(request).archive(method_id))
 
 
-@router.delete(
-    "/evaluation-methods/{method_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-def delete_method(method_id: str, request: Request) -> None:
-    methods(request).delete(method_id)
+@router.delete("/evaluation-methods/{method_id}")
+def delete_method(method_id: str, request: Request) -> dict[str, int]:
+    return methods(request).delete(method_id)
 
 
 @router.post("/evaluation-methods/{method_id}:revise", response_model=EvaluationMethodResponse)

@@ -2,11 +2,31 @@
 
 ## 本地部署
 
-执行 `analystbench db-upgrade`，然后在两个独立终端分别启动 `analystbench api` 和 `analystbench worker`。API 与 Worker 使用同一份已配置的本地 SQLite 数据库和 Content Store 路径。
+执行 `analystbench serve` 会先运行 Alembic 数据库升级，再启动 API 和独立
+Local Worker 子进程。API 与 Worker 使用同一份已配置的本地 SQLite 数据库和
+Content Store 路径。任一步骤启动失败时，组合服务退出。
+
+无需保留终端窗口时执行：
+
+```bash
+analystbench serve --detach
+analystbench service status
+analystbench service logs
+analystbench service stop
+```
+
+后台服务默认将标准输出和错误输出追加到
+`data/logs/analystbench.log`，PID 记录位于 `data/run/analystbench.pid`。
+后台启动会拒绝重复实例；停止命令同时终止 API 与 Worker。原有
+`analystbench db-upgrade`、`analystbench api` 和 `analystbench worker`
+仍用于故障排查及拆分部署。
 
 ## 备份与恢复
 
-复制 SQLite 数据库和整个 Content Store 前，先停止 API 与 Worker。恢复时必须将两者恢复到匹配的路径，执行 `analystbench db-upgrade` 后再重启服务。数据库引用不可变的 SHA-256 内容块，只恢复其中一侧会导致数据无效。
+复制 SQLite 数据库和整个 Content Store 前，先执行
+`analystbench service stop`（拆分部署时分别停止 API 与 Worker）。恢复时必须
+将两者恢复到匹配的路径，再使用 `analystbench serve` 启动；该命令会先执行
+数据库升级。数据库引用不可变的 SHA-256 内容块，只恢复其中一侧会导致数据无效。
 
 ## 安全与隐私
 

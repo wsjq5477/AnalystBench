@@ -204,6 +204,21 @@ def test_run_now_creates_normal_submission_and_preserves_next_run(
         )
     timestamp = runs[0]["submission_timestamp"]
     assert (case_directory / "runs" / timestamp / "result.json").is_file()
+    with TestClient(create_app(settings)) as client:
+        deleted = client.delete(
+            f"/api/v1/evaluation-methods/{method['id']}"
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["submissions_deleted"] == 1
+        assert deleted.json()["schedule_runs_deleted"] == 1
+        assert deleted.json()["schedules_deleted"] == 1
+        assert (
+            client.get(
+                f"/api/v1/evaluation-schedules/{schedule['id']}"
+            ).status_code
+            == 404
+        )
+    assert not (case_directory / "runs" / timestamp).exists()
 
 
 def test_due_scan_backfills_only_latest_occurrence(tmp_path: Path) -> None:

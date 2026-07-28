@@ -74,6 +74,7 @@ export default {
       methodArtifactView: null,
       showMethodDialog: false,
       methodSaving: false,
+      editingMethodId: "",
       methodForm: {
         key: "",
         tool_dir: "",
@@ -832,15 +833,25 @@ export default {
         this.connection = "offline";
       }
     },
-    openMethodDialog() {
-      this.methodForm = {
-        key: "",
-        tool_dir: "",
-        command_template: "",
-        timeout_seconds: 1800,
-        max_output_bytes: 10485760,
-        concurrency_limit: 1,
-      };
+    openMethodDialog(method = null) {
+      this.editingMethodId = method ? method.id : "";
+      this.methodForm = method
+        ? {
+            key: method.key,
+            tool_dir: method.tool_dir || "",
+            command_template: method.command_template,
+            timeout_seconds: method.timeout_seconds,
+            max_output_bytes: method.max_output_bytes,
+            concurrency_limit: method.concurrency_limit,
+          }
+        : {
+            key: "",
+            tool_dir: "",
+            command_template: "",
+            timeout_seconds: 1800,
+            max_output_bytes: 10485760,
+            concurrency_limit: 1,
+          };
       this.showMethodDialog = true;
     },
     async createEvaluationMethod() {
@@ -851,19 +862,35 @@ export default {
       }
       this.methodSaving = true;
       try {
-        const created = await analystBenchApi.createEvaluationMethod({
-          ...form,
-          key: form.key.trim(),
+        const shared = {
           name: form.key.trim(),
           command_template: form.command_template.trim(),
-          tool_dir: form.tool_dir.trim() || null,
-        });
-        await analystBenchApi.probeEvaluationMethod(created.id);
+          tool_dir: form.tool_dir.trim(),
+          timeout_seconds: form.timeout_seconds,
+          max_output_bytes: form.max_output_bytes,
+          concurrency_limit: form.concurrency_limit,
+        };
+        const created = this.editingMethodId
+          ? await analystBenchApi.reviseEvaluationMethod(
+              this.editingMethodId,
+              shared,
+            )
+          : await analystBenchApi.createEvaluationMethod({
+              ...shared,
+              key: form.key.trim(),
+            });
+        const probed = await analystBenchApi.probeEvaluationMethod(created.id);
         await this.loadEvaluationMethods();
         this.showMethodDialog = false;
-        this.showToast("测评方式已创建并完成命令检测，请确认后冻结");
+        this.showToast(
+          `${this.editingMethodId ? `新版本 v${created.version} 已创建` : "测评方式已创建"}，${
+            probed.probe && probed.probe.available
+              ? "检测成功，请确认后冻结"
+              : "命令不可用，请修改后重新检测"
+          }`,
+        );
       } catch (error) {
-        this.showToast(error instanceof Error ? error.message : "创建测评方式失败");
+        this.showToast(error instanceof Error ? error.message : "保存测评方式失败");
       } finally {
         this.methodSaving = false;
       }
@@ -891,28 +918,28 @@ export default {
       }
     },
     async deleteEvaluationMethod(method) {
-      if (!window.confirm(`删除测评方式 ${method.key} v${method.version} 吗？`)) return;
+      if (
+        !window.confirm(
+          `彻底删除测评方式 ${method.key} v${method.version} 吗？\n\n` +
+            "所有引用该版本的测评批次、正式结果目录和定时执行历史都会一并删除；" +
+            "包含其他测评方式的同一批次也会整体删除。此操作不可恢复。",
+        )
+      ) {
+        return;
+      }
       try {
-        await analystBenchApi.deleteEvaluationMethod(method.id);
-        await this.loadEvaluationMethods();
-        this.showToast("测评方式已删除");
+        const result = await analystBenchApi.deleteEvaluationMethod(method.id);
+        await Promise.all([
+          this.loadEvaluationMethods(),
+          this.loadEvaluationSubmissions(),
+          this.loadEvaluationSchedules(),
+          this.refreshDirectResults(),
+        ]);
+        this.showToast(
+          `测评方式已删除，同时清理 ${result.submissions_deleted || 0} 个批次、` +
+            `${result.local_directories_deleted || 0} 个本地结果目录`,
+        );
       } catch (error) {
-        if (
-          error &&
-          error.code === "evaluation_method_in_use" &&
-          window.confirm(`${error.message}\n\n是否停用并从设置列表隐藏？`)
-        ) {
-          try {
-            await analystBenchApi.archiveEvaluationMethod(method.id);
-            await this.loadEvaluationMethods();
-            this.showToast("测评方式已停用");
-          } catch (archiveError) {
-            this.showToast(
-              archiveError instanceof Error ? archiveError.message : "停用失败",
-            );
-          }
-          return;
-        }
         this.showToast(error instanceof Error ? error.message : "删除失败");
       }
     },

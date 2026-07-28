@@ -490,6 +490,7 @@ export default appOptions;
               <span :class="method.probe?.available ? 'tag-match' : 'tag-partial'">{{ method.probe?.available ? '命令可用' : '未检测' }}</span>
               <button v-if="method.status === 'draft'" class="ghost-button" @click="probeEvaluationMethod(method)">检测</button>
               <button v-if="method.status === 'draft'" class="primary-button" :disabled="!method.probe?.available" @click="freezeEvaluationMethod(method)">冻结</button>
+              <button class="ghost-button" @click="openMethodDialog(method)">修改</button>
               <button class="tree-delete" title="删除" @click="deleteEvaluationMethod(method)"><IconTrash :size="14" /></button>
             </div>
           </div>
@@ -574,11 +575,14 @@ export default appOptions;
     <!-- Evaluation method dialog -->
     <div v-if="showMethodDialog" class="dialog-overlay" @click.self="showMethodDialog = false">
       <section class="surface dialog-card dialog-card-wide">
-        <div class="panel-heading"><h2>新建测评方式</h2></div>
-        <p class="form-note">支持 {input}、{input_dir}、{workspace}、{tool_dir}。命令不经过 Shell，不能使用管道或重定向。</p>
+        <div class="panel-heading"><h2>{{ editingMethodId ? '修改测评方式' : '新建测评方式' }}</h2></div>
+        <p class="form-note">
+          <template v-if="editingMethodId">修改会创建一个新的草稿版本，旧版本继续可用；新版本检测成功并冻结后即可用于测评。</template>
+          <template v-else>支持 {input}、{input_dir}、{workspace}、{tool_dir}。命令不经过 Shell，不能使用管道或重定向。</template>
+        </p>
         <label>Key
           <span>同时作为列表名称和报告文件名；支持大小写字母、数字、点、括号、-、_</span>
-          <input v-model="methodForm.key" placeholder="codeAgent(glm5.1)-native" />
+          <input v-model="methodForm.key" :disabled="Boolean(editingMethodId)" placeholder="codeAgent(glm5.1)-native" />
         </label>
         <label>工具目录（可选）
           <input v-model="methodForm.tool_dir" placeholder="/home/user/evaluation-tools" />
@@ -593,7 +597,7 @@ export default appOptions;
         </div>
         <div class="dialog-actions">
           <button class="ghost-button" @click="showMethodDialog = false">取消</button>
-          <button class="primary-button" :disabled="methodSaving" @click="createEvaluationMethod"><IconPlus :size="16" />{{ methodSaving ? '创建中…' : '创建并检测' }}</button>
+          <button class="primary-button" :disabled="methodSaving" @click="createEvaluationMethod"><IconPlus :size="16" />{{ methodSaving ? '保存中…' : editingMethodId ? '保存为新版本并检测' : '创建并检测' }}</button>
         </div>
       </section>
     </div>

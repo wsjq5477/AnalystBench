@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -24,9 +25,12 @@ from analystbench.config import Settings
 from analystbench.content_store import canonical_json, content_hash
 from analystbench.db.models import (
     EvaluationMethod,
+    EvaluationSchedule,
+    EvaluationScheduleRun,
     EvaluationSubmission,
     EvaluationSubmissionCaseRun,
     EvaluationSubmissionMethodRun,
+    Job,
 )
 from analystbench.direct_evaluation import evaluate_direct
 from analystbench.errors import AnalystBenchError
@@ -357,25 +361,272 @@ class EvaluationMethodService:
             item.status = "archived"
         return self.get(method_id)
 
-    def delete(self, method_id: str) -> None:
-        with transaction(self.session_factory) as session:
-            item = session.get(EvaluationMethod, method_id)
-            if item is None:
-                raise AnalystBenchError(
-                    "evaluation_method_not_found", "找不到测评方式。", status_code=404
-                )
-            usage_count = session.scalar(
-                select(func.count(EvaluationSubmissionMethodRun.id)).where(
-                    EvaluationSubmissionMethodRun.method_id == method_id
-                )
+    def _safe_run_directory(self, value: str) -> Path:
+        root = self.settings.results_formal_path.resolve()
+        configured = Path(value)
+        if configured.is_symlink():
+            raise AnalystBenchError(
+                "evaluation_method_delete_path_invalid",
+                "历史结果目录是符号链接，已拒绝自动删除。",
+                status_code=409,
             )
-            if usage_count:
-                raise AnalystBenchError(
-                    "evaluation_method_in_use",
-                    "该测评方式已被历史批次引用，不能删除，只能停用。",
-                    status_code=409,
+        resolved = configured.resolve()
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError as exc:
+            raise AnalystBenchError(
+                "evaluation_method_delete_path_invalid",
+                "历史结果目录不在正式结果根目录内，已拒绝自动删除。",
+                status_code=409,
+            ) from exc
+        if len(relative.parts) != 5 or relative.parts[-2] != "runs":
+            raise AnalystBenchError(
+                "evaluation_method_delete_path_invalid",
+                "历史结果目录结构异常，已拒绝自动删除。",
+                status_code=409,
+            )
+        return resolved
+
+    @staticmethod
+    def _job_references(payload_json: str, identifiers: set[str]) -> bool:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except json.JSONDecodeError:
+            return False
+        return isinstance(payload, dict) and any(
+            isinstance(value, str) and value in identifiers
+            for value in payload.values()
+        )
+
+    def delete(self, method_id: str) -> dict[str, int]:
+        quarantined: list[tuple[Path, Path]] = []
+        workspace_roots: list[Path] = []
+        committed = False
+        summary = {
+            "submissions_deleted": 0,
+            "schedule_runs_deleted": 0,
+            "schedules_deleted": 0,
+            "local_directories_deleted": 0,
+        }
+        try:
+            with transaction(self.session_factory) as session:
+                item = session.get(EvaluationMethod, method_id)
+                if item is None:
+                    raise AnalystBenchError(
+                        "evaluation_method_not_found",
+                        "找不到测评方式。",
+                        status_code=404,
+                    )
+
+                submission_ids = set(
+                    session.scalars(
+                        select(EvaluationSubmissionCaseRun.submission_id)
+                        .join(
+                            EvaluationSubmissionMethodRun,
+                            EvaluationSubmissionMethodRun.case_run_id
+                            == EvaluationSubmissionCaseRun.id,
+                        )
+                        .where(EvaluationSubmissionMethodRun.method_id == method_id)
+                    )
                 )
-            session.delete(item)
+
+                schedules_to_delete: set[str] = set()
+                for schedule in session.scalars(select(EvaluationSchedule)):
+                    configured_method_ids = json.loads(
+                        schedule.method_ids_json or "[]"
+                    )
+                    if method_id not in configured_method_ids:
+                        continue
+                    remaining_method_ids = [
+                        value
+                        for value in configured_method_ids
+                        if value != method_id
+                    ]
+                    if remaining_method_ids:
+                        schedule.method_ids_json = canonical_json(
+                            remaining_method_ids
+                        )
+                    else:
+                        schedules_to_delete.add(schedule.id)
+
+                schedule_run_ids: set[str] = set()
+                schedule_runs = list(
+                    session.scalars(select(EvaluationScheduleRun))
+                )
+                for schedule_run in schedule_runs:
+                    try:
+                        snapshot = json.loads(
+                            schedule_run.config_snapshot_json or "{}"
+                        )
+                    except json.JSONDecodeError:
+                        snapshot = {}
+                    snapshot_method_ids = (
+                        snapshot.get("method_ids", [])
+                        if isinstance(snapshot, dict)
+                        else []
+                    )
+                    if (
+                        method_id in snapshot_method_ids
+                        or schedule_run.schedule_id in schedules_to_delete
+                    ):
+                        schedule_run_ids.add(schedule_run.id)
+
+                if schedule_run_ids:
+                    submission_ids.update(
+                        session.scalars(
+                            select(EvaluationSubmission.id).where(
+                                EvaluationSubmission.schedule_run_id.in_(
+                                    schedule_run_ids
+                                )
+                            )
+                        )
+                    )
+
+                if submission_ids:
+                    linked_schedule_run_ids = set(
+                        value
+                        for value in session.scalars(
+                            select(EvaluationSubmission.schedule_run_id).where(
+                                EvaluationSubmission.id.in_(submission_ids)
+                            )
+                        )
+                        if value
+                    )
+                    schedule_run_ids.update(linked_schedule_run_ids)
+
+                case_runs = (
+                    list(
+                        session.scalars(
+                            select(EvaluationSubmissionCaseRun).where(
+                                EvaluationSubmissionCaseRun.submission_id.in_(
+                                    submission_ids
+                                )
+                            )
+                        )
+                    )
+                    if submission_ids
+                    else []
+                )
+                case_run_ids = {case_run.id for case_run in case_runs}
+                method_runs = (
+                    list(
+                        session.scalars(
+                            select(EvaluationSubmissionMethodRun).where(
+                                EvaluationSubmissionMethodRun.case_run_id.in_(
+                                    case_run_ids
+                                )
+                            )
+                        )
+                    )
+                    if case_run_ids
+                    else []
+                )
+                method_run_ids = {method_run.id for method_run in method_runs}
+                if any(
+                    method_run.status in {"running", "cancelling"}
+                    for method_run in method_runs
+                ):
+                    raise AnalystBenchError(
+                        "evaluation_method_delete_running",
+                        "该测评方式仍有命令正在运行，请先取消批次并等待任务停止。",
+                        status_code=409,
+                    )
+
+                job_identifiers = (
+                    case_run_ids | method_run_ids | schedule_run_ids
+                )
+                related_jobs = [
+                    job
+                    for job in session.scalars(select(Job))
+                    if self._job_references(job.payload_json, job_identifiers)
+                ]
+                if any(job.status == "running" for job in related_jobs):
+                    raise AnalystBenchError(
+                        "evaluation_method_delete_running",
+                        "该测评方式仍有后台任务正在运行，请稍后重试删除。",
+                        status_code=409,
+                    )
+
+                run_directories = {
+                    self._safe_run_directory(case_run.run_directory)
+                    for case_run in case_runs
+                }
+                for run_directory in sorted(
+                    run_directories, key=lambda value: value.as_posix()
+                ):
+                    if not run_directory.exists():
+                        continue
+                    if not run_directory.is_dir():
+                        raise AnalystBenchError(
+                            "evaluation_method_delete_path_invalid",
+                            "历史结果路径不是目录，已拒绝自动删除。",
+                            status_code=409,
+                        )
+                    quarantine = run_directory.with_name(
+                        f".{run_directory.name}.delete-{uuid4().hex}"
+                    )
+                    run_directory.rename(quarantine)
+                    quarantined.append((run_directory, quarantine))
+
+                for submission_id in submission_ids:
+                    workspace_roots.append(
+                        self.settings.workspace_root_path
+                        / "evaluation"
+                        / submission_id
+                    )
+                for job in related_jobs:
+                    session.delete(job)
+                if method_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmissionMethodRun).where(
+                            EvaluationSubmissionMethodRun.id.in_(method_run_ids)
+                        )
+                    )
+                if case_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmissionCaseRun).where(
+                            EvaluationSubmissionCaseRun.id.in_(case_run_ids)
+                        )
+                    )
+                if submission_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmission).where(
+                            EvaluationSubmission.id.in_(submission_ids)
+                        )
+                    )
+                if schedule_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationScheduleRun).where(
+                            EvaluationScheduleRun.id.in_(schedule_run_ids)
+                        )
+                    )
+                if schedules_to_delete:
+                    session.execute(
+                        sql_delete(EvaluationSchedule).where(
+                            EvaluationSchedule.id.in_(schedules_to_delete)
+                        )
+                    )
+                session.delete(item)
+
+                summary["submissions_deleted"] = len(submission_ids)
+                summary["schedule_runs_deleted"] = len(schedule_run_ids)
+                summary["schedules_deleted"] = len(schedules_to_delete)
+
+            committed = True
+            for _original, quarantine in quarantined:
+                shutil.rmtree(quarantine, ignore_errors=True)
+                if not quarantine.exists():
+                    summary["local_directories_deleted"] += 1
+            for workspace_root in workspace_roots:
+                if workspace_root.is_dir():
+                    shutil.rmtree(workspace_root, ignore_errors=True)
+            return summary
+        except Exception:
+            if not committed:
+                for original, quarantine in reversed(quarantined):
+                    if quarantine.exists() and not original.exists():
+                        quarantine.rename(original)
+            raise
 
     def revise(
         self,

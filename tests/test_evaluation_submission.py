@@ -205,10 +205,6 @@ def test_submission_requires_logs_and_runs_isolated_command_then_scores(
         assert artifacts.status_code == 200
         assert "系统死锁" in artifacts.json()["stdout"]
         assert artifacts.json()["stderr"] == ""
-        protected = client.delete(f"/api/v1/evaluation-methods/{method_id}")
-        assert protected.status_code == 409
-        assert protected.json()["error"]["code"] == "evaluation_method_in_use"
-
         queued = client.post(
             "/api/v1/evaluation-submissions",
             json={
@@ -227,6 +223,107 @@ def test_submission_requires_logs_and_runs_isolated_command_then_scores(
         assert cancelled_cases[0]["methods"][0]["status"] == "cancelled"
         cancelled_run = case_directory / "runs" / queued["timestamp"]
         assert not (cancelled_run / "script.md").exists()
+        deleted = client.delete(f"/api/v1/evaluation-methods/{method_id}")
+        assert deleted.status_code == 200
+        assert deleted.json()["submissions_deleted"] == 2
+        assert deleted.json()["local_directories_deleted"] == 2
+        assert client.get(f"/api/v1/evaluation-methods/{method_id}").status_code == 404
+        assert (
+            client.get(f"/api/v1/evaluation-submissions/{submission_id}").status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/v1/evaluation-submissions/{queued['id']}").status_code
+            == 404
+        )
+        assert not run_directory.exists()
+        assert not cancelled_run.exists()
+        assert all(
+            item["timestamp"] not in {timestamp, queued["timestamp"]}
+            for item in client.get("/api/v1/direct-results").json()
+        )
+
+
+def test_frozen_method_can_be_revised_as_new_draft(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "script",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
+        frozen = client.post(
+            f"/api/v1/evaluation-methods/{method['id']}:freeze"
+        ).json()
+        revised = client.post(
+            f"/api/v1/evaluation-methods/{frozen['id']}:revise",
+            json={
+                "command_template": f'{sys.executable} -c "print(2)"',
+                "concurrency_limit": 3,
+            },
+        )
+
+    assert revised.status_code == 200
+    assert revised.json()["version"] == 2
+    assert revised.json()["status"] == "draft"
+    assert revised.json()["concurrency_limit"] == 3
+    assert "print(2)" in revised.json()["command_template"]
+
+
+def test_deleting_one_method_removes_shared_submission_but_keeps_other_method(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs = case_directory / "logs"
+    logs.mkdir()
+    (logs / "log.txt").write_text("chmod hung", encoding="utf-8")
+    with TestClient(create_app(settings)) as client:
+        methods = []
+        for key in ("one", "two"):
+            method = client.post(
+                "/api/v1/evaluation-methods",
+                json={
+                    "key": key,
+                    "command_template": f'{sys.executable} -c "print(1)"',
+                },
+            ).json()
+            client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
+            methods.append(
+                client.post(
+                    f"/api/v1/evaluation-methods/{method['id']}:freeze"
+                ).json()
+            )
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": [item["id"] for item in methods],
+                "judge_runner": "lexical",
+            },
+        ).json()
+        run_directory = case_directory / "runs" / submission["timestamp"]
+
+        deleted = client.delete(
+            f"/api/v1/evaluation-methods/{methods[0]['id']}"
+        )
+
+        assert deleted.status_code == 200
+        assert deleted.json()["submissions_deleted"] == 1
+        assert not run_directory.exists()
+        assert (
+            client.get(
+                f"/api/v1/evaluation-submissions/{submission['id']}"
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/v1/evaluation-methods/{methods[1]['id']}").status_code
+            == 200
+        )
 
 
 def test_multiple_logs_require_primary_selection(tmp_path: Path) -> None:
@@ -318,7 +415,8 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
     assert response.status_code == 201
     assert response.json()["key"] == "codeAgent(glm5.1)-native"
     assert response.json()["name"] == "codeAgent(glm5.1)-native"
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
+    assert deleted.json()["submissions_deleted"] == 0
     assert all(item["id"] != response.json()["id"] for item in remaining)
     assert unsafe.status_code == 400
     assert unsafe.json()["error"]["code"] == "evaluation_method_invalid"

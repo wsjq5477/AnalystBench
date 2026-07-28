@@ -302,17 +302,20 @@ python3 -m venv .venv
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/analystbench db-upgrade    # 初始化本地 SQLite 数据库
-.venv/bin/analystbench api           # 启动 API 服务（终端 1）
+.venv/bin/analystbench serve         # 升级数据库并启动 API + Worker
 ```
 
-另开终端启动后台 Worker：
+不希望终端持续占用时，可以后台启动：
 
 ```bash
-.venv/bin/analystbench worker        # 后台评测任务（终端 2）
+.venv/bin/analystbench serve --detach
+.venv/bin/analystbench service status
+.venv/bin/analystbench service logs  # 输出日志文件路径
+.venv/bin/analystbench service stop
 ```
 
 API 文档位于 `http://127.0.0.1:8000/docs`，就绪探针位于 `/api/v1/health/ready`。
+`api`、`worker` 和 `db-upgrade` 命令仍保留，供调试或拆分部署使用。
 
 部署、备份、恢复与安全说明见[运维文档](docs/operations.md)。
 

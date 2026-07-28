@@ -2,7 +2,6 @@
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request, status
@@ -158,7 +157,7 @@ def create_case_draft(payload: CaseDraftCreate, request: Request) -> dict[str, A
     status_code=status.HTTP_202_ACCEPTED,
     include_in_schema=False,
 )
-async def generate_case_draft(payload: CaseDraftGenerate, request: Request) -> dict[str, Any]:
+def generate_case_draft(payload: CaseDraftGenerate, request: Request) -> dict[str, Any]:
     service = case_service(request)
     item = service.create_generation(
         reference_answer=payload.reference_answer,
@@ -170,24 +169,6 @@ async def generate_case_draft(payload: CaseDraftGenerate, request: Request) -> d
         test_set=payload.test_set,
         category=payload.category,
     )
-    draft_id = item.id
-
-    # Run generation in a background thread immediately (no separate worker needed)
-    import asyncio
-    import logging
-
-    _logger = logging.getLogger(__name__)
-
-    def _run_generation() -> None:
-        try:
-            service.execute_generation(draft_id)
-            _logger.info("case_generation_completed", extra={"draft_id": draft_id})
-        except Exception as exc:
-            _logger.exception("case_generation_failed", extra={"draft_id": draft_id, "error": str(exc)})
-
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _run_generation)
-
     return CaseLibraryService.view(item)
 
 

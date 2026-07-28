@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     workspace_root_path: Path = Field(default=Path("./data/workspaces"))
     results_tmp_path: Path = Field(default=Path("./data/results/tmp"))
     results_formal_path: Path = Field(default=Path("./data/results"))
+    service_runtime_path: Path = Field(default=Path("./data/run"))
+    service_log_path: Path = Field(default=Path("./data/logs/analystbench.log"))
     log_level: str = "INFO"
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
 
@@ -35,6 +37,8 @@ class Settings(BaseSettings):
         self.workspace_root_path.mkdir(parents=True, exist_ok=True)
         self.results_tmp_path.mkdir(parents=True, exist_ok=True)
         self.results_formal_path.mkdir(parents=True, exist_ok=True)
+        self.service_runtime_path.mkdir(parents=True, exist_ok=True)
+        self.service_log_path.parent.mkdir(parents=True, exist_ok=True)
         if self.database_url.startswith("sqlite:///") and not self.database_url.endswith(
             ":memory:"
         ):

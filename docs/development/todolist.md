@@ -222,7 +222,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 
 ### P15.2 版本化测评方式与通用 Runner
 
-- [x] Evaluation Method 草稿、版本、probe、冻结、修订和停用。
+- [x] Evaluation Method 草稿、版本、probe、冻结、Frozen 修订和级联删除。
 - [x] 安全命令模板与 `{input}`、`{input_dir}`、`{workspace}`、`{tool_dir}` 占位符。
 - [x] 通用 Command Runner 使用 argv、`shell=False`、超时、输出上限和进程树取消。
 - [x] 用户命令负责输出文本，系统把 stdout 冻结为 `<method_key>.md`，stderr/原始输出按 attempt 审计。
@@ -342,3 +342,17 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] 前端生产构建、Sites Worker 和深浅主题检查。
 
 验收门禁：定时测评在进程重启、机器停机和重复 Worker 下仍可恢复、可审计且不重复执行。
+
+## P17 本地服务统一启动
+
+状态：已实现（2026-07-28）。
+
+- [x] 新增 `analystbench serve`，按数据库升级、Worker、API 的顺序启动。
+- [x] 新增 `serve --detach`，后台运行并将日志与 PID 写入本地 `data` 目录。
+- [x] 新增 `service status`、`service logs` 和 `service stop` 生命周期命令。
+- [x] 保留 API 与 Worker 的独立进程职责和原有拆分调试命令。
+- [x] Case Draft 生成统一由数据库 Job 和 Local Worker 执行。
+- [x] 增加启动顺序、后台记录和过期 PID 清理测试。
+
+验收门禁：一条命令完成迁移和启动；关闭终端不影响后台服务；重复启动被拒绝；
+停止时 API 与 Worker 一起退出；API 进程不直接执行持久化后台任务。

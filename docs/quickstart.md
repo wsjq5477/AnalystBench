@@ -212,16 +212,26 @@ HM_PANIC_SYSMGR-test1-skill-1.txt
 ## B6. 启动 API 与 Worker
 
 ```bash
-# 终端 1：API 服务
-.venv/bin/analystbench api
+# 前台运行：自动升级数据库并同时启动 API 与 Worker
+.venv/bin/analystbench serve
+```
 
-# 终端 2：后台 Worker
-.venv/bin/analystbench worker
+需要释放当前终端时，改用后台模式：
+
+```bash
+.venv/bin/analystbench serve --detach
+.venv/bin/analystbench service status
+.venv/bin/analystbench service logs
+.venv/bin/analystbench service stop
 ```
 
 浏览 `http://127.0.0.1:8000/docs`。前端使用 Case Draft API 审核发布，使用 Evaluation Batch API 创建后台评测。
 
 后台 Worker 使用 `claude-code` Judge 时，通过 `claude -p` 调 Skill prompt 做语义对齐，然后 Python 计分。
+后台模式的 API 和 Worker 输出默认写入 `data/logs/analystbench.log`，PID
+记录写入 `data/run/analystbench.pid`。可通过
+`ANALYSTBENCH_SERVICE_LOG_PATH` 和 `ANALYSTBENCH_SERVICE_RUNTIME_PATH` 修改路径。
+`api`、`worker` 与 `db-upgrade` 命令仍可单独用于调试或拆分部署。
 
 原始报告请求示例：
 
