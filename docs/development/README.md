@@ -24,6 +24,7 @@
 | case-library-batch-evaluation-design.md | Case 一次审核发布与多报告批量评测契约 |
 | case-storage-hierarchy-design.md | 测试集、问题分类、Case 与 Trace 分层存储契约 |
 | evaluation-submission-design.md | 从测试集原始日志提交多个报告生成器并自动评分的目录、隔离、状态与 API 契约 |
+| scheduled-evaluation-design.md | AnalystBench 内置每日定时测评、补跑、重叠、Worker 触发和执行历史契约 |
 | frontend-overview.md | 第一阶段前端功能说明 |
 | release-checklist.md | MVP 发布检查清单 |
 | todolist.md | 阶段任务、依赖和验收门禁 |

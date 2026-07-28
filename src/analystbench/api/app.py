@@ -17,6 +17,7 @@ from analystbench.api.routes.catalog import router as catalog_router
 from analystbench.api.routes.comparisons import router as comparison_router
 from analystbench.api.routes.direct_results import router as direct_results_router
 from analystbench.api.routes.eval_specs import router as eval_specs_router
+from analystbench.api.routes.evaluation_schedules import router as evaluation_schedules_router
 from analystbench.api.routes.evaluation_sessions import router as evaluation_sessions_router
 from analystbench.api.routes.evaluation_submissions import (
     router as evaluation_submissions_router,
@@ -36,6 +37,7 @@ from analystbench.content_store import ContentStore
 from analystbench.db.session import create_database_engine, create_session_factory
 from analystbench.errors import AnalystBenchError
 from analystbench.eval_spec import EvalSpecService
+from analystbench.evaluation_schedule import EvaluationScheduleService
 from analystbench.evaluation_session import EvaluationSessionService
 from analystbench.evaluation_submission import (
     EvaluationMethodService,
@@ -74,6 +76,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.evaluation_submission_service = EvaluationSubmissionService(
             app.state.session_factory, active_settings
+        )
+        app.state.evaluation_schedule_service = EvaluationScheduleService(
+            app.state.session_factory,
+            active_settings,
+            app.state.evaluation_submission_service,
         )
         app.state.case_library_service = CaseLibraryService(
             app.state.session_factory, app.state.content_store, active_settings
@@ -131,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(eval_specs_router, prefix="/api/v1")
     app.include_router(evaluation_sessions_router, prefix="/api/v1")
     app.include_router(evaluation_submissions_router, prefix="/api/v1")
+    app.include_router(evaluation_schedules_router, prefix="/api/v1")
     app.include_router(case_library_router, prefix="/api/v1")
     app.include_router(direct_results_router, prefix="/api/v1")
     app.include_router(cases_local_router, prefix="/api/v1")

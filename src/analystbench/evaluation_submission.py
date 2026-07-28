@@ -441,6 +441,7 @@ class EvaluationSubmissionService:
         judge_runner: str = "claude-code",
         *,
         case_paths: list[str] | None = None,
+        schedule_run_id: str | None = None,
     ) -> EvaluationSubmission:
         if not method_ids:
             raise AnalystBenchError("evaluation_methods_missing", "至少选择一种测评方式。")
@@ -543,6 +544,7 @@ class EvaluationSubmissionService:
             "dataset_key": dataset_key,
             "run_timestamp": timestamp,
             "judge_runner": judge_runner,
+            "schedule_run_id": schedule_run_id,
             "requested_case_paths": requested_case_paths,
             "selected_case_paths": [item["case_path"] for item in case_inputs],
             "skipped_cases": skipped_cases,
@@ -579,6 +581,7 @@ class EvaluationSubmissionService:
                 dataset_key=dataset_key,
                 run_timestamp=timestamp,
                 status="queued",
+                schedule_run_id=schedule_run_id,
                 manifest_json=canonical_json(manifest),
             )
             session.add(submission)
@@ -1346,6 +1349,7 @@ class EvaluationSubmissionService:
             "dataset_key": item.dataset_key,
             "timestamp": item.run_timestamp,
             "status": item.status,
+            "schedule_run_id": item.schedule_run_id,
             "method_ids": manifest.get("method_ids", []),
             "methods": manifest.get("methods", []),
             "case_count": len(manifest.get("cases", [])),

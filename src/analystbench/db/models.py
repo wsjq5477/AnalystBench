@@ -435,6 +435,46 @@ class EvaluationMethod(TimestampedModel, Base):
     last_probe_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class EvaluationSchedule(TimestampedModel, Base):
+    """One persistent daily schedule that creates evaluation submissions."""
+
+    __tablename__ = "evaluation_schedules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    dataset_key: Mapped[str] = mapped_column(String(255), index=True)
+    case_mode: Mapped[str] = mapped_column(String(32))
+    case_paths_json: Mapped[str] = mapped_column(Text, default="[]")
+    method_ids_json: Mapped[str] = mapped_column(Text)
+    judge_runner: Mapped[str] = mapped_column(String(32))
+    timezone: Mapped[str] = mapped_column(String(100))
+    local_time: Mapped[str] = mapped_column(String(5))
+    enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class EvaluationScheduleRun(TimestampedModel, Base):
+    """One durable trigger occurrence for an EvaluationSchedule."""
+
+    __tablename__ = "evaluation_schedule_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schedule_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_schedules.id", ondelete="RESTRICT"), index=True
+    )
+    trigger_key: Mapped[str] = mapped_column(String(255), unique=True)
+    trigger_type: Mapped[str] = mapped_column(String(32))
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    config_snapshot_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    error_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class EvaluationSubmission(TimestampedModel, Base):
     """A durable request to run several methods over one local test set."""
 
@@ -444,6 +484,11 @@ class EvaluationSubmission(TimestampedModel, Base):
     dataset_key: Mapped[str] = mapped_column(String(255), index=True)
     run_timestamp: Mapped[str] = mapped_column(String(14), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    schedule_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evaluation_schedule_runs.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     manifest_json: Mapped[str] = mapped_column(Text)
     summary_json: Mapped[str] = mapped_column(Text, default="{}")
     error_json: Mapped[str] = mapped_column(Text, default="{}")

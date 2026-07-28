@@ -58,6 +58,7 @@ export default {
 
       evaluationMethods: [],
       evaluationSubmissions: [],
+      evaluationSchedules: [],
       selectedSubmissionId: "",
       submissionCaseRuns: [],
       showSubmitEvaluationDialog: false,
@@ -81,6 +82,23 @@ export default {
         max_output_bytes: 10485760,
         concurrency_limit: 1,
       },
+      showScheduleDialog: false,
+      scheduleSaving: false,
+      editingScheduleId: "",
+      scheduleForm: {
+        name: "",
+        dataset_key: "",
+        case_mode: "all_ready",
+        case_paths: [],
+        method_ids: [],
+        judge_runner: "claude-code",
+        timezone: "Asia/Shanghai",
+        local_time: "23:00",
+        enabled: true,
+      },
+      showScheduleRunsDialog: false,
+      scheduleRunsTitle: "",
+      scheduleRuns: [],
 
       resultSource: "tmp",
       allDirectResults: [],
@@ -153,6 +171,18 @@ export default {
     unavailableSubmissionCases() {
       return this.selectedSubmissionCases.filter(
         (caseItem) => !caseItem.case_data?.submission_ready,
+      );
+    },
+    selectedScheduleCases() {
+      const testSet = this.localCaseTree.find(
+        (item) => item.key === this.scheduleForm.dataset_key,
+      );
+      if (!testSet) return [];
+      return (testSet.children || []).flatMap((category) =>
+        (category.children || []).map((caseItem) => ({
+          ...caseItem,
+          category: category.key,
+        })),
       );
     },
     selectedCaseParts() {
@@ -354,6 +384,7 @@ export default {
     if (this.activeView === "results") {
       this.refreshDirectResults();
       this.loadEvaluationSubmissions();
+      this.loadEvaluationSchedules();
     }
     if (this.activeView === "settings") {
       this.loadAppSettings();
@@ -396,6 +427,7 @@ export default {
       if (view === "results") {
         this.refreshDirectResults();
         this.loadEvaluationSubmissions();
+        this.loadEvaluationSchedules();
       }
       if (view === "settings") {
         this.loadAppSettings();
@@ -883,6 +915,196 @@ export default {
         }
         this.showToast(error instanceof Error ? error.message : "删除失败");
       }
+    },
+    scheduleCasePath(caseItem) {
+      return `${this.scheduleForm.dataset_key}/${caseItem.category}/${caseItem.key}`;
+    },
+    resetScheduleCaseSelection() {
+      this.scheduleForm.case_paths = [];
+    },
+    async loadEvaluationSchedules() {
+      try {
+        this.evaluationSchedules =
+          await analystBenchApi.listEvaluationSchedules();
+        this.connection = "connected";
+      } catch {
+        this.evaluationSchedules = [];
+      }
+    },
+    async openScheduleDialog(schedule = null) {
+      await Promise.all([this.loadLocalCaseTree(), this.loadEvaluationMethods()]);
+      this.editingScheduleId = schedule ? schedule.id : "";
+      this.scheduleForm = schedule
+        ? {
+            name: schedule.name,
+            dataset_key: schedule.dataset_key,
+            case_mode: schedule.case_mode,
+            case_paths: [...schedule.case_paths],
+            method_ids: [...schedule.method_ids],
+            judge_runner: schedule.judge_runner,
+            timezone: schedule.timezone,
+            local_time: schedule.local_time,
+            enabled: schedule.enabled,
+          }
+        : {
+            name: "",
+            dataset_key: this.localCaseTree.length
+              ? this.localCaseTree[0].key
+              : "",
+            case_mode: "all_ready",
+            case_paths: [],
+            method_ids:
+              this.frozenEvaluationMethods.length === 1
+                ? [this.frozenEvaluationMethods[0].id]
+                : [],
+            judge_runner: "claude-code",
+            timezone: "Asia/Shanghai",
+            local_time: "23:00",
+            enabled: true,
+          };
+      this.showScheduleDialog = true;
+    },
+    async saveEvaluationSchedule() {
+      const form = this.scheduleForm;
+      if (!form.name.trim()) return this.showToast("请输入计划名称");
+      if (!form.dataset_key) return this.showToast("请选择测试集");
+      if (!form.method_ids.length) return this.showToast("请选择至少一种测评方式");
+      if (form.case_mode === "selected" && !form.case_paths.length) {
+        return this.showToast("固定选择模式至少选择一个 Case");
+      }
+      this.scheduleSaving = true;
+      try {
+        const payload = {
+          ...form,
+          name: form.name.trim(),
+          timezone: form.timezone.trim(),
+        };
+        if (this.editingScheduleId) {
+          await analystBenchApi.updateEvaluationSchedule(
+            this.editingScheduleId,
+            payload,
+          );
+        } else {
+          await analystBenchApi.createEvaluationSchedule(payload);
+        }
+        await this.loadEvaluationSchedules();
+        this.showScheduleDialog = false;
+        this.showToast(
+          this.editingScheduleId ? "定时计划已更新" : "定时计划已创建",
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "保存定时计划失败");
+      } finally {
+        this.scheduleSaving = false;
+      }
+    },
+    async toggleEvaluationSchedule(schedule) {
+      try {
+        await analystBenchApi.setEvaluationScheduleEnabled(
+          schedule.id,
+          !schedule.enabled,
+        );
+        await this.loadEvaluationSchedules();
+        this.showToast(schedule.enabled ? "定时计划已停用" : "定时计划已启用");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "更新计划状态失败");
+      }
+    },
+    async runEvaluationScheduleNow(schedule) {
+      try {
+        const run = await analystBenchApi.runEvaluationScheduleNow(schedule.id);
+        await this.loadEvaluationSchedules();
+        this.showToast("定时计划已立即入队");
+        this.pollEvaluationScheduleRun(run.id);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "立即运行失败");
+      }
+    },
+    async pollEvaluationScheduleRun(runId) {
+      const terminal = [
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "cancelled",
+        "skipped_no_cases",
+        "skipped_overlap",
+        "failed_preflight",
+      ];
+      for (let index = 0; index < 720; index += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 5000));
+        try {
+          const run = await analystBenchApi.getEvaluationScheduleRun(runId);
+          if (terminal.includes(run.status)) {
+            await Promise.all([
+              this.loadEvaluationSchedules(),
+              this.loadEvaluationSubmissions(),
+            ]);
+            this.showToast(`定时测评已结束：${run.status}`);
+            return;
+          }
+        } catch {
+          // A transient polling error must not change the durable schedule run.
+        }
+      }
+    },
+    async openEvaluationScheduleRuns(schedule) {
+      try {
+        this.scheduleRuns =
+          await analystBenchApi.listEvaluationScheduleRuns(schedule.id);
+        this.scheduleRunsTitle = schedule.name;
+        this.showScheduleRunsDialog = true;
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "读取执行记录失败");
+      }
+    },
+    async deleteEvaluationSchedule(schedule) {
+      if (!window.confirm(`删除定时计划“${schedule.name}”吗？`)) return;
+      try {
+        await analystBenchApi.deleteEvaluationSchedule(schedule.id);
+        await this.loadEvaluationSchedules();
+        this.showToast("定时计划已删除");
+      } catch (error) {
+        if (
+          error &&
+          error.code === "evaluation_schedule_in_use" &&
+          window.confirm(`${error.message}\n\n是否停用该计划？`)
+        ) {
+          await analystBenchApi.setEvaluationScheduleEnabled(schedule.id, false);
+          await this.loadEvaluationSchedules();
+          this.showToast("定时计划已停用");
+          return;
+        }
+        this.showToast(error instanceof Error ? error.message : "删除计划失败");
+      }
+    },
+    formatScheduleDateTime(value, timezone = "Asia/Shanghai") {
+      if (!value) return "—";
+      try {
+        return new Intl.DateTimeFormat("zh-CN", {
+          timeZone: timezone,
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).format(new Date(value));
+      } catch {
+        return String(value);
+      }
+    },
+    scheduleStatusClass(status) {
+      if (status === "completed") return "tag-match";
+      if (
+        [
+          "failed",
+          "completed_with_errors",
+          "failed_preflight",
+          "skipped_no_cases",
+        ].includes(status)
+      ) {
+        return "tag-missing";
+      }
+      return "tag-partial";
     },
     async openSubmitEvaluationDialog() {
       await Promise.all([this.loadLocalCaseTree(), this.loadEvaluationMethods()]);

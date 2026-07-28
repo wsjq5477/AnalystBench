@@ -208,6 +208,49 @@ export const analystBenchApi = {
       method: "get",
     });
   },
+  listEvaluationSchedules() {
+    return request({ url: "/evaluation-schedules", method: "get" });
+  },
+  createEvaluationSchedule(data) {
+    return request({ url: "/evaluation-schedules", method: "post", data });
+  },
+  updateEvaluationSchedule(scheduleId, data) {
+    return request({
+      url: `/evaluation-schedules/${scheduleId}`,
+      method: "put",
+      data,
+    });
+  },
+  deleteEvaluationSchedule(scheduleId) {
+    return request({
+      url: `/evaluation-schedules/${scheduleId}`,
+      method: "delete",
+    });
+  },
+  setEvaluationScheduleEnabled(scheduleId, enabled) {
+    return request({
+      url: `/evaluation-schedules/${scheduleId}:${enabled ? "enable" : "disable"}`,
+      method: "post",
+    });
+  },
+  runEvaluationScheduleNow(scheduleId) {
+    return request({
+      url: `/evaluation-schedules/${scheduleId}:run-now`,
+      method: "post",
+    });
+  },
+  listEvaluationScheduleRuns(scheduleId) {
+    return request({
+      url: `/evaluation-schedules/${scheduleId}/runs`,
+      method: "get",
+    });
+  },
+  getEvaluationScheduleRun(runId) {
+    return request({
+      url: `/evaluation-schedule-runs/${runId}`,
+      method: "get",
+    });
+  },
   evaluateLocalCase(casePath, judge, files) {
     const data = new FormData();
     data.append("case_path", casePath);

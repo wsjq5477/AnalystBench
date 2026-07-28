@@ -14,6 +14,7 @@ from analystbench.case_library import CaseLibraryService
 from analystbench.config import Settings, get_settings
 from analystbench.content_store import ContentStore
 from analystbench.db.session import create_database_engine, create_session_factory
+from analystbench.evaluation_schedule import EvaluationScheduleService
 from analystbench.evaluation_submission import (
     EvaluationCommandError,
     EvaluationSubmissionService,
@@ -41,6 +42,11 @@ class LocalWorker:
         self.evaluation_submissions = EvaluationSubmissionService(
             self.session_factory, self.settings
         )
+        self.evaluation_schedules = EvaluationScheduleService(
+            self.session_factory,
+            self.settings,
+            self.evaluation_submissions,
+        )
         self.jobs = JobQueue(self.session_factory)
         self.worker_id = f"{os.getpid()}-{uuid4()}"
 
@@ -48,6 +54,13 @@ class LocalWorker:
         """Claim and execute one durable job; return false when the queue is idle."""
         with self.engine.connect() as connection:
             connection.execute(text("SELECT 1"))
+        try:
+            self.evaluation_schedules.enqueue_due()
+        except Exception:
+            # A competing worker may win the unique schedule trigger or SQLite
+            # may briefly be locked. Scheduling must not take the worker down or
+            # prevent it from draining jobs that are already durable.
+            logger.exception("evaluation_schedule_scan_failed")
         job = self.jobs.claim(self.worker_id)
         if job is None:
             logger.info("worker_idle")
@@ -67,6 +80,10 @@ class LocalWorker:
             elif job.kind == "evaluation_case_score":
                 self.evaluation_submissions.execute_case_scoring(
                     str(payload["evaluation_case_run_id"])
+                )
+            elif job.kind == "evaluation_schedule_trigger":
+                self.evaluation_schedules.execute_trigger(
+                    str(payload["evaluation_schedule_run_id"])
                 )
             else:
                 raise RuntimeError(f"unsupported job kind '{job.kind}'")

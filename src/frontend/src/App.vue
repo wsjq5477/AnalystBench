@@ -146,7 +146,31 @@ export default appOptions;
       </section>
 
       <section v-if="activeView === 'results'" class="work-page results-page">
-        <div class="work-heading"><div><p class="eyebrow">EVALUATION RESULTS</p><h1>评测结果</h1><p>查看评测结果，或选择测试集和测评方式生成新结果。</p></div><button class="ghost-button" @click="refreshDirectResults(); loadEvaluationSubmissions()"><IconRefresh :size="16" />刷新</button><button class="primary-button" @click="openSubmitEvaluationDialog"><IconFlask :size="16" />提交测评</button></div>
+        <div class="work-heading"><div><p class="eyebrow">EVALUATION RESULTS</p><h1>评测结果</h1><p>查看评测结果，或选择测试集和测评方式生成新结果。</p></div><div class="heading-actions"><button class="ghost-button" @click="refreshDirectResults(); loadEvaluationSubmissions(); loadEvaluationSchedules()"><IconRefresh :size="16" />刷新</button><button class="ghost-button" @click="openScheduleDialog()"><IconCircleCheck :size="16" />定时测评</button><button class="primary-button" @click="openSubmitEvaluationDialog"><IconFlask :size="16" />提交测评</button></div></div>
+        <section v-if="evaluationSchedules.length" class="surface schedule-panel">
+          <div class="panel-heading"><h2><IconCircleCheck :size="17" />定时测评</h2><span>{{ evaluationSchedules.length }} 个计划</span></div>
+          <div class="schedule-list">
+            <div v-for="schedule in evaluationSchedules" :key="schedule.id" class="schedule-row">
+              <div class="schedule-main">
+                <strong>{{ schedule.name }}</strong>
+                <span>{{ schedule.dataset_key }} · 每天 {{ schedule.local_time }} · {{ schedule.timezone }}</span>
+                <small>{{ schedule.case_mode === 'all_ready' ? '全部日志就绪 Case' : `${schedule.case_paths.length} 个固定 Case` }} · {{ schedule.methods.map((item) => `${item.key} v${item.version}`).join('、') }}</small>
+              </div>
+              <div class="schedule-state">
+                <span :class="schedule.enabled ? 'tag-match' : 'tag-missing'">{{ schedule.enabled ? '已启用' : '已停用' }}</span>
+                <small>下次：{{ schedule.enabled ? formatScheduleDateTime(schedule.next_run_at, schedule.timezone) : '—' }}</small>
+                <small v-if="schedule.latest_run">最近：<span :class="scheduleStatusClass(schedule.latest_run.status)">{{ schedule.latest_run.status }}</span></small>
+              </div>
+              <div class="schedule-actions">
+                <button class="text-button" @click="runEvaluationScheduleNow(schedule)">立即运行</button>
+                <button class="text-button" @click="openEvaluationScheduleRuns(schedule)">历史</button>
+                <button class="text-button" @click="openScheduleDialog(schedule)">编辑</button>
+                <button class="text-button" @click="toggleEvaluationSchedule(schedule)">{{ schedule.enabled ? '停用' : '启用' }}</button>
+                <button class="tree-delete" title="删除计划" @click="deleteEvaluationSchedule(schedule)"><IconTrash :size="14" /></button>
+              </div>
+            </div>
+          </div>
+        </section>
         <section v-if="evaluationSubmissions.length" class="surface submission-panel">
           <div class="panel-heading"><h2>测评批次</h2><span>{{ evaluationSubmissions.length }} 个批次</span></div>
           <div class="submission-layout">
@@ -154,7 +178,7 @@ export default appOptions;
               <button v-for="submission in evaluationSubmissions" :key="submission.id" :class="['submission-item', { active: selectedSubmissionId === submission.id }]" @click="selectEvaluationSubmission(submission.id)">
                 <strong>{{ submission.dataset_key }} · {{ submission.timestamp }}</strong>
                 <span :class="submission.status === 'completed' ? 'tag-match' : submission.status === 'failed' || submission.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ submission.status }}</span>
-                <small>{{ submission.case_count }} Case · {{ submission.methods.map((item) => item.key).join('、') }}</small>
+                <small>{{ submission.case_count }} Case · {{ submission.methods.map((item) => item.key).join('、') }}<template v-if="submission.schedule_run_id"> · 定时</template></small>
               </button>
             </div>
             <div class="submission-cases">
@@ -571,6 +595,96 @@ export default appOptions;
           <button class="ghost-button" @click="showMethodDialog = false">取消</button>
           <button class="primary-button" :disabled="methodSaving" @click="createEvaluationMethod"><IconPlus :size="16" />{{ methodSaving ? '创建中…' : '创建并检测' }}</button>
         </div>
+      </section>
+    </div>
+
+    <!-- Evaluation schedule dialog -->
+    <div v-if="showScheduleDialog" class="dialog-overlay" @click.self="showScheduleDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>{{ editingScheduleId ? '编辑定时测评' : '新建定时测评' }}</h2><span>每天固定时间</span></div>
+        <p class="form-note">到时间后由 Local Worker 创建普通测评批次。机器停机时恢复后只补跑最近一次。</p>
+        <label>计划名称
+          <input v-model="scheduleForm.name" placeholder="夜间回归" />
+        </label>
+        <div class="form-grid schedule-time-grid">
+          <label>测试集
+            <select v-model="scheduleForm.dataset_key" @change="resetScheduleCaseSelection">
+              <option value="" disabled>请选择测试集</option>
+              <option v-for="testSet in localCaseTree" :key="testSet.key" :value="testSet.key">{{ testSet.name }}</option>
+            </select>
+          </label>
+          <label>每日时间
+            <input v-model="scheduleForm.local_time" type="time" />
+          </label>
+          <label>时区
+            <input v-model="scheduleForm.timezone" placeholder="Asia/Shanghai" />
+          </label>
+        </div>
+        <label>Case 范围
+          <select v-model="scheduleForm.case_mode" @change="scheduleForm.case_paths = []">
+            <option value="all_ready">每次动态选择全部日志就绪 Case</option>
+            <option value="selected">固定选择 Case</option>
+          </select>
+        </label>
+        <fieldset v-if="scheduleForm.case_mode === 'selected'" class="method-picker schedule-case-picker">
+          <legend>固定 Case</legend>
+          <label
+            v-for="caseItem in selectedScheduleCases"
+            :key="`${caseItem.category}/${caseItem.key}`"
+            :class="['compact-list-row', 'submission-case-option', { disabled: !caseItem.case_data?.submission_ready }]"
+          >
+            <input
+              v-model="scheduleForm.case_paths"
+              type="checkbox"
+              :value="scheduleCasePath(caseItem)"
+              :disabled="!caseItem.case_data?.submission_ready"
+            />
+            <span class="submission-case-path">{{ caseItem.category }}/{{ caseItem.key }}</span>
+            <span :class="caseItem.case_data?.submission_ready ? 'tag-match' : 'tag-missing'">{{ caseItem.case_data?.submission_ready ? `${caseItem.case_data.log_count} 个日志` : '缺少有效日志' }}</span>
+          </label>
+        </fieldset>
+        <fieldset class="method-picker">
+          <legend>测评方式（固定到当前版本）</legend>
+          <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
+            <input v-model="scheduleForm.method_ids" type="checkbox" :value="method.id" />
+            <span><strong>{{ method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
+          </label>
+        </fieldset>
+        <div class="form-grid schedule-time-grid">
+          <label>打分 Judge
+            <select v-model="scheduleForm.judge_runner">
+              <option value="claude-code">claude-code（推荐）</option>
+              <option value="opencode">opencode</option>
+            </select>
+          </label>
+          <label class="schedule-enabled-check">
+            <input v-model="scheduleForm.enabled" type="checkbox" />
+            <span>保存后启用计划</span>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-button" @click="showScheduleDialog = false">取消</button>
+          <button class="primary-button" :disabled="scheduleSaving" @click="saveEvaluationSchedule"><IconCircleCheck :size="16" />{{ scheduleSaving ? '保存中…' : '保存计划' }}</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Evaluation schedule runs dialog -->
+    <div v-if="showScheduleRunsDialog" class="dialog-overlay" @click.self="showScheduleRunsDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>计划执行历史</h2><span>{{ scheduleRunsTitle }}</span></div>
+        <div v-if="scheduleRuns.length" class="schedule-run-list">
+          <div v-for="run in scheduleRuns" :key="run.id" class="schedule-run-row">
+            <div>
+              <strong>{{ formatScheduleDateTime(run.scheduled_for, run.config.timezone) }}</strong>
+              <small>{{ run.trigger_type }}<template v-if="run.submission_timestamp"> · 批次 {{ run.submission_timestamp }}</template></small>
+            </div>
+            <span :class="scheduleStatusClass(run.status)">{{ run.status }}</span>
+            <small v-if="run.error?.message" class="tone-warning">{{ run.error.message }}</small>
+          </div>
+        </div>
+        <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>暂无执行记录</p></div>
+        <div class="dialog-actions"><button class="primary-button" @click="showScheduleRunsDialog = false">关闭</button></div>
       </section>
     </div>
 

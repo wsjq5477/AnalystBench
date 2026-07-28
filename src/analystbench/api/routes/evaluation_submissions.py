@@ -68,6 +68,7 @@ class EvaluationSubmissionResponse(BaseModel):
     dataset_key: str
     timestamp: str
     status: str
+    schedule_run_id: str | None
     method_ids: list[str]
     methods: list[dict[str, Any]]
     case_count: int

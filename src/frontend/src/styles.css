@@ -954,6 +954,98 @@ a:focus-visible,
   margin-bottom: 16px;
   padding: 16px;
 }
+.heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.schedule-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+}
+.schedule-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.schedule-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(170px, auto) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 11px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: var(--bg-control);
+  color: var(--text-primary);
+}
+.schedule-main,
+.schedule-state {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+.schedule-main > span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.schedule-main small,
+.schedule-state small,
+.schedule-run-row small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.schedule-state > span {
+  justify-self: start;
+}
+.schedule-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.schedule-time-grid {
+  align-items: end;
+}
+.schedule-enabled-check {
+  display: flex !important;
+  min-height: 38px;
+  align-items: center;
+  align-self: end;
+  grid-template-columns: auto 1fr;
+}
+.schedule-enabled-check input {
+  width: auto;
+  margin: 0;
+}
+.schedule-enabled-check span {
+  color: var(--text-primary);
+}
+.schedule-case-picker {
+  max-height: 260px;
+  overflow: auto;
+}
+.schedule-run-list {
+  display: grid;
+  gap: 8px;
+  max-height: 460px;
+  overflow: auto;
+}
+.schedule-run-row {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-control);
+  color: var(--text-primary);
+}
+.schedule-run-row > div {
+  display: grid;
+  gap: 3px;
+}
 .submission-layout {
   display: grid;
   grid-template-columns: minmax(260px, .8fr) minmax(360px, 1.7fr);
@@ -1149,6 +1241,7 @@ a:focus-visible,
   .theme-toggle span { display: none; }
   .theme-toggle { width: 34px; padding: 0; }
   .work-heading { align-items: flex-start; flex-wrap: wrap; }
+  .heading-actions { flex-wrap: wrap; }
   .work-heading h1 { font-size: 25px; }
   .dashboard-page,
   .work-page { margin-top: 20px; }
@@ -1165,6 +1258,9 @@ a:focus-visible,
   .inline-upload,
   .method-row,
   .submission-case-row { align-items: stretch; flex-direction: column; }
+  .schedule-row,
+  .schedule-run-row { grid-template-columns: 1fr; }
+  .schedule-actions { justify-content: flex-start; flex-wrap: wrap; }
   .form-grid { grid-template-columns: 1fr; }
   .detail-panel .case-meta-grid { grid-template-columns: 1fr; }
   .detail-panel .case-meta-grid > div,
