@@ -231,6 +231,8 @@ HM_PANIC_SYSMGR-test1-skill-1.txt
 后台模式的 API 和 Worker 输出默认写入 `data/logs/analystbench.log`，PID
 记录写入 `data/run/analystbench.pid`。可通过
 `ANALYSTBENCH_SERVICE_LOG_PATH` 和 `ANALYSTBENCH_SERVICE_RUNTIME_PATH` 修改路径。
+后台启动默认等待就绪 60 秒；较慢机器可增加 `--startup-timeout 120`。
+就绪探测直连本机，不受 `HTTP_PROXY`、`HTTPS_PROXY` 影响。
 `api`、`worker` 与 `db-upgrade` 命令仍可单独用于调试或拆分部署。
 
 原始报告请求示例：

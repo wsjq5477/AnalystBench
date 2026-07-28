@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     results_formal_path: Path = Field(default=Path("./data/results"))
     service_runtime_path: Path = Field(default=Path("./data/run"))
     service_log_path: Path = Field(default=Path("./data/logs/analystbench.log"))
+    service_startup_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     log_level: str = "INFO"
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
 

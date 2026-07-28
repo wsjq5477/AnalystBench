@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import signal
@@ -9,8 +10,6 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -117,16 +116,17 @@ def _service_is_ready(host: str, port: int) -> bool:
         connect_host = "127.0.0.1"
     elif host == "::":
         connect_host = "::1"
-    if ":" in connect_host:
-        connect_host = f"[{connect_host}]"
-    url = f"http://{connect_host}:{port}/api/v1/health/ready"
+    connection = http.client.HTTPConnection(connect_host, port, timeout=0.5)
     try:
-        with urllib.request.urlopen(url, timeout=0.5) as response:
-            if response.status != 200:
-                return False
-            payload = json.loads(response.read())
-    except (OSError, ValueError, urllib.error.URLError):
+        connection.request("GET", "/api/v1/health/ready")
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        payload = json.loads(response.read())
+    except (OSError, ValueError, http.client.HTTPException):
         return False
+    finally:
+        connection.close()
     return payload.get("status") == "ok" and payload.get("database") == "ready"
 
 
@@ -151,7 +151,7 @@ def start_detached_service(
     settings: Settings,
     host: str,
     port: int,
-    startup_timeout_seconds: float = 10.0,
+    startup_timeout_seconds: float = 60.0,
 ) -> ServiceRecord:
     existing = read_service_record(settings)
     if existing is not None and service_is_running(existing):

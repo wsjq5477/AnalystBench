@@ -17,6 +17,9 @@ analystbench service stop
 
 后台服务默认将标准输出和错误输出追加到
 `data/logs/analystbench.log`，PID 记录位于 `data/run/analystbench.pid`。
+启动命令默认等待就绪 60 秒，并使用不经过系统 HTTP 代理的本机直连探测。
+较慢机器可使用 `analystbench serve --detach --startup-timeout 120`，或设置
+`ANALYSTBENCH_SERVICE_STARTUP_TIMEOUT_SECONDS=120`。
 后台启动会拒绝重复实例；停止命令同时终止 API 与 Worker。原有
 `analystbench db-upgrade`、`analystbench api` 和 `analystbench worker`
 仍用于故障排查及拆分部署。

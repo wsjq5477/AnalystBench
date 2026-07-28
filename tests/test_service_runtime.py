@@ -38,16 +38,25 @@ def test_serve_detach_upgrades_database_before_starting_service(
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     monkeypatch.setattr(cli, "_upgrade_database", lambda: calls.append("upgrade"))
 
-    def start(_settings: Settings, host: str, port: int) -> ServiceRecord:
+    def start(
+        _settings: Settings,
+        host: str,
+        port: int,
+        startup_timeout_seconds: float,
+    ) -> ServiceRecord:
         assert _settings is settings
         assert host == "127.0.0.1"
         assert port == 8123
+        assert startup_timeout_seconds == 90
         calls.append("start")
         return record
 
     monkeypatch.setattr(cli, "start_detached_service", start)
 
-    result = CliRunner().invoke(app, ["serve", "--detach", "--port", "8123"])
+    result = CliRunner().invoke(
+        app,
+        ["serve", "--detach", "--port", "8123", "--startup-timeout", "90"],
+    )
 
     assert result.exit_code == 0
     assert calls == ["upgrade", "start"]
@@ -81,6 +90,25 @@ def test_start_detached_service_writes_log_and_pid_record(
     ]
     assert "--no-db-upgrade" in command
     assert settings.service_log_path.is_file()
+
+
+def test_service_readiness_uses_direct_http_connection(
+    monkeypatch,
+) -> None:
+    response = Mock()
+    response.status = 200
+    response.read.return_value = b'{"status":"ok","database":"ready"}'
+    connection = Mock()
+    connection.getresponse.return_value = response
+    http_connection = Mock(return_value=connection)
+    monkeypatch.setattr(service_runtime.http.client, "HTTPConnection", http_connection)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("NO_PROXY", "")
+
+    assert service_runtime._service_is_ready("0.0.0.0", 8123) is True
+    http_connection.assert_called_once_with("127.0.0.1", 8123, timeout=0.5)
+    connection.request.assert_called_once_with("GET", "/api/v1/health/ready")
+    connection.close.assert_called_once()
 
 
 def test_start_detached_service_rejects_an_occupied_port(tmp_path: Path) -> None:

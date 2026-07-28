@@ -250,6 +250,13 @@ def serve(
         "--detach",
         help="Run in the background and write output to the configured service log.",
     ),
+    startup_timeout: float | None = typer.Option(
+        None,
+        "--startup-timeout",
+        min=1,
+        max=600,
+        help="Seconds to wait for a detached API to become ready (default: 60).",
+    ),
     no_db_upgrade: bool = typer.Option(False, "--no-db-upgrade", hidden=True),
     service_token: str | None = typer.Option(None, "--service-token", hidden=True),
 ) -> None:
@@ -260,7 +267,16 @@ def serve(
             raise typer.BadParameter("后台服务内部参数不能与 --detach 一起使用")
         _upgrade_database()
         try:
-            record = start_detached_service(settings, host, port)
+            record = start_detached_service(
+                settings,
+                host,
+                port,
+                startup_timeout_seconds=(
+                    startup_timeout
+                    if startup_timeout is not None
+                    else settings.service_startup_timeout_seconds
+                ),
+            )
         except RuntimeError as exc:
             raise typer.BadParameter(str(exc)) from exc
         typer.echo(f"AnalystBench 已在后台启动（PID {record.pid}）")

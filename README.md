@@ -315,6 +315,8 @@ python3 -m venv .venv
 ```
 
 API 文档位于 `http://127.0.0.1:8000/docs`，就绪探针位于 `/api/v1/health/ready`。
+后台启动默认等待 API 就绪 60 秒；较慢机器可增加
+`--startup-timeout 120`，就绪探测始终直连本机、不经过 HTTP 代理。
 `api`、`worker` 和 `db-upgrade` 命令仍保留，供调试或拆分部署使用。
 
 部署、备份、恢复与安全说明见[运维文档](docs/operations.md)。
