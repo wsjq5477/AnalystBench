@@ -13,3 +13,9 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - The interface served from the WSL workspace on port 5173 is the product baseline.
 - Preserve all four primary views: 总览、测试集、评测结果、设置.
 - Technical-stack migration must not replace the result workflow with a generic benchmark-run form or remove local Case evaluation, result promotion/move/delete, or settings persistence.
+- Case 详情内的基础信息、原始日志和 JSON 区域必须使用一致的卡片标题栏、内边距、圆角、边框和主题变量；新增详情区块沿用同一组件层级。
+- Case 详情的日志上传使用单一入口；用户选择文件后立即上传，不再额外显示含义重复的提交按钮。
+- 提交测评时若只有一个已冻结测评方式则默认选中；步骤校验失败必须显示原因，不能仅依赖无反馈的禁用按钮。
+- 提交测评第一步允许逐个选择 Case，默认勾选全部日志就绪项；缺日志 Case 置灰并自动跳过，不能阻塞其他已选 Case。
+- 提交测评生成的结果直接属于正式结果；批次结束后自动切换到正式结果并打开本批次结果，已结束批次保留“查看正式结果”入口。
+- 总览右侧“综合得分”图按日期展示各方案的得分趋势，并继续跟随测试集筛选。

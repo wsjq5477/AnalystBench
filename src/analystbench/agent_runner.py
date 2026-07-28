@@ -1,11 +1,12 @@
 """Controlled non-interactive Claude Code and OpenCode subprocess runners."""
 
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from analystbench.executable_resolver import resolve_executable
 
 
 class AgentRunnerError(Exception):
@@ -41,7 +42,7 @@ class CommandAgentRunner:
         self.runner_id = runner_id
 
     def probe(self, executable: str) -> ProbeResult:
-        resolved_executable = shutil.which(executable) or executable
+        resolved_executable = resolve_executable(executable) or executable
         try:
             completed = subprocess.run(
                 [resolved_executable, "--version"],
@@ -64,7 +65,7 @@ class CommandAgentRunner:
         self, configuration: dict[str, Any], workspace: Path, prompt: str
     ) -> list[str]:
         requested_executable = str(configuration.get("executable") or self.default_executable)
-        executable = shutil.which(requested_executable) or requested_executable
+        executable = resolve_executable(requested_executable) or requested_executable
         extra_args = [str(argument) for argument in configuration.get("extra_args", [])]
         if self.runner_id == "claude-code":
             # In print mode Claude accepts the prompt on stdin, which avoids the

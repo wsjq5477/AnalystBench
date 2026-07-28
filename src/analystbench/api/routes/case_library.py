@@ -152,6 +152,12 @@ def create_case_draft(payload: CaseDraftCreate, request: Request) -> dict[str, A
     response_model=CaseDraftResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@router.post(
+    "/case-drafts:generate",
+    response_model=CaseDraftResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    include_in_schema=False,
+)
 async def generate_case_draft(payload: CaseDraftGenerate, request: Request) -> dict[str, Any]:
     service = case_service(request)
     item = service.create_generation(
@@ -199,6 +205,11 @@ def answer_case_draft(draft_id: str, payload: Answers, request: Request) -> dict
 
 
 @router.post("/case-drafts/{draft_id}/publish", response_model=CaseDraftResponse)
+@router.post(
+    "/case-drafts/{draft_id}:publish",
+    response_model=CaseDraftResponse,
+    include_in_schema=False,
+)
 def publish_case_draft(draft_id: str, request: Request) -> dict[str, Any]:
     service = case_service(request)
     published = service.publish(draft_id)

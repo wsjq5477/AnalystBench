@@ -38,8 +38,17 @@ def _extract_result_meta(data: dict[str, Any], rel_path: Path, source: str) -> d
             timestamp = ""
         test_set = ""
         category = ""
+    elif (
+        rel_path.name == "result.json" and len(rel_path.parts) >= 6 and rel_path.parts[3] == "runs"
+    ):
+        # P15 format: {test_set}/{category}/{case_dir}/runs/{timestamp}/result.json
+        result_id = str(Path(*rel_path.parts[:-1]))
+        test_set = rel_path.parts[0]
+        category = rel_path.parts[1]
+        case_dir = rel_path.parts[2]
+        timestamp = rel_path.parts[4]
     elif rel_path.name == "result.json" and len(rel_path.parts) >= 4:
-        # Formal structured format: {test_set}/{category}/{case_dir}/{timestamp}/result.json
+        # Legacy formal format: {test_set}/{category}/{case_dir}/{timestamp}/result.json
         result_id = str(Path(*rel_path.parts[:-1]))
         test_set = rel_path.parts[0]
         category = rel_path.parts[1]
@@ -86,12 +95,40 @@ def _migrate_report_fields(report: dict[str, Any]) -> dict[str, Any]:
             if c.get("type") == "analysis_chain" and c.get("overall_relation") == "missing"
         ]
     metrics = report.get("metrics")
-    if isinstance(metrics, dict) and "missing_critical_count" in metrics and "missing_chain_count" not in metrics:
+    if (
+        isinstance(metrics, dict)
+        and "missing_critical_count" in metrics
+        and "missing_chain_count" not in metrics
+    ):
         claims = report.get("claims", [])
         metrics["missing_chain_count"] = sum(
-            1 for c in claims if c.get("type") == "analysis_chain" and c.get("overall_relation") == "missing"
+            1
+            for c in claims
+            if c.get("type") == "analysis_chain" and c.get("overall_relation") == "missing"
         )
     return report
+
+
+def _result_date(data: dict[str, Any], rel_path: Path) -> str:
+    """Return an ISO date for a structured result, preferring its run directory."""
+    timestamp = ""
+    if rel_path.name == "result.json" and len(rel_path.parts) >= 6 and rel_path.parts[3] == "runs":
+        timestamp = rel_path.parts[4]
+    elif rel_path.name == "result.json" and len(rel_path.parts) >= 4:
+        timestamp = rel_path.parts[3]
+
+    digits = "".join(char for char in timestamp if char.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+
+    for field in ("completed_at", "created_at", "started_at"):
+        value = data.get(field)
+        if isinstance(value, str) and len(value) >= 10:
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+            except ValueError:
+                continue
+    return ""
 
 
 @router.get("/direct-results/stats")
@@ -103,7 +140,12 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     # Collect: test_set > category > case_dir > candidate > [scores]
     ts_data: dict[str, dict[str, str]] = {}  # key -> name
     cat_data: dict[str, dict[str, str]] = {}  # key -> name
-    scores: dict[str, dict[str, dict[str, dict[str, list[float]]]]] = {}  # ts > cat > case_dir > candidate -> [scores]
+    scores: dict[
+        str, dict[str, dict[str, dict[str, list[float]]]]
+    ] = {}  # ts > cat > case_dir > candidate -> [scores]
+    daily_case_scores: dict[
+        str, dict[str, dict[str, dict[str, list[float]]]]
+    ] = {}  # date > ts > cat/case_dir > candidate -> [scores]
 
     if formal_dir.is_dir():
         for json_file in formal_dir.rglob("result.json"):
@@ -123,6 +165,7 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             ts_key = rel_path.parts[0]
             cat_key = rel_path.parts[1]
             case_dir = rel_path.parts[2]
+            result_date = _result_date(data, rel_path)
 
             # Extract test_set/category names from case.json or result data
             case_obj = data.get("case") or data.get("case_source") or {}
@@ -130,7 +173,9 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 ts_obj = case_obj.get("test_set") or {}
                 ts_name = ts_obj.get("name", ts_key) if isinstance(ts_obj, dict) else str(ts_obj)
                 cat_obj = case_obj.get("category") or {}
-                cat_name = cat_obj.get("name", cat_key) if isinstance(cat_obj, dict) else str(cat_obj)
+                cat_name = (
+                    cat_obj.get("name", cat_key) if isinstance(cat_obj, dict) else str(cat_obj)
+                )
             else:
                 ts_name, cat_name = ts_key, cat_key
 
@@ -138,7 +183,9 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             cat_data[f"{ts_key}/{cat_key}"] = {"key": cat_key, "name": cat_name}
 
             summary = data.get("summary") or data
-            reports = summary.get("reports") if isinstance(summary, dict) else data.get("reports", [])
+            reports = (
+                summary.get("reports") if isinstance(summary, dict) else data.get("reports", [])
+            )
             for report in reports:
                 candidate_name = report.get("candidate_name", "")
                 score = float(report.get("score", 0))
@@ -151,6 +198,11 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 if candidate_name not in scores[ts_key][cat_key][case_dir]:
                     scores[ts_key][cat_key][case_dir][candidate_name] = []
                 scores[ts_key][cat_key][case_dir][candidate_name].append(score)
+                if result_date:
+                    case_key = f"{cat_key}/{case_dir}"
+                    daily_case_scores.setdefault(result_date, {}).setdefault(ts_key, {}).setdefault(
+                        case_key, {}
+                    ).setdefault(candidate_name, []).append(score)
 
     # Try to also read names from case.json files
     if formal_dir.is_dir():
@@ -173,11 +225,36 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                     ts_data[ts_key] = {"key": ts_key, "name": ts_obj.get("name", ts_key)}
                 cat_obj = case_obj.get("category") or {}
                 if isinstance(cat_obj, dict) and cat_obj.get("name"):
-                    cat_data[f"{ts_key}/{cat_key}"] = {"key": cat_key, "name": cat_obj.get("name", cat_key)}
+                    cat_data[f"{ts_key}/{cat_key}"] = {
+                        "key": cat_key,
+                        "name": cat_obj.get("name", cat_key),
+                    }
 
     # Build result structure
     def _avg(lst: list[float]) -> float:
         return sum(lst) / len(lst) if lst else 0.0
+
+    def _daily_rows(test_set: str | None = None) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for result_date in sorted(daily_case_scores):
+            candidate_case_scores: dict[str, list[float]] = {}
+            for ts_key, cases in daily_case_scores[result_date].items():
+                if test_set is not None and ts_key != test_set:
+                    continue
+                for case_scores in cases.values():
+                    for candidate_name, values in case_scores.items():
+                        candidate_case_scores.setdefault(candidate_name, []).append(_avg(values))
+            candidates = [
+                {
+                    "name": candidate_name,
+                    "avg_score": round(_avg(candidate_case_scores[candidate_name]), 2),
+                }
+                for candidate_name in all_candidate_names
+                if candidate_name in candidate_case_scores
+            ]
+            if candidates:
+                rows.append({"date": result_date, "candidates": candidates})
+        return rows
 
     # Collect all candidate names across all results
     all_candidate_names: list[str] = []
@@ -189,7 +266,9 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                     if c_name not in candidate_scores_global:
                         candidate_scores_global[c_name] = []
                         all_candidate_names.append(c_name)
-                    candidate_scores_global[c_name].extend(scores[ts_key][cat_key][case_dir][c_name])
+                    candidate_scores_global[c_name].extend(
+                        scores[ts_key][cat_key][case_dir][c_name]
+                    )
 
     # Sort candidates by global avg score descending
     all_candidate_names.sort(key=lambda n: _avg(candidate_scores_global[n]), reverse=True)
@@ -220,24 +299,29 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 for c_name in all_candidate_names
                 if c_name in cat_candidate_scores
             ]
-            categories.append({
-                "key": cat_info["key"],
-                "name": cat_info["name"],
-                "case_count": case_count,
-                "candidates": cat_candidates,
-            })
+            categories.append(
+                {
+                    "key": cat_info["key"],
+                    "name": cat_info["name"],
+                    "case_count": case_count,
+                    "candidates": cat_candidates,
+                }
+            )
 
         ts_candidates = [
             {"name": c_name, "avg_score": round(_avg(ts_candidate_scores.get(c_name, [])), 2)}
             for c_name in all_candidate_names
             if c_name in ts_candidate_scores
         ]
-        result_test_sets.append({
-            "key": ts_info["key"],
-            "name": ts_info["name"],
-            "categories": categories,
-            "candidates": ts_candidates,
-        })
+        result_test_sets.append(
+            {
+                "key": ts_info["key"],
+                "name": ts_info["name"],
+                "categories": categories,
+                "candidates": ts_candidates,
+                "daily_scores": _daily_rows(ts_key),
+            }
+        )
 
     global_candidates = [
         {"name": c_name, "avg_score": round(_avg(candidate_scores_global[c_name]), 2)}
@@ -247,6 +331,7 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     return {
         "test_sets": result_test_sets,
         "candidates": global_candidates,
+        "daily_scores": _daily_rows(),
     }
 
 
@@ -301,7 +386,10 @@ def list_direct_results(request: Request) -> list[dict[str, Any]]:
             items.append(_extract_result_meta(data, rel_path, "tmp"))
 
     # Sort by timestamp descending, then formal before tmp
-    items.sort(key=lambda x: (x.get("timestamp", "") or "", 0 if x["source"] == "formal" else 1), reverse=True)
+    items.sort(
+        key=lambda x: (x.get("timestamp", "") or "", 0 if x["source"] == "formal" else 1),
+        reverse=True,
+    )
     return items
 
 
@@ -349,13 +437,16 @@ def get_direct_result(result_id: str, request: Request) -> dict[str, Any]:
 
 class PromotePayload(BaseModel):
     """Payload for promote/move specifying destination path."""
+
     test_set: str
     category: str
     case_dir: str
 
 
 @router.post("/direct-results/{result_id:path}/promote")
-def promote_direct_result(result_id: str, payload: PromotePayload, request: Request) -> dict[str, Any]:
+def promote_direct_result(
+    result_id: str, payload: PromotePayload, request: Request
+) -> dict[str, Any]:
     """Move a tmp result to the formal results directory. Only moves result files, not case.json."""
     tmp_dir, formal_dir = results_dirs(request)
 
@@ -374,9 +465,12 @@ def promote_direct_result(result_id: str, payload: PromotePayload, request: Requ
     case_dir = payload.case_dir
     timestamp = clean_id.split("/")[-1] if "/" in clean_id else ""
 
-    dest_dir = formal_dir / test_set / category / case_dir / timestamp
+    dest_dir = formal_dir / test_set / category / case_dir / "runs" / timestamp
     if dest_dir.exists():
-        raise AnalystBenchError("dest_conflict", f"目标目录已存在：{test_set}/{category}/{case_dir}/{timestamp}")
+        raise AnalystBenchError(
+            "dest_conflict",
+            f"目标目录已存在：{test_set}/{category}/{case_dir}/runs/{timestamp}",
+        )
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -401,7 +495,7 @@ def promote_direct_result(result_id: str, payload: PromotePayload, request: Requ
             break
 
     # Update result id
-    new_result_id = f"{test_set}/{category}/{case_dir}/{timestamp}"
+    new_result_id = f"{test_set}/{category}/{case_dir}/runs/{timestamp}"
     result_data = json.loads((dest_dir / "result.json").read_text(encoding="utf-8"))
     result_data["id"] = new_result_id
     (dest_dir / "result.json").write_text(
@@ -417,7 +511,7 @@ def promote_direct_result(result_id: str, payload: PromotePayload, request: Requ
 
 @router.post("/direct-results/{result_id:path}/move")
 def move_direct_result(result_id: str, payload: PromotePayload, request: Request) -> dict[str, Any]:
-    """Move a formal result to a different test_set/category/case_dir. Only moves result files, not case.json."""
+    """Move formal result files to a different test_set/category/case_dir."""
     tmp_dir, formal_dir = results_dirs(request)
 
     src_dir = formal_dir / result_id
@@ -429,9 +523,13 @@ def move_direct_result(result_id: str, payload: PromotePayload, request: Request
     case_dir = payload.case_dir
     timestamp = src_dir.name  # Last part of result_id is the timestamp
 
-    dest_dir = formal_dir / test_set / category / case_dir / timestamp
+    dest_parent = formal_dir / test_set / category / case_dir
+    dest_dir = dest_parent / "runs" / timestamp
     if dest_dir.exists():
-        raise AnalystBenchError("dest_conflict", f"目标目录已存在：{test_set}/{category}/{case_dir}/{timestamp}")
+        raise AnalystBenchError(
+            "dest_conflict",
+            f"目标目录已存在：{test_set}/{category}/{case_dir}/runs/{timestamp}",
+        )
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -456,7 +554,7 @@ def move_direct_result(result_id: str, payload: PromotePayload, request: Request
             break
 
     # Update result id
-    new_result_id = f"{test_set}/{category}/{case_dir}/{timestamp}"
+    new_result_id = f"{test_set}/{category}/{case_dir}/runs/{timestamp}"
     result_data = json.loads((dest_dir / "result.json").read_text(encoding="utf-8"))
     result_data["id"] = new_result_id
     (dest_dir / "result.json").write_text(
@@ -549,7 +647,9 @@ async def evaluate_local_case(
     if not reports:
         raise AnalystBenchError("report_invalid", "至少需要一份 AI 报告文件。")
     if judge not in {"claude-code", "opencode", "lexical"}:
-        raise AnalystBenchError("validation_failed", "judge 必须是 claude-code、opencode 或 lexical。")
+        raise AnalystBenchError(
+            "validation_failed", "judge 必须是 claude-code、opencode 或 lexical。"
+        )
 
     settings: Settings = request.app.state.settings
     formal_dir = settings.results_formal_path
@@ -581,7 +681,9 @@ async def evaluate_local_case(
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
-            raise AnalystBenchError("report_invalid", f"报告文件 {filename} 不是有效的 UTF-8 文本。")
+            raise AnalystBenchError(
+                "report_invalid", f"报告文件 {filename} 不是有效的 UTF-8 文本。"
+            )
         if not text.strip():
             raise AnalystBenchError("report_invalid", f"报告文件 {filename} 为空。")
 
@@ -594,7 +696,9 @@ async def evaluate_local_case(
             if isinstance(payload, dict) and isinstance(payload.get("candidate_report"), str):
                 candidate = payload.setdefault("candidate", {})
                 if not isinstance(candidate, dict):
-                    raise AnalystBenchError("report_invalid", f"{filename} 的 candidate 必须是 JSON 对象。")
+                    raise AnalystBenchError(
+                        "report_invalid", f"{filename} 的 candidate 必须是 JSON 对象。"
+                    )
                 candidate["name"] = Path(filename).stem
                 metadata = candidate.setdefault("metadata", {})
                 if isinstance(metadata, dict):
@@ -636,9 +740,18 @@ async def evaluate_local_case(
             "engine_note": f"评分引擎 {judge}，评分进行中…",
             "ranking": [],
             "reports": [
-                {"candidate_name": r.get("candidate", {}).get("name", "unknown"), "status": "running",
-                 "score": "0", "passed": False, "claim_count": 0, "hit_count": 0,
-                 "missing_chains": [], "metrics": {}, "claims": [], "warnings": []}
+                {
+                    "candidate_name": r.get("candidate", {}).get("name", "unknown"),
+                    "status": "running",
+                    "score": "0",
+                    "passed": False,
+                    "claim_count": 0,
+                    "hit_count": 0,
+                    "missing_chains": [],
+                    "metrics": {},
+                    "claims": [],
+                    "warnings": [],
+                }
                 for r in report_payloads
             ],
             "comparisons": [],
@@ -656,7 +769,12 @@ async def evaluate_local_case(
         """Run evaluation in a background thread and update result.json on completion."""
         try:
             result = evaluate_direct(
-                case_payload, case_key, report_payloads, settings, judge, source_path,
+                case_payload,
+                case_key,
+                report_payloads,
+                settings,
+                judge,
+                source_path,
             )
             result["id"] = result_id
             # Write completed result.json
@@ -685,10 +803,12 @@ async def evaluate_local_case(
                 "error": {"code": "evaluation_failed", "message": str(exc)},
             }
             (output_dir / "result.json").write_text(
-                json.dumps(error_result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+                json.dumps(error_result, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
             )
 
     import asyncio
+
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _run_evaluation)
 

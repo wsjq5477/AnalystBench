@@ -2,11 +2,19 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
+from pydantic import BaseModel
 
 from analystbench.config import Settings
+from analystbench.errors import AnalystBenchError
+from analystbench.evaluation_submission import (
+    _atomic_json,
+    _safe_case_directory,
+    _safe_relative_path,
+    inspect_case_logs,
+)
 
 router = APIRouter(tags=["cases-local"])
 
@@ -14,7 +22,14 @@ router = APIRouter(tags=["cases-local"])
 class CaseTreeNode:
     """A node in the local case tree (test_set / category / case_dir)."""
 
-    def __init__(self, key: str, name: str, node_type: str, children: list["CaseTreeNode"] | None = None, case_data: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        key: str,
+        name: str,
+        node_type: str,
+        children: list["CaseTreeNode"] | None = None,
+        case_data: dict[str, Any] | None = None,
+    ) -> None:
         self.key = key
         self.name = name
         self.node_type = node_type  # "test_set" | "category" | "case"
@@ -62,9 +77,7 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
 
         case_obj = data.get("case") or {}
         ts_key = str(case_obj.get("test_set") or "default")
-        ts_name = ts_key
         cat_key = str(case_obj.get("category") or "uncategorized")
-        cat_name = cat_key
 
         # case_dir from path: case.json is in .../test_set/category/case_dir/case.json
         rel = case_file.relative_to(formal_dir)
@@ -81,6 +94,14 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
         for timestamp_dir in case_parent.iterdir():
             if timestamp_dir.is_dir() and (timestamp_dir / "result.json").is_file():
                 result_count += 1
+        runs_dir = case_parent / "runs"
+        if runs_dir.is_dir():
+            result_count += sum(
+                1
+                for timestamp_dir in runs_dir.iterdir()
+                if timestamp_dir.is_dir() and (timestamp_dir / "result.json").is_file()
+            )
+        log_info = inspect_case_logs(case_parent)
 
         case_key = case_obj.get("case_key") or case_dir
         case_summary = {
@@ -90,6 +111,10 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
             "test_set": ts_key,
             "result_count": result_count,
             "claims_count": len((data.get("eval_spec_draft") or {}).get("claims", [])),
+            "log_count": log_info["log_count"],
+            "primary_log": log_info["primary_log"],
+            "submission_ready": log_info["submission_ready"],
+            "blocking_issues": log_info["blocking_issues"],
         }
 
         if ts_key not in test_sets:
@@ -111,6 +136,109 @@ def list_local_cases_tree(request: Request) -> list[dict[str, Any]]:
         result.append(ts_node.to_dict())
 
     return result
+
+
+class PrimaryLogUpdate(BaseModel):
+    filename: str
+
+
+def _local_case_directory(request: Request, test_set: str, category: str, case_key: str) -> Path:
+    settings: Settings = request.app.state.settings
+    case_path = f"{test_set}/{category}/{case_key}"
+    directory = _safe_case_directory(settings.results_formal_path, case_path)
+    if not (directory / "case.json").is_file():
+        raise AnalystBenchError("case_not_found", f"找不到 Case {case_path}。", status_code=404)
+    return directory
+
+
+@router.get("/local-cases/{test_set}/{category}/{case_key}/logs")
+def list_local_case_logs(
+    test_set: str, category: str, case_key: str, request: Request
+) -> dict[str, Any]:
+    return inspect_case_logs(_local_case_directory(request, test_set, category, case_key))
+
+
+@router.post("/local-cases/{test_set}/{category}/{case_key}/logs")
+async def upload_local_case_logs(
+    test_set: str,
+    category: str,
+    case_key: str,
+    request: Request,
+    files: Annotated[list[UploadFile], File(...)],
+    primary: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    if not files:
+        raise AnalystBenchError("case_logs_missing", "至少上传一个日志文件。")
+    case_directory = _local_case_directory(request, test_set, category, case_key)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir(parents=True, exist_ok=True)
+    uploaded_names: list[str] = []
+    for upload in files:
+        filename = Path(upload.filename or "").name
+        if not filename or filename == "manifest.json":
+            raise AnalystBenchError("case_log_invalid", "日志文件名无效。")
+        raw = await upload.read()
+        if not raw:
+            raise AnalystBenchError("case_log_invalid", f"日志文件 {filename} 为空。")
+        destination = logs_directory / filename
+        destination.write_bytes(raw)
+        uploaded_names.append(filename)
+    if primary:
+        relative = _safe_relative_path(primary).as_posix()
+        if not (logs_directory / relative).is_file():
+            raise AnalystBenchError("case_primary_log_missing", "指定的主日志不存在。")
+        _atomic_json(logs_directory / "manifest.json", {"primary": relative})
+    elif len(inspect_case_logs(case_directory)["files"]) == 1:
+        only_file = inspect_case_logs(case_directory)["files"][0]
+        _atomic_json(logs_directory / "manifest.json", {"primary": only_file})
+    return {**inspect_case_logs(case_directory), "uploaded": uploaded_names}
+
+
+@router.put("/local-cases/{test_set}/{category}/{case_key}/logs/primary")
+def set_local_case_primary_log(
+    test_set: str,
+    category: str,
+    case_key: str,
+    payload: PrimaryLogUpdate,
+    request: Request,
+) -> dict[str, Any]:
+    case_directory = _local_case_directory(request, test_set, category, case_key)
+    relative = _safe_relative_path(payload.filename).as_posix()
+    logs_directory = case_directory / "logs"
+    if not (logs_directory / relative).is_file():
+        raise AnalystBenchError("case_primary_log_missing", "指定的主日志不存在。")
+    _atomic_json(logs_directory / "manifest.json", {"primary": relative})
+    return inspect_case_logs(case_directory)
+
+
+@router.delete(
+    "/local-cases/{test_set}/{category}/{case_key}/logs",
+    status_code=status.HTTP_200_OK,
+)
+def delete_local_case_log(
+    test_set: str,
+    category: str,
+    case_key: str,
+    request: Request,
+    filename: str = Query(...),
+) -> dict[str, Any]:
+    case_directory = _local_case_directory(request, test_set, category, case_key)
+    relative = _safe_relative_path(filename)
+    logs_directory = case_directory / "logs"
+    target = (logs_directory / relative).resolve()
+    if logs_directory.resolve() not in target.parents or not target.is_file():
+        raise AnalystBenchError("case_log_not_found", "找不到指定日志。", status_code=404)
+    if target.is_symlink():
+        raise AnalystBenchError("case_log_invalid", "不能操作符号链接日志。")
+    target.unlink()
+    info = inspect_case_logs(case_directory)
+    manifest = logs_directory / "manifest.json"
+    if info["log_count"] == 0:
+        if manifest.is_file():
+            manifest.unlink()
+    elif info["log_count"] == 1:
+        _atomic_json(manifest, {"primary": info["files"][0]})
+    return inspect_case_logs(case_directory)
 
 
 @router.get("/local-cases/{case_path:path}")
@@ -135,11 +263,9 @@ def get_local_case(case_path: str, request: Request) -> dict[str, Any]:
             if (data.get("case") or {}).get("case_key") == case_path:
                 return data
 
-        from analystbench.errors import AnalystBenchError
         raise AnalystBenchError("case_not_found", f"找不到 Case {case_path}。")
 
     try:
         return json.loads(case_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        from analystbench.errors import AnalystBenchError
-        raise AnalystBenchError("case_file_corrupt", "Case 文件无法解析。")
+    except (json.JSONDecodeError, OSError) as exc:
+        raise AnalystBenchError("case_file_corrupt", "Case 文件无法解析。") from exc

@@ -14,6 +14,10 @@ from analystbench.case_library import CaseLibraryService
 from analystbench.config import Settings, get_settings
 from analystbench.content_store import ContentStore
 from analystbench.db.session import create_database_engine, create_session_factory
+from analystbench.evaluation_submission import (
+    EvaluationCommandError,
+    EvaluationSubmissionService,
+)
 from analystbench.jobs import JobQueue
 from analystbench.logging import configure_logging
 
@@ -34,6 +38,9 @@ class LocalWorker:
         self.case_library = CaseLibraryService(
             self.session_factory, self.content_store, self.settings
         )
+        self.evaluation_submissions = EvaluationSubmissionService(
+            self.session_factory, self.settings
+        )
         self.jobs = JobQueue(self.session_factory)
         self.worker_id = f"{os.getpid()}-{uuid4()}"
 
@@ -53,9 +60,20 @@ class LocalWorker:
                 self.benchmarks.execute_case_run(str(payload["benchmark_case_run_id"]))
             elif job.kind == "case_draft_generate":
                 self.case_library.execute_generation(str(payload["case_draft_id"]))
+            elif job.kind == "evaluation_method_run":
+                self.evaluation_submissions.execute_method_run(
+                    str(payload["evaluation_method_run_id"])
+                )
+            elif job.kind == "evaluation_case_score":
+                self.evaluation_submissions.execute_case_scoring(
+                    str(payload["evaluation_case_run_id"])
+                )
             else:
                 raise RuntimeError(f"unsupported job kind '{job.kind}'")
         except AgentRunnerError as exc:
+            self.jobs.fail(job.id, f"{exc.code}: {exc}", retryable=False)
+            logger.warning("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
+        except EvaluationCommandError as exc:
             self.jobs.fail(job.id, f"{exc.code}: {exc}", retryable=False)
             logger.warning("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         except Exception as exc:

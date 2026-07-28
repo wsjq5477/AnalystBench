@@ -60,7 +60,7 @@ export default appOptions;
 
         <div class="chart-grid">
           <section class="surface chart-panel"><div class="panel-heading"><h2>按问题种类得分对比</h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />真实运行数据</span></div><ChartCanvas kind="bar" :theme="theme" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
-          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分对比</h2></div><ChartCanvas kind="bar" :theme="theme" :labels="['得分']" :series="dashboardScoreCards.map((c) => ({ name: c.label, values: [c.score] }))" :height="276" /></section>
+          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分按日期对比</h2></div><ChartCanvas kind="bar" :theme="theme" :labels="dailyScoreLabels" :series="dailyScoreSeries" :height="276" /></section>
         </div>
 
         <section class="surface matrix-panel">
@@ -94,13 +94,51 @@ export default appOptions;
           <section class="surface detail-panel">
             <div class="panel-heading"><h2>Case 详情</h2><span>{{ selectedLocalCasePath || '未选择' }}</span><button v-if="selectedLocalCasePath" class="ghost-button" @click="openEvaluateDialog"><IconFlask :size="16" />评分</button></div>
             <template v-if="selectedLocalCaseData">
-              <dl>
-                <div><dt>Case Key</dt><dd>{{ (selectedLocalCaseData.case)?.case_key ?? '—' }}</dd></div>
-                <div><dt>问题分类</dt><dd>{{ ((selectedLocalCaseData.case)?.category)?.name ?? '—' }}</dd></div>
-                <div><dt>测试集</dt><dd>{{ ((selectedLocalCaseData.case)?.test_set)?.name ?? '—' }}</dd></div>
-                <div><dt>评分项数</dt><dd>{{ ((selectedLocalCaseData.eval_spec_draft)?.claims)?.length ?? 0 }}</dd></div>
-              </dl>
-              <div class="code-block">{{ JSON.stringify(selectedLocalCaseData, null, 2) }}</div>
+              <div class="case-detail-content">
+                <section class="case-detail-card">
+                  <div class="case-detail-section-head">
+                    <h3>基础信息</h3>
+                  </div>
+                  <dl class="case-meta-grid">
+                    <div><dt>Case Key</dt><dd>{{ (selectedLocalCaseData.case)?.case_key ?? '—' }}</dd></div>
+                    <div><dt>问题分类</dt><dd>{{ ((selectedLocalCaseData.case)?.category)?.name ?? '—' }}</dd></div>
+                    <div><dt>测试集</dt><dd>{{ ((selectedLocalCaseData.case)?.test_set)?.name ?? '—' }}</dd></div>
+                    <div><dt>评分项数</dt><dd>{{ ((selectedLocalCaseData.eval_spec_draft)?.claims)?.length ?? 0 }}</dd></div>
+                  </dl>
+                </section>
+                <section class="case-detail-card case-logs">
+                  <div class="case-detail-section-head">
+                  <h3>原始日志</h3>
+                  <span :class="selectedCaseLogs?.submission_ready ? 'tag-match' : 'tag-partial'">{{ selectedCaseLogs?.submission_ready ? '可提交测评' : '尚未就绪' }}</span>
+                  </div>
+                  <div class="case-detail-section-body">
+                    <div v-if="selectedCaseLogs?.files?.length" class="compact-list">
+                      <div v-for="filename in selectedCaseLogs.files" :key="filename" class="compact-list-row">
+                        <code>{{ filename }}</code>
+                        <span v-if="selectedCaseLogs.primary_log === filename" class="tag-match">主日志</span>
+                        <button v-else class="text-button" @click="setSelectedCasePrimary(filename)">设为主日志</button>
+                        <button class="tree-delete" title="删除日志" @click="deleteSelectedCaseLog(filename)"><IconTrash :size="14" /></button>
+                      </div>
+                    </div>
+                    <p v-else class="form-note">尚未上传日志。Case 可以保留，但提交整个测试集测评时会失败。</p>
+                    <div class="inline-upload">
+                      <label :class="['ghost-button', 'case-log-upload-trigger', { disabled: caseLogsUploading }]">
+                        <IconCloudUpload :size="15" />
+                        {{ caseLogsUploading ? '上传中…' : '选择并上传日志' }}
+                        <input type="file" multiple :disabled="caseLogsUploading" @change="onCaseLogFileChange" />
+                      </label>
+                      <span class="form-note">选择后自动上传，可同时选择多个文件。</span>
+                    </div>
+                  </div>
+                </section>
+                <section class="case-detail-card case-json-card">
+                  <div class="case-detail-section-head">
+                    <h3>Case JSON</h3>
+                    <span class="case-section-meta">只读</span>
+                  </div>
+                  <div class="code-block case-json-block">{{ JSON.stringify(selectedLocalCaseData, null, 2) }}</div>
+                </section>
+              </div>
             </template>
             <div v-else class="empty-state"><IconInfoCircle :size="30" /><p>选择左侧 Case 查看详情</p></div>
           </section>
@@ -108,7 +146,38 @@ export default appOptions;
       </section>
 
       <section v-if="activeView === 'results'" class="work-page results-page">
-        <div class="work-heading"><div><p class="eyebrow">EVALUATION RESULTS</p><h1>评测结果</h1><p>查看评测结果，临时结果可归档到正式结果集。</p></div><button class="ghost-button" @click="resultSource === 'tmp' ? refreshDirectResults() : refreshDirectResults()"><IconRefresh :size="16" />刷新</button></div>
+        <div class="work-heading"><div><p class="eyebrow">EVALUATION RESULTS</p><h1>评测结果</h1><p>查看评测结果，或选择测试集和测评方式生成新结果。</p></div><button class="ghost-button" @click="refreshDirectResults(); loadEvaluationSubmissions()"><IconRefresh :size="16" />刷新</button><button class="primary-button" @click="openSubmitEvaluationDialog"><IconFlask :size="16" />提交测评</button></div>
+        <section v-if="evaluationSubmissions.length" class="surface submission-panel">
+          <div class="panel-heading"><h2>测评批次</h2><span>{{ evaluationSubmissions.length }} 个批次</span></div>
+          <div class="submission-layout">
+            <div class="submission-list">
+              <button v-for="submission in evaluationSubmissions" :key="submission.id" :class="['submission-item', { active: selectedSubmissionId === submission.id }]" @click="selectEvaluationSubmission(submission.id)">
+                <strong>{{ submission.dataset_key }} · {{ submission.timestamp }}</strong>
+                <span :class="submission.status === 'completed' ? 'tag-match' : submission.status === 'failed' || submission.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ submission.status }}</span>
+                <small>{{ submission.case_count }} Case · {{ submission.methods.map((item) => item.name).join('、') }}</small>
+              </button>
+            </div>
+            <div class="submission-cases">
+              <div v-if="selectedSubmission" class="submission-summary">
+                <strong>{{ selectedSubmission.dataset_key }}</strong>
+                <span>{{ selectedSubmission.summary.completed ?? 0 }}/{{ selectedSubmission.case_count }} 完成</span>
+                <button v-if="['completed', 'completed_with_errors', 'failed'].includes(selectedSubmission.status)" class="ghost-button" @click="showEvaluationSubmissionResults(selectedSubmission)">查看正式结果</button>
+                <button v-if="!['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(selectedSubmission.status)" class="ghost-button" @click="cancelEvaluationSubmission(selectedSubmission)">取消批次</button>
+              </div>
+              <div v-for="caseRun in submissionCaseRuns" :key="caseRun.id" class="submission-case-row">
+                <div>
+                  <strong>{{ caseRun.case_path }}</strong>
+                  <small>打分：{{ caseRun.scoring_status }}</small>
+                  <small class="method-run-links">
+                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.name }} {{ methodRun.status }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
+                  </small>
+                </div>
+                <span :class="caseRun.status === 'completed' ? 'tag-match' : caseRun.status === 'failed' || caseRun.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ caseRun.status }}</span>
+                <button v-if="caseRun.status === 'failed' || caseRun.status === 'completed_with_errors'" class="text-button" @click="retryEvaluationCaseRun(caseRun)">重试失败项</button>
+              </div>
+            </div>
+          </div>
+        </section>
         <div class="source-tabs">
           <button :class="['source-tab', { active: resultSource === 'tmp' }]" @click="resultSource = 'tmp'; refreshDirectResults()"><IconFolder :size="16" />临时结果</button>
           <button :class="['source-tab', { active: resultSource === 'formal' }]" @click="resultSource = 'formal'; refreshDirectResults()"><IconClipboardData :size="16" />正式结果</button>
@@ -246,7 +315,7 @@ export default appOptions;
         </template>
         <!-- Formal results -->
         <template v-if="resultSource === 'formal'">
-          <div v-if="directResultList.length === 0 && !resultLoading" class="empty-state surface" style="min-height:200px"><IconClipboardData :size="30" /><p>暂无正式评测结果</p><span>归档临时结果后即可在此查看。</span></div>
+          <div v-if="directResultList.length === 0 && !resultLoading" class="empty-state surface" style="min-height:200px"><IconClipboardData :size="30" /><p>暂无正式评测结果</p><span>提交测评完成后会自动写入此处；临时结果也可手动归档。</span></div>
           <div v-else class="results-layout">
             <section class="surface result-list-panel">
               <div class="panel-heading"><h2><IconClipboardData :size="17" />正式结果</h2><span>{{ directResultList.length }} 条</span></div>
@@ -380,18 +449,150 @@ export default appOptions;
 
       <!-- Settings view -->
       <section v-if="activeView === 'settings'" class="work-page settings-page">
-        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置评测结果的存储路径。</p></div><button class="ghost-button" @click="loadAppSettings"><IconRefresh :size="16" />刷新</button></div>
+        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径和可执行的测评方式。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods()"><IconRefresh :size="16" />刷新</button></div>
         <section class="surface form-card">
           <div class="panel-heading"><h2>结果路径配置</h2></div>
           <label>临时结果目录<span>单次评测默认输出到此目录</span><input v-model="appSettings.results_tmp_path" placeholder="data/results/tmp" /></label>
           <label>正式结果集目录<span>归档后的结果存入此目录（按 测试集/分类/case/时间戳 组织）</span><input v-model="appSettings.results_formal_path" placeholder="data/results" /></label>
           <button class="primary-button wide" @click="saveAppSettings"><IconSettings :size="16" />保存设置</button>
         </section>
+        <section class="surface form-card method-card">
+          <div class="panel-heading"><h2>测评方式</h2><button class="primary-button" @click="openMethodDialog"><IconPlus :size="16" />新建方式</button></div>
+          <p class="form-note">命令在隔离目录执行，仅能看到本次复制的原始日志。标准输出会保存为对应的 Markdown 报告。</p>
+          <div v-if="evaluationMethods.length" class="method-list">
+            <div v-for="method in evaluationMethods" :key="method.id" class="method-row">
+              <div><strong>{{ method.name }} <small>v{{ method.version }}</small></strong><code>{{ method.command_template }}</code><span v-if="method.tool_dir">工具目录：{{ method.tool_dir }}</span></div>
+              <span :class="method.status === 'frozen' ? 'tag-match' : method.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ method.status }}</span>
+              <span :class="method.probe?.available ? 'tag-match' : 'tag-partial'">{{ method.probe?.available ? '命令可用' : '未检测' }}</span>
+              <button v-if="method.status === 'draft'" class="ghost-button" @click="probeEvaluationMethod(method)">检测</button>
+              <button v-if="method.status === 'draft'" class="primary-button" :disabled="!method.probe?.available" @click="freezeEvaluationMethod(method)">冻结</button>
+              <button v-if="method.status !== 'archived'" class="tree-delete" title="归档" @click="archiveEvaluationMethod(method)"><IconTrash :size="14" /></button>
+            </div>
+          </div>
+          <div v-else class="empty-state"><IconTerminal2 :size="26" /><p>暂无测评方式</p><span>新建并检测、冻结后，即可在结果页提交测评。</span></div>
+        </section>
       </section>
     </main>
 
     <div v-if="loading" class="busy-layer"><IconLoader2 :size="25" class="spin" />正在与 AnalystBench API 通信…</div>
     <div v-if="toast" class="toast"><IconAlertCircle :size="17" />{{ toast }}</div>
+
+    <!-- Submit evaluation dialog -->
+    <div v-if="showSubmitEvaluationDialog" class="dialog-overlay" @click.self="showSubmitEvaluationDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>提交测评</h2><span>步骤 {{ submissionStep }}/3</span></div>
+        <p class="form-note">选择本次要测评的 Case。缺少有效日志的 Case 不会进入批次，也不会影响其他 Case。</p>
+        <template v-if="submissionStep === 1">
+          <label>测试集
+            <select v-model="submissionForm.dataset_key" @change="resetSubmissionCaseSelection">
+              <option value="" disabled>请选择测试集</option>
+              <option v-for="testSet in localCaseTree" :key="testSet.key" :value="testSet.key">{{ testSet.name }}</option>
+            </select>
+          </label>
+          <fieldset class="method-picker submission-case-picker">
+            <legend>Case 选择</legend>
+            <div class="submission-case-picker-head">
+              <strong>{{ submissionForm.case_paths.length }}/{{ selectableSubmissionCases.length }} 个可测 Case 已选择</strong>
+              <span>
+                <button type="button" class="text-button" @click="selectAllReadySubmissionCases">全选可测</button>
+                <button type="button" class="text-button" @click="clearSubmissionCaseSelection">清空</button>
+              </span>
+            </div>
+            <label
+              v-for="caseItem in selectedSubmissionCases"
+              :key="`${caseItem.category}/${caseItem.key}`"
+              :class="['compact-list-row', 'submission-case-option', { disabled: !caseItem.case_data?.submission_ready }]"
+            >
+              <input
+                v-model="submissionForm.case_paths"
+                type="checkbox"
+                :value="submissionCasePath(caseItem)"
+                :disabled="!caseItem.case_data?.submission_ready"
+              />
+              <span class="submission-case-path">{{ caseItem.category }}/{{ caseItem.key }}</span>
+              <span :class="caseItem.case_data?.submission_ready ? 'tag-match' : 'tag-missing'">{{ caseItem.case_data?.submission_ready ? `${caseItem.case_data.log_count} 个日志` : '缺少有效日志' }}</span>
+            </label>
+            <p v-if="unavailableSubmissionCases.length" class="form-note">{{ unavailableSubmissionCases.length }} 个 Case 因日志未就绪自动跳过。</p>
+          </fieldset>
+        </template>
+        <fieldset v-else-if="submissionStep === 2" class="method-picker">
+            <legend>测评方式</legend>
+            <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
+              <input v-model="submissionForm.method_ids" type="checkbox" :value="method.id" />
+              <span><strong>{{ method.name }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
+            </label>
+            <p v-if="!frozenEvaluationMethods.length" class="form-note">没有可用方式，请先到设置页新建、检测并冻结。</p>
+        </fieldset>
+        <template v-else>
+          <div class="case-info-grid">
+            <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ submissionForm.dataset_key }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">本次 Case 数</span><span class="case-info-value">{{ submissionForm.case_paths.length }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">未纳入 Case</span><span class="case-info-value">{{ selectedSubmissionCases.length - submissionForm.case_paths.length }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">测评方式数</span><span class="case-info-value">{{ submissionForm.method_ids.length }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">生成任务数</span><span class="case-info-value">{{ submissionForm.case_paths.length * submissionForm.method_ids.length }}</span></div>
+          </div>
+          <label>打分 Judge
+            <select v-model="submissionForm.judge_runner">
+              <option value="claude-code">claude-code（推荐）</option>
+              <option value="opencode">opencode</option>
+            </select>
+          </label>
+        </template>
+        <div class="dialog-actions">
+          <button v-if="submissionStep === 1" class="ghost-button" @click="showSubmitEvaluationDialog = false">取消</button>
+          <button v-else class="ghost-button" @click="submissionStep -= 1">上一步</button>
+          <button v-if="submissionStep < 3" class="primary-button" @click="advanceSubmissionStep">下一步<IconChevronRight :size="16" /></button>
+          <button v-else class="primary-button" :disabled="submissionRunning || !submissionForm.dataset_key || !submissionForm.method_ids.length" @click="createEvaluationSubmission"><IconFlask :size="16" />{{ submissionRunning ? '提交中…' : '开始测评' }}</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Evaluation method dialog -->
+    <div v-if="showMethodDialog" class="dialog-overlay" @click.self="showMethodDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>新建测评方式</h2></div>
+        <p class="form-note">支持 {input}、{input_dir}、{workspace}、{tool_dir}。命令不经过 Shell，不能使用管道或重定向。</p>
+        <label>Key
+          <input v-model="methodForm.key" placeholder="claude" />
+        </label>
+        <label>显示名称
+          <input v-model="methodForm.name" placeholder="Claude" />
+        </label>
+        <label>工具目录（可选）
+          <input v-model="methodForm.tool_dir" placeholder="/home/user/evaluation-tools" />
+        </label>
+        <label>命令模板
+          <textarea v-model="methodForm.command_template" rows="3" placeholder='claude -p "帮我分析日志 {input}"'></textarea>
+        </label>
+        <div class="form-grid">
+          <label>超时（秒）<input v-model.number="methodForm.timeout_seconds" type="number" min="1" max="7200" /></label>
+          <label>最大输出（字节）<input v-model.number="methodForm.max_output_bytes" type="number" min="1024" /></label>
+          <label>并发限制<input v-model.number="methodForm.concurrency_limit" type="number" min="1" max="32" /></label>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-button" @click="showMethodDialog = false">取消</button>
+          <button class="primary-button" :disabled="methodSaving" @click="createEvaluationMethod"><IconPlus :size="16" />{{ methodSaving ? '创建中…' : '创建并检测' }}</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Method run artifacts dialog -->
+    <div v-if="showArtifactDialog" class="dialog-overlay" @click.self="showArtifactDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>方式运行审计</h2><span>{{ methodArtifactView?.status }} · attempt {{ methodArtifactView?.attempt }}</span></div>
+        <p v-if="methodArtifactView?.message" class="form-note tone-warning">{{ methodArtifactView.message }}</p>
+        <label>命令
+          <div class="code-block">{{ (methodArtifactView?.command || []).join(' ') }}</div>
+        </label>
+        <label>stdout
+          <div class="code-block">{{ methodArtifactView?.stdout || '（空）' }}</div>
+        </label>
+        <label>stderr
+          <div class="code-block">{{ methodArtifactView?.stderr || '（空）' }}</div>
+        </label>
+        <div class="dialog-actions"><button class="primary-button" @click="showArtifactDialog = false">关闭</button></div>
+      </section>
+    </div>
 
     <!-- Move/Promote dialog -->
     <div v-if="showMoveDialog" class="dialog-overlay" @click.self="showMoveDialog = false">
@@ -465,6 +666,10 @@ export default appOptions;
         </label>
         <label>参考答案（必填）
           <textarea v-model="caseCreateForm.reference_answer" rows="8" placeholder="日志1：file_setattr&#10;结论1：chmod 进程卡在 file_setattr&#10;分类：SYSTEM_DEADLOCK&#10;根因：clusterapp 服务拉起时调用 chmod…" style="min-height:120px;resize:vertical"></textarea>
+        </label>
+        <label>原始日志（可选，可稍后在 Case 详情补充）
+          <input type="file" multiple @change="onCaseCreateLogFileChange" />
+          <span v-if="caseCreateLogFiles.length" class="file-count">{{ caseCreateLogFiles.length }} 份已选择</span>
         </label>
         <div class="dialog-actions">
           <button class="ghost-button" @click="showCreateCaseDialog = false">取消</button>

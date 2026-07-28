@@ -12,15 +12,18 @@ from analystbench import __version__
 from analystbench.agent_execution import AgentExecutionService
 from analystbench.api.routes.benchmarks import router as benchmark_router
 from analystbench.api.routes.case_library import router as case_library_router
-from analystbench.api.routes.direct_results import router as direct_results_router
 from analystbench.api.routes.cases_local import router as cases_local_router
-from analystbench.api.routes.settings import router as settings_router
 from analystbench.api.routes.catalog import router as catalog_router
 from analystbench.api.routes.comparisons import router as comparison_router
+from analystbench.api.routes.direct_results import router as direct_results_router
 from analystbench.api.routes.eval_specs import router as eval_specs_router
 from analystbench.api.routes.evaluation_sessions import router as evaluation_sessions_router
+from analystbench.api.routes.evaluation_submissions import (
+    router as evaluation_submissions_router,
+)
 from analystbench.api.routes.execution import router as execution_router
 from analystbench.api.routes.health import router as health_router
+from analystbench.api.routes.settings import router as settings_router
 from analystbench.benchmark import BenchmarkService
 from analystbench.case_library import (
     CaseLibraryService,
@@ -34,6 +37,10 @@ from analystbench.db.session import create_database_engine, create_session_facto
 from analystbench.errors import AnalystBenchError
 from analystbench.eval_spec import EvalSpecService
 from analystbench.evaluation_session import EvaluationSessionService
+from analystbench.evaluation_submission import (
+    EvaluationMethodService,
+    EvaluationSubmissionService,
+)
 from analystbench.logging import configure_logging
 from analystbench.services import CatalogService
 
@@ -61,6 +68,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.evaluation_session_service = EvaluationSessionService(
             app.state.session_factory, app.state.content_store
+        )
+        app.state.evaluation_method_service = EvaluationMethodService(
+            app.state.session_factory, active_settings
+        )
+        app.state.evaluation_submission_service = EvaluationSubmissionService(
+            app.state.session_factory, active_settings
         )
         app.state.case_library_service = CaseLibraryService(
             app.state.session_factory, app.state.content_store, active_settings
@@ -117,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(execution_router, prefix="/api/v1")
     app.include_router(eval_specs_router, prefix="/api/v1")
     app.include_router(evaluation_sessions_router, prefix="/api/v1")
+    app.include_router(evaluation_submissions_router, prefix="/api/v1")
     app.include_router(case_library_router, prefix="/api/v1")
     app.include_router(direct_results_router, prefix="/api/v1")
     app.include_router(cases_local_router, prefix="/api/v1")

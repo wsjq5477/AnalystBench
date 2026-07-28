@@ -105,6 +105,103 @@ export const analystBenchApi = {
       method: "get",
     });
   },
+  getLocalCaseLogs(testSet, category, caseKey) {
+    return request({
+      url: `/local-cases/${encodeURIComponent(testSet)}/${encodeURIComponent(category)}/${encodeURIComponent(caseKey)}/logs`,
+      method: "get",
+    });
+  },
+  uploadLocalCaseLogs(testSet, category, caseKey, files, primary) {
+    const data = new FormData();
+    files.forEach((file) => data.append("files", file));
+    if (primary) data.append("primary", primary);
+    return request({
+      url: `/local-cases/${encodeURIComponent(testSet)}/${encodeURIComponent(category)}/${encodeURIComponent(caseKey)}/logs`,
+      method: "post",
+      data,
+    });
+  },
+  setLocalCasePrimaryLog(testSet, category, caseKey, filename) {
+    return request({
+      url: `/local-cases/${encodeURIComponent(testSet)}/${encodeURIComponent(category)}/${encodeURIComponent(caseKey)}/logs/primary`,
+      method: "put",
+      data: { filename },
+    });
+  },
+  deleteLocalCaseLog(testSet, category, caseKey, filename) {
+    return request({
+      url: `/local-cases/${encodeURIComponent(testSet)}/${encodeURIComponent(category)}/${encodeURIComponent(caseKey)}/logs`,
+      method: "delete",
+      params: { filename },
+    });
+  },
+  listEvaluationMethods() {
+    return request({ url: "/evaluation-methods", method: "get" });
+  },
+  createEvaluationMethod(data) {
+    return request({ url: "/evaluation-methods", method: "post", data });
+  },
+  reviseEvaluationMethod(methodId, data) {
+    return request({
+      url: `/evaluation-methods/${methodId}:revise`,
+      method: "post",
+      data,
+    });
+  },
+  probeEvaluationMethod(methodId) {
+    return request({
+      url: `/evaluation-methods/${methodId}:probe`,
+      method: "post",
+    });
+  },
+  freezeEvaluationMethod(methodId) {
+    return request({
+      url: `/evaluation-methods/${methodId}:freeze`,
+      method: "post",
+    });
+  },
+  archiveEvaluationMethod(methodId) {
+    return request({
+      url: `/evaluation-methods/${methodId}:archive`,
+      method: "post",
+    });
+  },
+  listEvaluationSubmissions() {
+    return request({ url: "/evaluation-submissions", method: "get" });
+  },
+  createEvaluationSubmission(data) {
+    return request({ url: "/evaluation-submissions", method: "post", data });
+  },
+  getEvaluationSubmission(submissionId) {
+    return request({
+      url: `/evaluation-submissions/${submissionId}`,
+      method: "get",
+    });
+  },
+  getEvaluationSubmissionCaseRuns(submissionId) {
+    return request({
+      url: `/evaluation-submissions/${submissionId}/case-runs`,
+      method: "get",
+    });
+  },
+  cancelEvaluationSubmission(submissionId) {
+    return request({
+      url: `/evaluation-submissions/${submissionId}:cancel`,
+      method: "post",
+    });
+  },
+  retryEvaluationCaseRun(caseRunId) {
+    return request({
+      url: `/evaluation-case-runs/${caseRunId}:retry-failed`,
+      method: "post",
+    });
+  },
+  getEvaluationMethodRunArtifacts(methodRunId) {
+    return request({
+      url: `/evaluation-method-runs/${methodRunId}/artifacts`,
+      method: "get",
+    });
+  },
   evaluateLocalCase(casePath, judge, files) {
     const data = new FormData();
     data.append("case_path", casePath);

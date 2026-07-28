@@ -73,7 +73,9 @@ class CaseCategory(TimestampedModel, Base):
 class Case(TimestampedModel, Base):
     __tablename__ = "cases"
     __table_args__ = (
-        UniqueConstraint("dataset_id", "category_id", "case_key", name="uq_cases_dataset_category_key"),
+        UniqueConstraint(
+            "dataset_id", "category_id", "case_key", name="uq_cases_dataset_category_key"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -409,3 +411,80 @@ class EvaluationBatch(TimestampedModel, Base):
     resources_json: Mapped[str] = mapped_column(Text, default="{}")
     comparison_json: Mapped[str] = mapped_column(Text, default="[]")
     error_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class EvaluationMethod(TimestampedModel, Base):
+    """One versioned command that turns Case logs into a text report."""
+
+    __tablename__ = "evaluation_methods"
+    __table_args__ = (
+        UniqueConstraint("method_key", "version_number", name="uq_evaluation_methods_key_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    method_key: Mapped[str] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    version_number: Mapped[int] = mapped_column(Integer)
+    tool_dir: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    command_template: Mapped[str] = mapped_column(Text)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
+    max_output_bytes: Mapped[int] = mapped_column(Integer, default=10 * 1024 * 1024)
+    concurrency_limit: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    last_probe_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class EvaluationSubmission(TimestampedModel, Base):
+    """A durable request to run several methods over one local test set."""
+
+    __tablename__ = "evaluation_submissions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    dataset_key: Mapped[str] = mapped_column(String(255), index=True)
+    run_timestamp: Mapped[str] = mapped_column(String(14), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    manifest_json: Mapped[str] = mapped_column(Text)
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class EvaluationSubmissionCaseRun(TimestampedModel, Base):
+    """One Case inside an EvaluationSubmission."""
+
+    __tablename__ = "evaluation_submission_case_runs"
+    __table_args__ = (
+        UniqueConstraint("submission_id", "case_path", name="uq_evaluation_submission_case_path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_submissions.id", ondelete="RESTRICT"), index=True
+    )
+    case_path: Mapped[str] = mapped_column(String(1024))
+    case_key: Mapped[str] = mapped_column(String(255))
+    run_directory: Mapped[str] = mapped_column(String(2048))
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    scoring_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    error_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class EvaluationSubmissionMethodRun(TimestampedModel, Base):
+    """One method execution for one submitted Case."""
+
+    __tablename__ = "evaluation_submission_method_runs"
+    __table_args__ = (
+        UniqueConstraint("case_run_id", "method_id", name="uq_evaluation_submission_method"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    case_run_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_submission_case_runs.id", ondelete="RESTRICT"), index=True
+    )
+    method_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_methods.id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    artifact_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)

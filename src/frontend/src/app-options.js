@@ -32,6 +32,9 @@ export default {
       localCaseTree: [],
       selectedLocalCasePath: "",
       selectedLocalCaseData: null,
+      selectedCaseLogs: null,
+      caseLogFiles: [],
+      caseLogsUploading: false,
 
       showEvaluateDialog: false,
       evaluateForm: { judge: "lexical" },
@@ -51,6 +54,34 @@ export default {
       caseDraftView: null,
       caseCreateRunning: false,
       caseReviewStep: 0,
+      caseCreateLogFiles: [],
+
+      evaluationMethods: [],
+      evaluationSubmissions: [],
+      selectedSubmissionId: "",
+      submissionCaseRuns: [],
+      showSubmitEvaluationDialog: false,
+      submissionStep: 1,
+      submissionForm: {
+        dataset_key: "",
+        case_paths: [],
+        method_ids: [],
+        judge_runner: "claude-code",
+      },
+      submissionRunning: false,
+      showArtifactDialog: false,
+      methodArtifactView: null,
+      showMethodDialog: false,
+      methodSaving: false,
+      methodForm: {
+        key: "",
+        name: "",
+        tool_dir: "",
+        command_template: "",
+        timeout_seconds: 1800,
+        max_output_bytes: 10485760,
+        concurrency_limit: 1,
+      },
 
       resultSource: "tmp",
       allDirectResults: [],
@@ -91,6 +122,42 @@ export default {
         key: item.key,
         name: item.name,
       }));
+    },
+    frozenEvaluationMethods() {
+      return this.evaluationMethods.filter((item) => item.status === "frozen");
+    },
+    selectedSubmission() {
+      return this.evaluationSubmissions.find(
+        (item) => item.id === this.selectedSubmissionId,
+      );
+    },
+    selectedSubmissionCases() {
+      const testSet = this.localCaseTree.find(
+        (item) => item.key === this.submissionForm.dataset_key,
+      );
+      if (!testSet) return [];
+      return (testSet.children || []).flatMap((category) =>
+        (category.children || []).map((caseItem) => ({
+          ...caseItem,
+          category: category.key,
+        })),
+      );
+    },
+    selectableSubmissionCases() {
+      return this.selectedSubmissionCases.filter(
+        (caseItem) => caseItem.case_data?.submission_ready,
+      );
+    },
+    unavailableSubmissionCases() {
+      return this.selectedSubmissionCases.filter(
+        (caseItem) => !caseItem.case_data?.submission_ready,
+      );
+    },
+    selectedCaseParts() {
+      const parts = this.selectedLocalCasePath.split("/");
+      return parts.length === 3
+        ? { testSet: parts[0], category: parts[1], caseKey: parts[2] }
+        : null;
     },
     moveCategoryOptions() {
       const testSet = this.localCaseTree.find(
@@ -192,6 +259,30 @@ export default {
         change: "",
       }));
     },
+    activeDailyScores() {
+      if (!this.dashboardStats) return [];
+      if (this.selectedTestSet) {
+        const testSet = this.dashboardStats.test_sets.find(
+          (item) => item.key === this.selectedTestSet,
+        );
+        return testSet ? testSet.daily_scores || [] : [];
+      }
+      return this.dashboardStats.daily_scores || [];
+    },
+    dailyScoreLabels() {
+      return this.activeDailyScores.map((item) => item.date);
+    },
+    dailyScoreSeries() {
+      return this.activeCandidates.map((candidate) => ({
+        name: this.wrapName(candidate.name),
+        values: this.activeDailyScores.map((item) => {
+          const value = item.candidates.find(
+            (entry) => entry.name === candidate.name,
+          );
+          return value ? value.avg_score : null;
+        }),
+      }));
+    },
     categoryComparisonRows() {
       return this.activeCandidates.map((candidate, index) => ({
         name: this.wrapName(candidate.name),
@@ -258,8 +349,14 @@ export default {
     }
     this.loadLocalCaseTree();
     if (this.activeView === "dashboard") this.loadDashboardData();
-    if (this.activeView === "results") this.refreshDirectResults();
-    if (this.activeView === "settings") this.loadAppSettings();
+    if (this.activeView === "results") {
+      this.refreshDirectResults();
+      this.loadEvaluationSubmissions();
+    }
+    if (this.activeView === "settings") {
+      this.loadAppSettings();
+      this.loadEvaluationMethods();
+    }
   },
   beforeDestroy() {
     if (!this._themeMediaQuery || !this._themeMediaListener) return;
@@ -294,8 +391,14 @@ export default {
         this.$router.push(path).catch(() => {});
       }
       if (view === "dataset") this.loadLocalCaseTree();
-      if (view === "results") this.refreshDirectResults();
-      if (view === "settings") this.loadAppSettings();
+      if (view === "results") {
+        this.refreshDirectResults();
+        this.loadEvaluationSubmissions();
+      }
+      if (view === "settings") {
+        this.loadAppSettings();
+        this.loadEvaluationMethods();
+      }
       if (view === "dashboard" && !this.dashboardLoaded) {
         this.loadDashboardData();
       }
@@ -314,10 +417,87 @@ export default {
       this.selectedLocalCasePath = path;
       try {
         this.selectedLocalCaseData = await analystBenchApi.getLocalCase(path);
+        this.selectedCaseLogs = await analystBenchApi.getLocalCaseLogs(
+          testSetKey,
+          categoryKey,
+          caseKey,
+        );
         this.connection = "connected";
       } catch (error) {
         this.selectedLocalCaseData = null;
         this.showToast(error instanceof Error ? error.message : "读取 Case 失败");
+      }
+    },
+    async onCaseLogFileChange(event) {
+      this.caseLogFiles = Array.from(event.target.files || []);
+      if (!this.caseLogFiles.length) {
+        return;
+      }
+      try {
+        await this.uploadSelectedCaseLogs();
+      } finally {
+        this.caseLogFiles = [];
+        event.target.value = "";
+      }
+    },
+    onCaseCreateLogFileChange(event) {
+      this.caseCreateLogFiles = Array.from(event.target.files || []);
+    },
+    async uploadSelectedCaseLogs() {
+      if (!this.selectedCaseParts || !this.caseLogFiles.length) {
+        this.showToast("请选择至少一个日志文件");
+        return;
+      }
+      this.caseLogsUploading = true;
+      try {
+        const parts = this.selectedCaseParts;
+        this.selectedCaseLogs = await analystBenchApi.uploadLocalCaseLogs(
+          parts.testSet,
+          parts.category,
+          parts.caseKey,
+          this.caseLogFiles,
+        );
+        this.caseLogFiles = [];
+        await this.loadLocalCaseTree();
+        this.showToast("日志已上传");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "上传日志失败");
+      } finally {
+        this.caseLogsUploading = false;
+      }
+    },
+    async setSelectedCasePrimary(filename) {
+      if (!this.selectedCaseParts) return;
+      try {
+        const parts = this.selectedCaseParts;
+        this.selectedCaseLogs = await analystBenchApi.setLocalCasePrimaryLog(
+          parts.testSet,
+          parts.category,
+          parts.caseKey,
+          filename,
+        );
+        await this.loadLocalCaseTree();
+        this.showToast(`主日志已设为 ${filename}`);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "设置主日志失败");
+      }
+    },
+    async deleteSelectedCaseLog(filename) {
+      if (!this.selectedCaseParts || !window.confirm(`删除日志 ${filename} 吗？`)) {
+        return;
+      }
+      try {
+        const parts = this.selectedCaseParts;
+        this.selectedCaseLogs = await analystBenchApi.deleteLocalCaseLog(
+          parts.testSet,
+          parts.category,
+          parts.caseKey,
+          filename,
+        );
+        await this.loadLocalCaseTree();
+        this.showToast("日志已删除");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "删除日志失败");
       }
     },
     openEvaluateDialog() {
@@ -458,6 +638,15 @@ export default {
           try {
             const published = await analystBenchApi.publishCaseDraft(updated.id);
             this.caseDraftView = published;
+            if (this.caseCreateLogFiles.length) {
+              await analystBenchApi.uploadLocalCaseLogs(
+                published.test_set,
+                published.category,
+                published.case_key,
+                this.caseCreateLogFiles,
+              );
+              this.caseCreateLogFiles = [];
+            }
             this.showToast(`Case 发布成功：${published.case_key}`);
             this.showCaseReviewDialog = false;
             await this.loadLocalCaseTree();
@@ -598,6 +787,280 @@ export default {
         this.connection = "connected";
       } catch {
         this.connection = "offline";
+      }
+    },
+    async loadEvaluationMethods() {
+      try {
+        this.evaluationMethods = await analystBenchApi.listEvaluationMethods();
+        this.connection = "connected";
+      } catch {
+        this.evaluationMethods = [];
+        this.connection = "offline";
+      }
+    },
+    openMethodDialog() {
+      this.methodForm = {
+        key: "",
+        name: "",
+        tool_dir: "",
+        command_template: "",
+        timeout_seconds: 1800,
+        max_output_bytes: 10485760,
+        concurrency_limit: 1,
+      };
+      this.showMethodDialog = true;
+    },
+    async createEvaluationMethod() {
+      const form = this.methodForm;
+      if (!form.key.trim() || !form.name.trim() || !form.command_template.trim()) {
+        this.showToast("请填写 Key、名称和命令模板");
+        return;
+      }
+      this.methodSaving = true;
+      try {
+        const created = await analystBenchApi.createEvaluationMethod({
+          ...form,
+          key: form.key.trim(),
+          name: form.name.trim(),
+          command_template: form.command_template.trim(),
+          tool_dir: form.tool_dir.trim() || null,
+        });
+        await analystBenchApi.probeEvaluationMethod(created.id);
+        await this.loadEvaluationMethods();
+        this.showMethodDialog = false;
+        this.showToast("测评方式已创建并完成命令检测，请确认后冻结");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "创建测评方式失败");
+      } finally {
+        this.methodSaving = false;
+      }
+    },
+    async probeEvaluationMethod(method) {
+      try {
+        const result = await analystBenchApi.probeEvaluationMethod(method.id);
+        await this.loadEvaluationMethods();
+        this.showToast(
+          result.probe && result.probe.available
+            ? "命令检测成功"
+            : "命令不可用，请检查配置",
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "命令检测失败");
+      }
+    },
+    async freezeEvaluationMethod(method) {
+      try {
+        await analystBenchApi.freezeEvaluationMethod(method.id);
+        await this.loadEvaluationMethods();
+        this.showToast("测评方式已冻结，可用于提交测评");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "冻结失败");
+      }
+    },
+    async archiveEvaluationMethod(method) {
+      if (!window.confirm(`归档测评方式 ${method.name} v${method.version} 吗？`)) return;
+      try {
+        await analystBenchApi.archiveEvaluationMethod(method.id);
+        await this.loadEvaluationMethods();
+        this.showToast("测评方式已归档");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "归档失败");
+      }
+    },
+    async openSubmitEvaluationDialog() {
+      await Promise.all([this.loadLocalCaseTree(), this.loadEvaluationMethods()]);
+      const frozenMethods = this.frozenEvaluationMethods;
+      this.submissionForm = {
+        dataset_key: this.localCaseTree.length ? this.localCaseTree[0].key : "",
+        case_paths: [],
+        method_ids: frozenMethods.length === 1 ? [frozenMethods[0].id] : [],
+        judge_runner: "claude-code",
+      };
+      this.selectAllReadySubmissionCases();
+      this.submissionStep = 1;
+      this.showSubmitEvaluationDialog = true;
+    },
+    submissionCasePath(caseItem) {
+      return `${this.submissionForm.dataset_key}/${caseItem.category}/${caseItem.key}`;
+    },
+    selectAllReadySubmissionCases() {
+      this.submissionForm.case_paths = this.selectableSubmissionCases.map(
+        (caseItem) => this.submissionCasePath(caseItem),
+      );
+    },
+    clearSubmissionCaseSelection() {
+      this.submissionForm.case_paths = [];
+    },
+    resetSubmissionCaseSelection() {
+      this.selectAllReadySubmissionCases();
+    },
+    advanceSubmissionStep() {
+      if (this.submissionStep === 1 && !this.submissionForm.dataset_key) {
+        this.showToast("请选择测试集");
+        return;
+      }
+      if (this.submissionStep === 1 && !this.validateSubmissionCaseSelection()) {
+        return;
+      }
+      if (this.submissionStep === 2 && !this.submissionForm.method_ids.length) {
+        this.showToast(
+          this.frozenEvaluationMethods.length
+            ? "请选择至少一种测评方式"
+            : "没有可用的测评方式，请先检测并冻结",
+        );
+        return;
+      }
+      this.submissionStep = Math.min(3, this.submissionStep + 1);
+    },
+    validateSubmissionCaseSelection() {
+      if (this.submissionForm.case_paths.length) {
+        return true;
+      }
+      this.showToast(
+        this.selectableSubmissionCases.length
+          ? "请至少选择一个本次要测评的 Case"
+          : "当前测试集没有日志就绪的 Case",
+      );
+      return false;
+    },
+    async createEvaluationSubmission() {
+      if (!this.submissionForm.dataset_key) {
+        this.showToast("请选择测试集");
+        return;
+      }
+      if (!this.validateSubmissionCaseSelection()) {
+        return;
+      }
+      if (!this.submissionForm.method_ids.length) {
+        this.showToast("请选择至少一种测评方式");
+        return;
+      }
+      this.submissionRunning = true;
+      try {
+        const submission = await analystBenchApi.createEvaluationSubmission(
+          this.submissionForm,
+        );
+        this.showSubmitEvaluationDialog = false;
+        this.selectedSubmissionId = submission.id;
+        await this.loadEvaluationSubmissions();
+        await this.loadEvaluationSubmissionCaseRuns(submission.id);
+        this.showToast(`测评已提交，共 ${submission.case_count} 个 Case`);
+        this.pollEvaluationSubmission(submission.id);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "提交测评失败");
+      } finally {
+        this.submissionRunning = false;
+      }
+    },
+    async loadEvaluationSubmissions() {
+      try {
+        this.evaluationSubmissions =
+          await analystBenchApi.listEvaluationSubmissions();
+        if (!this.selectedSubmissionId && this.evaluationSubmissions.length) {
+          this.selectedSubmissionId = this.evaluationSubmissions[0].id;
+        }
+        if (this.selectedSubmissionId) {
+          await this.loadEvaluationSubmissionCaseRuns(this.selectedSubmissionId);
+        }
+      } catch {
+        this.evaluationSubmissions = [];
+        this.submissionCaseRuns = [];
+      }
+    },
+    async selectEvaluationSubmission(submissionId) {
+      this.selectedSubmissionId = submissionId;
+      await this.loadEvaluationSubmissionCaseRuns(submissionId);
+    },
+    async loadEvaluationSubmissionCaseRuns(submissionId) {
+      try {
+        this.submissionCaseRuns =
+          await analystBenchApi.getEvaluationSubmissionCaseRuns(submissionId);
+      } catch (error) {
+        this.submissionCaseRuns = [];
+        this.showToast(error instanceof Error ? error.message : "读取批次进度失败");
+      }
+    },
+    async pollEvaluationSubmission(submissionId) {
+      const terminal = ["completed", "completed_with_errors", "failed", "cancelled"];
+      for (let index = 0; index < 720; index += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 5000));
+        try {
+          const submission =
+            await analystBenchApi.getEvaluationSubmission(submissionId);
+          const position = this.evaluationSubmissions.findIndex(
+            (item) => item.id === submissionId,
+          );
+          if (position >= 0) this.$set(this.evaluationSubmissions, position, submission);
+          else this.evaluationSubmissions.unshift(submission);
+          if (this.selectedSubmissionId === submissionId) {
+            await this.loadEvaluationSubmissionCaseRuns(submissionId);
+          }
+          if (terminal.includes(submission.status)) {
+            if (submission.status === "cancelled") {
+              await this.refreshDirectResults();
+              this.showToast(`测评批次已结束：${submission.status}`);
+            } else {
+              await this.showEvaluationSubmissionResults(
+                submission,
+                `测评批次已结束：${submission.status}，已切换到正式结果`,
+              );
+            }
+            this.dashboardLoaded = false;
+            return;
+          }
+        } catch {
+          // A transient polling failure must not change the server-side batch.
+        }
+      }
+    },
+    async showEvaluationSubmissionResults(
+      submission,
+      successMessage = "已打开该批次的正式结果",
+    ) {
+      this.resultSource = "formal";
+      await this.refreshDirectResults();
+      const matchingResults = this.directResultList.filter(
+        (item) =>
+          item.test_set === submission.dataset_key &&
+          item.timestamp === submission.timestamp,
+      );
+      if (!matchingResults.length) {
+        this.selectedResultId = "";
+        this.selectedResultData = null;
+        this.showToast("该批次尚未生成可显示的正式结果");
+        return false;
+      }
+      await this.loadDirectResult(matchingResults[0]);
+      this.showToast(successMessage);
+      return true;
+    },
+    async cancelEvaluationSubmission(submission) {
+      if (!window.confirm(`取消测评批次 ${submission.timestamp} 吗？`)) return;
+      try {
+        await analystBenchApi.cancelEvaluationSubmission(submission.id);
+        await this.loadEvaluationSubmissions();
+        this.showToast("已取消尚未开始的任务");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "取消失败");
+      }
+    },
+    async retryEvaluationCaseRun(caseRun) {
+      try {
+        await analystBenchApi.retryEvaluationCaseRun(caseRun.id);
+        await this.loadEvaluationSubmissionCaseRuns(caseRun.submission_id);
+        this.pollEvaluationSubmission(caseRun.submission_id);
+        this.showToast("失败项已重新入队");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "重试失败");
+      }
+    },
+    async openMethodArtifacts(methodRun) {
+      try {
+        this.methodArtifactView =
+          await analystBenchApi.getEvaluationMethodRunArtifacts(methodRun.id);
+        this.showArtifactDialog = true;
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "读取审计产物失败");
       }
     },
     async saveAppSettings() {
