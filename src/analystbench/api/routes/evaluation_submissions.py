@@ -59,7 +59,8 @@ class EvaluationSubmissionCreate(BaseModel):
 
     dataset_key: str = Field(min_length=1, max_length=255)
     case_paths: list[str] | None = None
-    method_ids: list[str] = Field(min_length=1)
+    method_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
     judge_runner: str = "claude-code"
 
 
@@ -71,6 +72,8 @@ class EvaluationSubmissionResponse(BaseModel):
     schedule_run_id: str | None
     method_ids: list[str]
     methods: list[dict[str, Any]]
+    target_ids: list[str] = Field(default_factory=list)
+    targets: list[dict[str, Any]] = Field(default_factory=list)
     case_count: int
     summary: dict[str, Any]
     error: dict[str, Any]
@@ -157,6 +160,7 @@ def create_submission(payload: EvaluationSubmissionCreate, request: Request) -> 
         payload.dataset_key,
         payload.method_ids,
         payload.judge_runner,
+        target_ids=payload.target_ids or None,
         case_paths=payload.case_paths,
     )
     return EvaluationSubmissionService.submission_view(item)
@@ -178,6 +182,16 @@ def get_submission(submission_id: str, request: Request) -> dict[str, Any]:
     return EvaluationSubmissionService.submission_view(
         submissions(request).get_submission(submission_id)
     )
+
+
+@router.get("/evaluation-submissions/{submission_id}/target-comparison")
+def get_target_comparison(submission_id: str, request: Request) -> dict[str, Any]:
+    return submissions(request).target_comparison(submission_id)
+
+
+@router.delete("/evaluation-submissions/{submission_id}")
+def delete_submission(submission_id: str, request: Request) -> dict[str, int]:
+    return submissions(request).delete_submission(submission_id)
 
 
 @router.get("/evaluation-submissions/{submission_id}/case-runs")

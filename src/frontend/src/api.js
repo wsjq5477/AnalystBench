@@ -172,6 +172,51 @@ export const analystBenchApi = {
       method: "delete",
     });
   },
+  listEvaluationHarnesses() {
+    return request({ url: "/evaluation-harnesses", method: "get" });
+  },
+  createEvaluationHarness(data) {
+    return request({ url: "/evaluation-harnesses", method: "post", data });
+  },
+  reviseEvaluationHarness(harnessId, data) {
+    return request({ url: `/evaluation-harnesses/${harnessId}:revise`, method: "post", data });
+  },
+  probeEvaluationHarness(harnessId) {
+    return request({ url: `/evaluation-harnesses/${harnessId}:probe`, method: "post" });
+  },
+  freezeEvaluationHarness(harnessId) {
+    return request({ url: `/evaluation-harnesses/${harnessId}:freeze`, method: "post" });
+  },
+  archiveEvaluationHarness(harnessId) {
+    return request({ url: `/evaluation-harnesses/${harnessId}:archive`, method: "post" });
+  },
+  listEvaluationModels() {
+    return request({ url: "/evaluation-models", method: "get" });
+  },
+  createEvaluationModel(data) {
+    return request({ url: "/evaluation-models", method: "post", data });
+  },
+  reviseEvaluationModel(modelId, data) {
+    return request({ url: `/evaluation-models/${modelId}:revise`, method: "post", data });
+  },
+  archiveEvaluationModel(modelId) {
+    return request({ url: `/evaluation-models/${modelId}:archive`, method: "post" });
+  },
+  listEvaluationTargets() {
+    return request({ url: "/evaluation-targets", method: "get" });
+  },
+  createEvaluationTarget(data) {
+    return request({ url: "/evaluation-targets", method: "post", data });
+  },
+  probeEvaluationTarget(targetId) {
+    return request({ url: `/evaluation-targets/${targetId}:probe`, method: "post" });
+  },
+  freezeEvaluationTarget(targetId) {
+    return request({ url: `/evaluation-targets/${targetId}:freeze`, method: "post" });
+  },
+  archiveEvaluationTarget(targetId) {
+    return request({ url: `/evaluation-targets/${targetId}:archive`, method: "post" });
+  },
   listEvaluationSubmissions() {
     return request({ url: "/evaluation-submissions", method: "get" });
   },
@@ -182,6 +227,18 @@ export const analystBenchApi = {
     return request({
       url: `/evaluation-submissions/${submissionId}`,
       method: "get",
+    });
+  },
+  getEvaluationTargetComparison(submissionId) {
+    return request({
+      url: `/evaluation-submissions/${submissionId}/target-comparison`,
+      method: "get",
+    });
+  },
+  deleteEvaluationSubmission(submissionId) {
+    return request({
+      url: `/evaluation-submissions/${submissionId}`,
+      method: "delete",
     });
   },
   getEvaluationSubmissionCaseRuns(submissionId) {

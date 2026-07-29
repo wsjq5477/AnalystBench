@@ -8,10 +8,11 @@ import re
 import shlex
 import shutil
 import signal
+import statistics
 import string
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,17 +31,19 @@ from analystbench.db.models import (
     EvaluationSubmission,
     EvaluationSubmissionCaseRun,
     EvaluationSubmissionMethodRun,
+    EvaluationTarget,
     Job,
 )
 from analystbench.direct_evaluation import evaluate_direct
 from analystbench.errors import AnalystBenchError
+from analystbench.evaluation_target import EvaluationTargetService
 from analystbench.executable_resolver import resolve_executable
 from analystbench.jobs import JobQueue
 from analystbench.reporting import render_markdown
 from analystbench.services import transaction
 
 METHOD_KEY_RE = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9])?$"
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9)])?$"
 )
 RESERVED_METHOD_KEYS = {"result", "run", "inputs", "artifacts", "_artifacts", "logs"}
 ALLOWED_PLACEHOLDERS = {"input", "input_dir", "workspace", "tool_dir"}
@@ -190,8 +193,8 @@ class EvaluationMethodService:
         if not METHOD_KEY_RE.fullmatch(key) or key.lower() in RESERVED_METHOD_KEYS:
             raise AnalystBenchError(
                 "evaluation_method_invalid",
-                "测评方式 key 必须以字母或数字开头和结尾，只能包含字母、数字、"
-                "点、括号、-、_，且不能使用保留名。",
+                "测评方式 key 必须以字母或数字开头，以字母、数字或右括号结尾，"
+                "只能包含字母、数字、点、括号、-、_，且不能使用保留名。",
             )
         if not (name or "").strip() or not command_template.strip():
             raise AnalystBenchError("evaluation_method_invalid", "Key 和命令不能为空。")
@@ -300,7 +303,15 @@ class EvaluationMethodService:
         with transaction(self.session_factory) as session:
             items = list(
                 session.scalars(
-                    select(EvaluationMethod).order_by(
+                    select(EvaluationMethod)
+                    .where(
+                        ~EvaluationMethod.id.in_(
+                            select(EvaluationTarget.materialized_method_id).where(
+                                EvaluationTarget.materialized_method_id.is_not(None)
+                            )
+                        )
+                    )
+                    .order_by(
                         EvaluationMethod.method_key, EvaluationMethod.version_number.desc()
                     )
                 )
@@ -416,6 +427,16 @@ class EvaluationMethodService:
                         "evaluation_method_not_found",
                         "找不到测评方式。",
                         status_code=404,
+                    )
+                if session.scalar(
+                    select(EvaluationTarget.id).where(
+                        EvaluationTarget.materialized_method_id == method_id
+                    )
+                ):
+                    raise AnalystBenchError(
+                        "evaluation_method_managed_by_target",
+                        "该执行方式由运行组合管理，不能通过旧测评方式接口删除。",
+                        status_code=409,
                     )
 
                 submission_ids = set(
@@ -688,12 +709,25 @@ class EvaluationSubmissionService:
     def create_submission(
         self,
         dataset_key: str,
-        method_ids: list[str],
+        method_ids: list[str] | None,
         judge_runner: str = "claude-code",
         *,
+        target_ids: list[str] | None = None,
         case_paths: list[str] | None = None,
         schedule_run_id: str | None = None,
     ) -> EvaluationSubmission:
+        if bool(method_ids) == bool(target_ids):
+            raise AnalystBenchError(
+                "evaluation_selection_invalid",
+                "请选择测评方式或运行组合中的一种，且不能混用。",
+            )
+        target_snapshots: list[dict[str, Any]] = []
+        if target_ids:
+            targets, target_snapshots = EvaluationTargetService(
+                self.session_factory, self.settings
+            ).snapshots(target_ids)
+            method_ids = [str(item.materialized_method_id) for item in targets]
+        assert method_ids
         if not method_ids:
             raise AnalystBenchError("evaluation_methods_missing", "至少选择一种测评方式。")
         if judge_runner not in {"claude-code", "opencode", "lexical"}:
@@ -825,6 +859,10 @@ class EvaluationSubmissionService:
                 for item in case_inputs
             ],
         }
+        if target_snapshots:
+            manifest["target_ids"] = [item["id"] for item in target_snapshots]
+            manifest["targets"] = target_snapshots
+            manifest["execution_mode"] = "targets"
         created_case_runs: list[tuple[EvaluationSubmissionCaseRun, dict[str, Any]]] = []
         with transaction(self.session_factory) as session:
             submission = EvaluationSubmission(
@@ -914,6 +952,330 @@ class EvaluationSubmissionService:
                 session.expunge(item)
             return items
 
+    def delete_submission(self, submission_id: str) -> dict[str, int]:
+        terminal_states = {
+            "completed",
+            "completed_with_errors",
+            "failed",
+            "cancelled",
+        }
+        quarantined: list[tuple[Path, Path]] = []
+        workspace_root = (
+            self.settings.workspace_root_path / "evaluation" / submission_id
+        )
+        committed = False
+        try:
+            with transaction(self.session_factory) as session:
+                submission = session.get(EvaluationSubmission, submission_id)
+                if submission is None:
+                    raise AnalystBenchError(
+                        "evaluation_submission_not_found",
+                        "找不到测评批次。",
+                        status_code=404,
+                    )
+                if submission.status not in terminal_states:
+                    raise AnalystBenchError(
+                        "evaluation_submission_delete_running",
+                        "该测评批次仍在排队或运行，请先取消并等待任务停止。",
+                        status_code=409,
+                    )
+                case_runs = list(
+                    session.scalars(
+                        select(EvaluationSubmissionCaseRun).where(
+                            EvaluationSubmissionCaseRun.submission_id
+                            == submission_id
+                        )
+                    )
+                )
+                case_run_ids = {item.id for item in case_runs}
+                method_runs = (
+                    list(
+                        session.scalars(
+                            select(EvaluationSubmissionMethodRun).where(
+                                EvaluationSubmissionMethodRun.case_run_id.in_(
+                                    case_run_ids
+                                )
+                            )
+                        )
+                    )
+                    if case_run_ids
+                    else []
+                )
+                if any(
+                    item.status in {"running", "cancelling"}
+                    for item in method_runs
+                ):
+                    raise AnalystBenchError(
+                        "evaluation_submission_delete_running",
+                        "该测评批次仍有命令正在运行，请等待任务停止。",
+                        status_code=409,
+                    )
+                method_run_ids = {item.id for item in method_runs}
+                identifiers = case_run_ids | method_run_ids
+                related_jobs = [
+                    job
+                    for job in session.scalars(select(Job))
+                    if self._job_references(job.payload_json, identifiers)
+                ]
+                if any(job.status == "running" for job in related_jobs):
+                    raise AnalystBenchError(
+                        "evaluation_submission_delete_running",
+                        "该测评批次仍有后台任务正在运行，请稍后重试。",
+                        status_code=409,
+                    )
+
+                run_directories = {
+                    self._safe_submission_run_directory(item.run_directory)
+                    for item in case_runs
+                }
+                for run_directory in sorted(
+                    run_directories, key=lambda value: value.as_posix()
+                ):
+                    if not run_directory.exists():
+                        continue
+                    if not run_directory.is_dir():
+                        raise AnalystBenchError(
+                            "evaluation_submission_delete_path_invalid",
+                            "批次结果路径不是目录，已拒绝自动删除。",
+                            status_code=409,
+                        )
+                    quarantine = run_directory.with_name(
+                        f".{run_directory.name}.delete-{uuid4().hex}"
+                    )
+                    run_directory.rename(quarantine)
+                    quarantined.append((run_directory, quarantine))
+
+                for job in related_jobs:
+                    session.delete(job)
+                if method_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmissionMethodRun).where(
+                            EvaluationSubmissionMethodRun.id.in_(
+                                method_run_ids
+                            )
+                        )
+                    )
+                if case_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmissionCaseRun).where(
+                            EvaluationSubmissionCaseRun.id.in_(case_run_ids)
+                        )
+                    )
+                session.delete(submission)
+            committed = True
+            deleted_directories = 0
+            for _original, quarantine in quarantined:
+                shutil.rmtree(quarantine, ignore_errors=True)
+                if not quarantine.exists():
+                    deleted_directories += 1
+            if workspace_root.is_dir():
+                shutil.rmtree(workspace_root, ignore_errors=True)
+            return {
+                "submissions_deleted": 1,
+                "case_runs_deleted": len(case_run_ids),
+                "method_runs_deleted": len(method_run_ids),
+                "local_directories_deleted": deleted_directories,
+            }
+        except Exception:
+            if not committed:
+                for original, quarantine in reversed(quarantined):
+                    if quarantine.exists() and not original.exists():
+                        quarantine.rename(original)
+            raise
+
+    def target_comparison(self, submission_id: str) -> dict[str, Any]:
+        """Aggregate one target-mode submission without conflating queue time and runtime."""
+        submission = self.get_submission(submission_id)
+        manifest = json.loads(submission.manifest_json or "{}")
+        targets = [
+            item for item in manifest.get("targets", []) if isinstance(item, dict)
+        ]
+        if not targets:
+            raise AnalystBenchError(
+                "evaluation_targets_unavailable",
+                "该批次是旧测评方式批次，没有结构化运行组合。",
+                status_code=409,
+            )
+        target_by_key = {str(item["key"]): item for item in targets}
+        rows: dict[str, list[dict[str, Any]]] = {key: [] for key in target_by_key}
+        for case_run in self.list_case_runs(submission_id):
+            run_directory = Path(case_run.run_directory)
+            result: dict[str, Any] = {}
+            try:
+                result = json.loads((run_directory / "result.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            generation = result.get("generation", {}) if isinstance(result, dict) else {}
+            generated = {
+                str(item.get("target_key")): item
+                for item in generation.get("targets", [])
+                if isinstance(item, dict) and item.get("target_key")
+            }
+            reports = {
+                str(item.get("candidate_name")): item
+                for item in (result.get("summary", {}) or {}).get("reports", [])
+                if isinstance(item, dict) and item.get("candidate_name")
+            }
+            for key in target_by_key:
+                generated_item = generated.get(key, {})
+                report = reports.get(key)
+                rows[key].append(
+                    {
+                        "case_path": case_run.case_path,
+                        "generation_status": generated_item.get("status", "missing"),
+                        "duration_ms": generated_item.get("duration_ms"),
+                        "score": report.get("score") if report else None,
+                        "passed": report.get("passed") if report else None,
+                    }
+                )
+
+        def percentile_95(values: list[int]) -> int | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            return ordered[max(0, (95 * len(ordered) + 99) // 100 - 1)]
+
+        aggregates: list[dict[str, Any]] = []
+        for key, target in target_by_key.items():
+            samples = rows[key]
+            scored = [item for item in samples if item["score"] is not None]
+            durations = [
+                int(item["duration_ms"])
+                for item in samples
+                if isinstance(item["duration_ms"], int)
+            ]
+            successes = [item for item in samples if item["generation_status"] == "succeeded"]
+            timeouts = [item for item in samples if item["generation_status"] == "timeout"]
+            failures = [
+                item
+                for item in samples
+                if item["generation_status"] in {"failed", "timeout", "cancelled"}
+            ]
+            aggregates.append(
+                {
+                    "target": target,
+                    "requested_case_count": len(samples),
+                    "scored_case_count": len(scored),
+                    "coverage_rate": len(scored) / len(samples) if samples else 0.0,
+                    "generation_success_rate": len(successes) / len(samples) if samples else 0.0,
+                    "timeout_rate": len(timeouts) / len(samples) if samples else 0.0,
+                    "generation_failure_rate": len(failures) / len(samples) if samples else 0.0,
+                    "average_score": (
+                        sum(float(item["score"]) for item in scored) / len(scored)
+                        if scored
+                        else None
+                    ),
+                    "pass_rate": (
+                        sum(bool(item["passed"]) for item in scored) / len(scored)
+                        if scored
+                        else None
+                    ),
+                    "duration_sample_count": len(durations),
+                    "median_duration_ms": round(statistics.median(durations)) if durations else None,
+                    "p95_duration_ms": percentile_95(durations),
+                    "cases": samples,
+                }
+            )
+
+        def groups(field: str) -> list[dict[str, Any]]:
+            grouped: dict[str, list[str]] = {}
+            for item in aggregates:
+                value = item["target"].get(field)
+                if not isinstance(value, dict):
+                    continue
+                group_key = f"{value.get('key')}@v{value.get('version')}"
+                grouped.setdefault(group_key, []).append(item["target"]["key"])
+            return [
+                {"key": key, "target_keys": sorted(target_keys)}
+                for key, target_keys in sorted(grouped.items())
+                if len(target_keys) >= 2
+            ]
+
+        def pairs(grouped: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            output: list[dict[str, Any]] = []
+            by_key = {item["target"]["key"]: item for item in aggregates}
+            for group in grouped:
+                values = group["target_keys"]
+                for index, left_key in enumerate(values):
+                    for right_key in values[index + 1 :]:
+                        left = {item["case_path"]: item for item in by_key[left_key]["cases"]}
+                        right = {item["case_path"]: item for item in by_key[right_key]["cases"]}
+                        shared = [
+                            path
+                            for path in sorted(left.keys() & right.keys())
+                            if left[path]["score"] is not None and right[path]["score"] is not None
+                        ]
+                        deltas = [
+                            float(right[path]["score"]) - float(left[path]["score"])
+                            for path in shared
+                        ]
+                        output.append(
+                            {
+                                "group": group["key"],
+                                "baseline": left_key,
+                                "candidate": right_key,
+                                "shared_scored_case_count": len(shared),
+                                "average_score_delta": sum(deltas) / len(deltas) if deltas else None,
+                                "baseline_only_case_count": len(left.keys() - right.keys()),
+                                "candidate_only_case_count": len(right.keys() - left.keys()),
+                            }
+                        )
+            return output
+
+        by_harness = groups("harness")
+        by_model = groups("model")
+        uncontrolled = any(
+            isinstance((item.get("harness") or {}).get("source_revision"), dict)
+            and bool((item.get("harness") or {}).get("source_revision", {}).get("dirty"))
+            for item in targets
+        )
+        return {
+            "submission_id": submission.id,
+            "controlled": not uncontrolled,
+            "warnings": (["至少一个 Harness 工程在冻结时处于 dirty 状态。"] if uncontrolled else []),
+            "targets": aggregates,
+            "by_harness": by_harness,
+            "by_model": by_model,
+            "pairwise": pairs(by_harness) + pairs(by_model),
+        }
+
+    def _safe_submission_run_directory(self, value: str) -> Path:
+        root = self.settings.results_formal_path.resolve()
+        configured = Path(value)
+        if configured.is_symlink():
+            raise AnalystBenchError(
+                "evaluation_submission_delete_path_invalid",
+                "批次结果目录是符号链接，已拒绝自动删除。",
+                status_code=409,
+            )
+        resolved = configured.resolve()
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError as exc:
+            raise AnalystBenchError(
+                "evaluation_submission_delete_path_invalid",
+                "批次结果目录不在正式结果根目录内，已拒绝自动删除。",
+                status_code=409,
+            ) from exc
+        if len(relative.parts) != 5 or relative.parts[-2] != "runs":
+            raise AnalystBenchError(
+                "evaluation_submission_delete_path_invalid",
+                "批次结果目录结构异常，已拒绝自动删除。",
+                status_code=409,
+            )
+        return resolved
+
+    @staticmethod
+    def _job_references(payload_json: str, identifiers: set[str]) -> bool:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except json.JSONDecodeError:
+            return False
+        return isinstance(payload, dict) and any(
+            isinstance(value, str) and value in identifiers
+            for value in payload.values()
+        )
+
     def list_case_runs(self, submission_id: str) -> list[EvaluationSubmissionCaseRun]:
         self.get_submission(submission_id)
         with transaction(self.session_factory) as session:
@@ -955,10 +1317,17 @@ class EvaluationSubmissionService:
             run_directory = Path(case_run.run_directory).resolve()
             artifact = json.loads(method_run.artifact_json or "{}")
             status = method_run.status
+            attempt = method_run.attempt
+            started_at = self._utc_iso(method_run.started_at)
+            finished_at = self._utc_iso(method_run.finished_at)
+            duration_ms = method_run.duration_ms
         output: dict[str, Any] = {
             "id": method_run_id,
             "status": status,
-            "attempt": artifact.get("attempt", 0),
+            "attempt": attempt,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_ms": duration_ms,
             "command": artifact.get("command", []),
             "message": artifact.get("message", ""),
             "stdout": "",
@@ -1046,6 +1415,9 @@ class EvaluationSubmissionService:
                 if method_run.status in {"failed", "timeout", "cancelled"}:
                     method_run.status = "queued"
                     method_run.error_code = None
+                    method_run.started_at = None
+                    method_run.finished_at = None
+                    method_run.duration_ms = None
                     enqueue_method_ids.append(method_run.id)
             if enqueue_method_ids:
                 case_run.status = "generating"
@@ -1097,6 +1469,9 @@ class EvaluationSubmissionService:
             else:
                 method_run.status = "running"
                 method_run.attempt += 1
+                method_run.started_at = None
+                method_run.finished_at = None
+                method_run.duration_ms = None
                 case_run.status = "generating"
                 attempt = method_run.attempt
                 run_directory = Path(case_run.run_directory)
@@ -1142,21 +1517,33 @@ class EvaluationSubmissionService:
         stdout = ""
         stderr = ""
         command: list[str] = []
+        monotonic_started: float | None = None
+        timing_finished = False
         try:
             command = self._build_command(method_snapshot, workspace, primary, logs_workspace)
-            process = subprocess.Popen(
-                command,
-                cwd=workspace,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                shell=False,
-                start_new_session=os.name == "posix",
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
-            )
-            deadline = time.monotonic() + int(method_snapshot["timeout_seconds"])
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=workspace,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=False,
+                    start_new_session=os.name == "posix",
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                    ),
+                )
+            except OSError as exc:
+                raise EvaluationCommandError(
+                    "process_start_failed",
+                    f"命令启动失败：{exc}",
+                ) from exc
+            monotonic_started = time.monotonic()
+            self._persist_method_started(method_run_id)
+            deadline = monotonic_started + int(method_snapshot["timeout_seconds"])
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1178,6 +1565,10 @@ class EvaluationSubmissionService:
                             stdout or "",
                             stderr or "",
                         ) from None
+            duration_ms = self._persist_method_finished(
+                method_run_id, monotonic_started
+            )
+            timing_finished = True
             stdout = stdout or ""
             stderr = stderr or ""
             if len(stdout.encode("utf-8")) + len(stderr.encode("utf-8")) > int(
@@ -1206,13 +1597,19 @@ class EvaluationSubmissionService:
                 "report_path": str(run_directory / f"{method_snapshot['key']}.md"),
                 "report_hash": content_hash(stdout.encode("utf-8")),
                 "exit_code": process.returncode,
+                "duration_ms": duration_ms,
             }
             self._persist_method_success(method_run_id, artifact)
         except EvaluationCommandError as exc:
             stdout, stderr = exc.stdout, exc.stderr
+            if monotonic_started is not None and not timing_finished:
+                self._persist_method_finished(method_run_id, monotonic_started)
+                timing_finished = True
             self._persist_method_failure(method_run_id, exc)
             raise
         finally:
+            if monotonic_started is not None and not timing_finished:
+                self._persist_method_finished(method_run_id, monotonic_started)
             artifact_directory.mkdir(parents=True, exist_ok=True)
             _atomic_text(artifact_directory / "stdout.log", stdout)
             _atomic_text(artifact_directory / "stderr.log", stderr)
@@ -1298,6 +1695,27 @@ class EvaluationSubmissionService:
             item.status = "succeeded"
             item.error_code = None
             item.artifact_json = canonical_json(artifact)
+
+    def _persist_method_started(self, method_run_id: str) -> None:
+        with transaction(self.session_factory) as session:
+            item = session.get(EvaluationSubmissionMethodRun, method_run_id)
+            assert item is not None
+            item.started_at = datetime.now(UTC)
+            item.finished_at = None
+            item.duration_ms = None
+
+    def _persist_method_finished(
+        self,
+        method_run_id: str,
+        monotonic_started: float,
+    ) -> int:
+        duration_ms = round(max(0.0, time.monotonic() - monotonic_started) * 1000)
+        with transaction(self.session_factory) as session:
+            item = session.get(EvaluationSubmissionMethodRun, method_run_id)
+            assert item is not None
+            item.finished_at = datetime.now(UTC)
+            item.duration_ms = duration_ms
+        return duration_ms
 
     def _persist_method_failure(self, method_run_id: str, error: EvaluationCommandError) -> None:
         with transaction(self.session_factory) as session:
@@ -1390,7 +1808,7 @@ class EvaluationSubmissionService:
             case_path = case_run.case_path
             case_key = case_run.case_key
             judge_runner = json.loads(submission.manifest_json).get("judge_runner", "claude-code")
-            method_rows = list(
+            all_method_rows = list(
                 session.execute(
                     select(EvaluationSubmissionMethodRun, EvaluationMethod)
                     .join(
@@ -1399,11 +1817,26 @@ class EvaluationSubmissionService:
                     )
                     .where(
                         EvaluationSubmissionMethodRun.case_run_id == case_run.id,
-                        EvaluationSubmissionMethodRun.status == "succeeded",
                     )
                     .order_by(EvaluationSubmissionMethodRun.created_at)
                 )
             )
+            method_rows = [
+                (method_run, method)
+                for method_run, method in all_method_rows
+                if method_run.status == "succeeded"
+            ]
+            method_generation = [
+                self._method_generation_view(method_run, method)
+                for method_run, method in all_method_rows
+            ]
+            target_lookup = self._target_snapshot_lookup(submission)
+            generation: dict[str, Any] = {"methods": method_generation}
+            if target_lookup:
+                generation["targets"] = [
+                    self._target_generation_view(entry, target_lookup.get(entry["method_id"]))
+                    for entry in method_generation
+                ]
 
         case_file = _safe_case_directory(self.settings.results_formal_path, case_path) / "case.json"
         reports: list[dict[str, Any]] = []
@@ -1424,8 +1857,12 @@ class EvaluationSubmissionService:
             result_id = f"{case_path}/runs/{run_directory.name}"
             result["id"] = result_id
             result["submission_id"] = self._submission_id_for_case(case_run_id)
+            result["generation"] = generation
             _atomic_json(run_directory / "result.json", result)
-            _atomic_text(run_directory / "result.md", render_markdown(result["summary"]))
+            _atomic_text(
+                run_directory / "result.md",
+                render_markdown(result["summary"], generation),
+            )
             with transaction(self.session_factory) as session:
                 stored = session.get(EvaluationSubmissionCaseRun, case_run_id)
                 assert stored is not None
@@ -1476,6 +1913,7 @@ class EvaluationSubmissionService:
                 return
             submission = session.get(EvaluationSubmission, case_run.submission_id)
             assert submission is not None
+            target_lookup = self._target_snapshot_lookup(submission)
             methods = list(
                 session.execute(
                     select(EvaluationSubmissionMethodRun, EvaluationMethod)
@@ -1505,6 +1943,9 @@ class EvaluationSubmissionService:
                         "version": method.version_number,
                         "status": method_run.status,
                         "attempt": method_run.attempt,
+                        "started_at": self._utc_iso(method_run.started_at),
+                        "finished_at": self._utc_iso(method_run.finished_at),
+                        "duration_ms": method_run.duration_ms,
                         "error_code": method_run.error_code,
                         "artifact": json.loads(method_run.artifact_json or "{}"),
                     }
@@ -1512,6 +1953,23 @@ class EvaluationSubmissionService:
                 ],
                 "error": json.loads(case_run.error_json or "{}"),
             }
+            if target_lookup:
+                payload["targets"] = [
+                    self._target_generation_view(
+                        {
+                            "method_id": method["method_id"],
+                            "key": method["key"],
+                            "status": method["status"],
+                            "attempt": method["attempt"],
+                            "started_at": method["started_at"],
+                            "finished_at": method["finished_at"],
+                            "duration_ms": method["duration_ms"],
+                            "error_code": method["error_code"],
+                        },
+                        target_lookup.get(method["method_id"]),
+                    )
+                    for method in payload["methods"]
+                ]
         _atomic_json(run_directory / "run.json", payload)
         result_path = run_directory / "result.json"
         if not result_path.exists() or payload["scoring_status"] != "succeeded":
@@ -1530,6 +1988,11 @@ class EvaluationSubmissionService:
                     ),
                     "reports": [],
                     "comparisons": [],
+                    "generation": (
+                        {"methods": payload["methods"], "targets": payload["targets"]}
+                        if payload.get("targets")
+                        else {"methods": payload["methods"]}
+                    ),
                     "summary": {
                         "case_key": payload["case_key"],
                         "engine_note": f"提交测评状态：{payload['status']}",
@@ -1603,6 +2066,8 @@ class EvaluationSubmissionService:
             "schedule_run_id": item.schedule_run_id,
             "method_ids": manifest.get("method_ids", []),
             "methods": manifest.get("methods", []),
+            "target_ids": manifest.get("target_ids", []),
+            "targets": manifest.get("targets", []),
             "case_count": len(manifest.get("cases", [])),
             "summary": json.loads(item.summary_json or "{}"),
             "error": json.loads(item.error_json or "{}"),
@@ -1613,12 +2078,33 @@ class EvaluationSubmissionService:
     def case_run_view(self, item: EvaluationSubmissionCaseRun) -> dict[str, Any]:
         methods = self.list_method_runs(item.id)
         method_lookup: dict[str, EvaluationMethod] = {}
+        target_lookup: dict[str, dict[str, Any]] = {}
         with transaction(self.session_factory) as session:
+            submission = session.get(EvaluationSubmission, item.submission_id)
+            assert submission is not None
+            target_lookup = self._target_snapshot_lookup(submission)
             for method_run in methods:
                 method = session.get(EvaluationMethod, method_run.method_id)
                 if method is not None:
                     method_lookup[method.id] = method
-        return {
+        method_rows = [
+            {
+                "id": method_run.id,
+                "method_id": method_run.method_id,
+                "key": method_lookup[method_run.method_id].method_key,
+                "name": method_lookup[method_run.method_id].name,
+                "status": method_run.status,
+                "attempt": method_run.attempt,
+                "started_at": self._utc_iso(method_run.started_at),
+                "finished_at": self._utc_iso(method_run.finished_at),
+                "duration_ms": method_run.duration_ms,
+                "error_code": method_run.error_code,
+                "artifact": json.loads(method_run.artifact_json or "{}"),
+            }
+            for method_run in methods
+            if method_run.method_id in method_lookup
+        ]
+        payload = {
             "id": item.id,
             "submission_id": item.submission_id,
             "case_path": item.case_path,
@@ -1626,19 +2112,82 @@ class EvaluationSubmissionService:
             "run_directory": item.run_directory,
             "status": item.status,
             "scoring_status": item.scoring_status,
-            "methods": [
-                {
-                    "id": method_run.id,
-                    "method_id": method_run.method_id,
-                    "key": method_lookup[method_run.method_id].method_key,
-                    "name": method_lookup[method_run.method_id].name,
-                    "status": method_run.status,
-                    "attempt": method_run.attempt,
-                    "error_code": method_run.error_code,
-                    "artifact": json.loads(method_run.artifact_json or "{}"),
-                }
-                for method_run in methods
-                if method_run.method_id in method_lookup
-            ],
+            "methods": method_rows,
             "error": json.loads(item.error_json or "{}"),
+        }
+        if target_lookup:
+            payload["targets"] = [
+                self._target_generation_view(
+                    {
+                        "method_id": row["method_id"],
+                        "key": row["key"],
+                        "status": row["status"],
+                        "attempt": row["attempt"],
+                        "started_at": row["started_at"],
+                        "finished_at": row["finished_at"],
+                        "duration_ms": row["duration_ms"],
+                        "error_code": row["error_code"],
+                    },
+                    target_lookup.get(row["method_id"]),
+                )
+                for row in method_rows
+            ]
+        return payload
+
+    @staticmethod
+    def _utc_iso(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _method_generation_view(
+        cls,
+        method_run: EvaluationSubmissionMethodRun,
+        method: EvaluationMethod,
+    ) -> dict[str, Any]:
+        return {
+            "method_id": method.id,
+            "key": method.method_key,
+            "version": method.version_number,
+            "status": method_run.status,
+            "attempt": method_run.attempt,
+            "started_at": cls._utc_iso(method_run.started_at),
+            "finished_at": cls._utc_iso(method_run.finished_at),
+            "duration_ms": method_run.duration_ms,
+        }
+
+    @staticmethod
+    def _target_snapshot_lookup(submission: EvaluationSubmission) -> dict[str, dict[str, Any]]:
+        manifest = json.loads(submission.manifest_json or "{}")
+        return {
+            str(item["materialized_method_id"]): item
+            for item in manifest.get("targets", [])
+            if isinstance(item, dict) and item.get("materialized_method_id")
+        }
+
+    @staticmethod
+    def _target_generation_view(
+        method: dict[str, Any],
+        target: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if target is None:
+            return dict(method)
+        return {
+            "target_id": target["id"],
+            "target_key": target["key"],
+            "target_version": target["version"],
+            "display_name": target["display_name"],
+            "harness": target["harness"],
+            "model": target["model"],
+            "model_argument": target["model_argument"],
+            "method_id": method["method_id"],
+            "status": method["status"],
+            "attempt": method["attempt"],
+            "started_at": method["started_at"],
+            "finished_at": method["finished_at"],
+            "duration_ms": method["duration_ms"],
+            "error_code": method.get("error_code"),
         }

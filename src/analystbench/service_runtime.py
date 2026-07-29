@@ -102,6 +102,7 @@ def _assert_port_available(host: str, port: int) -> None:
     try:
         address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
         with socket.socket(address[0], address[1], address[2]) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(address[4])
     except OSError as exc:
         raise RuntimeError(

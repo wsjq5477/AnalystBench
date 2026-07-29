@@ -184,6 +184,113 @@ def test_worker_executes_method_runs_in_parallel_up_to_method_limit(
     assert max(start for start, _ in intervals) < min(end for _, end in intervals)
 
 
+def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    settings.worker_concurrency_limit = 2
+    settings.worker_poll_interval_seconds = 0.02
+    first_case = create_case_directory(settings)
+    second_case = settings.results_formal_path / "kdiag" / "SYSTEM_DEADLOCK" / "chmod_hung_2"
+    second_case.mkdir(parents=True)
+    second_payload = case_payload()
+    second_payload["case"]["case_key"] = "chmod_hung_2"
+    (second_case / "case.json").write_text(
+        json.dumps(second_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    for case_directory in (first_case, second_case):
+        logs = case_directory / "logs"
+        logs.mkdir()
+        (logs / "log.txt").write_text("chmod hung", encoding="utf-8")
+
+    tool_directory = tmp_path / "target-tools"
+    tool_directory.mkdir()
+    timing_path = tool_directory / "timings.log"
+    (tool_directory / "report.py").write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "import time\n"
+        "start = time.monotonic()\n"
+        "time.sleep(0.3)\n"
+        "end = time.monotonic()\n"
+        "with (Path(__file__).parent / 'timings.log').open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(f'{sys.argv[2]},{start},{end}\\n')\n"
+        "print('问题分类：SYSTEM_DEADLOCK')\n"
+        "print('问题根因：chmod 进程发生系统死锁')\n"
+        "print('证据：chmod hung')\n"
+        "print('结论：chmod 进程长期阻塞')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        harness = client.post(
+            "/api/v1/evaluation-harnesses",
+            json={
+                "key": "codeagent-skill",
+                "model_policy": "required",
+                "tool_dir": str(tool_directory),
+                "command_template": (
+                    f"{sys.executable} {{tool_dir}}/report.py --model {{model}} {{input}}"
+                ),
+                "concurrency_limit": 1,
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:probe")
+        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:freeze")
+        target_ids = []
+        for key, argument in (("glm-5.1", "glm5.1"), ("deepseek-v4", "deepseek-v4")):
+            model = client.post(
+                "/api/v1/evaluation-models",
+                json={"key": key, "argument": argument},
+            ).json()
+            target = client.post(
+                "/api/v1/evaluation-targets",
+                json={"harness_id": harness["id"], "model_id": model["id"]},
+            ).json()
+            client.post(f"/api/v1/evaluation-targets/{target['id']}:probe")
+            client.post(f"/api/v1/evaluation-targets/{target['id']}:freeze")
+            target_ids.append(target["id"])
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={"dataset_key": "kdiag", "target_ids": target_ids, "judge_runner": "lexical"},
+        ).json()
+
+    worker = LocalWorker(settings)
+    stop = threading.Event()
+    worker_thread = threading.Thread(target=worker.serve, args=(stop,))
+    worker_thread.start()
+    try:
+        deadline = time.monotonic() + 15
+        status = "queued"
+        with TestClient(create_app(settings)) as client:
+            while time.monotonic() < deadline:
+                status = client.get(
+                    f"/api/v1/evaluation-submissions/{submission['id']}"
+                ).json()["status"]
+                if status == "completed":
+                    break
+                time.sleep(0.05)
+            comparison = client.get(
+                f"/api/v1/evaluation-submissions/{submission['id']}/target-comparison"
+            ).json()
+        assert status == "completed"
+    finally:
+        stop.set()
+        worker_thread.join(timeout=5)
+        worker.close()
+
+    intervals = sorted(
+        tuple(float(value) for value in line.split(",")[1:])
+        for line in timing_path.read_text(encoding="utf-8").splitlines()
+    )
+    assert len(intervals) == 4
+    assert all(next_start >= previous_end for (_, previous_end), (next_start, _) in zip(intervals, intervals[1:]))
+    assert comparison["by_harness"] == [
+        {
+            "key": "codeagent-skill@v1",
+            "target_keys": ["codeagent-skill@deepseek-v4", "codeagent-skill@glm-5.1"],
+        }
+    ]
+
+
 def test_submission_requires_logs_and_runs_isolated_command_then_scores(
     tmp_path: Path,
 ) -> None:
@@ -280,6 +387,15 @@ def test_submission_requires_logs_and_runs_isolated_command_then_scores(
     assert result["status"] == "completed"
     assert result["submission_id"] == submission_id
     assert result["reports"][0]["candidate_name"] == "script"
+    generation = result["generation"]["methods"]
+    assert len(generation) == 1
+    assert generation[0]["key"] == "script"
+    assert generation[0]["started_at"].endswith("Z")
+    assert generation[0]["finished_at"].endswith("Z")
+    assert generation[0]["duration_ms"] >= 0
+    run_state = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
+    assert run_state["methods"][0]["duration_ms"] == generation[0]["duration_ms"]
+    assert "生成耗时" in (run_directory / "result.md").read_text(encoding="utf-8")
 
     with TestClient(create_app(settings)) as client:
         current = client.get(f"/api/v1/evaluation-submissions/{submission_id}").json()
@@ -290,12 +406,17 @@ def test_submission_requires_logs_and_runs_isolated_command_then_scores(
         completed_cases = client.get(
             f"/api/v1/evaluation-submissions/{submission_id}/case-runs"
         ).json()
+        completed_method = completed_cases[0]["methods"][0]
+        assert completed_method["started_at"].endswith("Z")
+        assert completed_method["finished_at"].endswith("Z")
+        assert completed_method["duration_ms"] == generation[0]["duration_ms"]
         artifacts = client.get(
-            f"/api/v1/evaluation-method-runs/{completed_cases[0]['methods'][0]['id']}/artifacts"
+            f"/api/v1/evaluation-method-runs/{completed_method['id']}/artifacts"
         )
         assert artifacts.status_code == 200
         assert "系统死锁" in artifacts.json()["stdout"]
         assert artifacts.json()["stderr"] == ""
+        assert artifacts.json()["duration_ms"] == generation[0]["duration_ms"]
         queued = client.post(
             "/api/v1/evaluation-submissions",
             json={
@@ -304,6 +425,14 @@ def test_submission_requires_logs_and_runs_isolated_command_then_scores(
                 "judge_runner": "lexical",
             },
         ).json()
+        blocked_delete = client.delete(
+            f"/api/v1/evaluation-submissions/{queued['id']}"
+        )
+        assert blocked_delete.status_code == 409
+        assert (
+            blocked_delete.json()["error"]["code"]
+            == "evaluation_submission_delete_running"
+        )
         cancelled = client.post(f"/api/v1/evaluation-submissions/{queued['id']}:cancel")
         assert cancelled.status_code == 200
         assert cancelled.json()["status"] == "cancelled"
@@ -362,6 +491,259 @@ def test_frozen_method_can_be_revised_as_new_draft(tmp_path: Path) -> None:
     assert revised.json()["status"] == "draft"
     assert revised.json()["concurrency_limit"] == 3
     assert "print(2)" in revised.json()["command_template"]
+
+
+def test_target_uses_harness_model_argument_and_exposes_comparison(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "log.txt").write_text("chmod hung", encoding="utf-8")
+    tool_directory = tmp_path / "target-tool"
+    tool_directory.mkdir()
+    (tool_directory / "report.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "assert sys.argv[1:3] == ['--model', 'glm5.1']\n"
+        "print(Path(sys.argv[3]).read_text(encoding='utf-8'))\n"
+        "print('问题分类：SYSTEM_DEADLOCK')\n"
+        "print('问题根因：chmod 进程发生系统死锁')\n"
+        "print('结论：chmod 进程长期阻塞')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        harness = client.post(
+            "/api/v1/evaluation-harnesses",
+            json={
+                "key": "codeagent-native",
+                "name": "CodeAgent Native",
+                "model_policy": "required",
+                "tool_dir": str(tool_directory),
+                "command_template": (
+                    f"{sys.executable} {{tool_dir}}/report.py --model {{model}} {{input}}"
+                ),
+                "concurrency_limit": 1,
+            },
+        )
+        assert harness.status_code == 201
+        harness_id = harness.json()["id"]
+        assert client.post(f"/api/v1/evaluation-harnesses/{harness_id}:probe").json()[
+            "probe"
+        ]["available"]
+        assert client.post(f"/api/v1/evaluation-harnesses/{harness_id}:freeze").json()[
+            "status"
+        ] == "frozen"
+        model = client.post(
+            "/api/v1/evaluation-models",
+            json={"key": "glm-5.1", "name": "GLM 5.1", "argument": "glm5.1"},
+        )
+        assert model.status_code == 201
+        target = client.post(
+            "/api/v1/evaluation-targets",
+            json={"harness_id": harness_id, "model_id": model.json()["id"]},
+        )
+        assert target.status_code == 201
+        target_id = target.json()["id"]
+        assert client.post(f"/api/v1/evaluation-targets/{target_id}:probe").json()[
+            "probe"
+        ]["available"]
+        frozen_target = client.post(
+            f"/api/v1/evaluation-targets/{target_id}:freeze"
+        ).json()
+        assert frozen_target["status"] == "frozen"
+        assert frozen_target["key"] == "codeagent-native@glm-5.1"
+        assert frozen_target["materialized_method_id"]
+        assert client.get("/api/v1/evaluation-methods").json() == []
+
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "target_ids": [target_id],
+                "judge_runner": "lexical",
+            },
+        )
+        assert submission.status_code == 202
+        submission_id = submission.json()["id"]
+        assert submission.json()["target_ids"] == [target_id]
+
+    worker = LocalWorker(settings)
+    try:
+        while worker.run_once():
+            pass
+    finally:
+        worker.close()
+
+    timestamp = submission.json()["timestamp"]
+    result = json.loads(
+        (case_directory / "runs" / timestamp / "result.json").read_text(encoding="utf-8")
+    )
+    generation = result["generation"]
+    assert generation["targets"][0]["target_key"] == "codeagent-native@glm-5.1"
+    assert generation["targets"][0]["model"]["argument"] == "glm5.1"
+
+    with TestClient(create_app(settings)) as client:
+        case_run = client.get(
+            f"/api/v1/evaluation-submissions/{submission_id}/case-runs"
+        ).json()[0]
+        artifact = client.get(
+            f"/api/v1/evaluation-method-runs/{case_run['methods'][0]['id']}/artifacts"
+        ).json()
+        assert artifact["status"] == "succeeded"
+        assert "SYSTEM_DEADLOCK" in artifact["stdout"]
+        comparison = client.get(
+            f"/api/v1/evaluation-submissions/{submission_id}/target-comparison"
+        )
+        assert comparison.status_code == 200
+        assert comparison.json()["targets"][0]["target"]["key"] == "codeagent-native@glm-5.1"
+        assert comparison.json()["targets"][0]["generation_success_rate"] == 1.0
+        assert comparison.json()["by_harness"] == []
+        assert comparison.json()["by_model"] == []
+        protected = client.delete(
+            f"/api/v1/evaluation-methods/{frozen_target['materialized_method_id']}"
+        )
+        assert protected.status_code == 409
+        assert protected.json()["error"]["code"] == "evaluation_method_managed_by_target"
+
+
+def test_completed_submission_delete_removes_runs_but_keeps_method_and_case(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "log.txt").write_text("chmod hung", encoding="utf-8")
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    (tool_directory / "report.py").write_text(
+        "print('问题根因：chmod 进程发生系统死锁')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "delete-script",
+                "tool_dir": str(tool_directory),
+                "command_template": f"{sys.executable} {{tool_dir}}/report.py",
+            },
+        ).json()
+        method_id = method["id"]
+        client.post(f"/api/v1/evaluation-methods/{method_id}:probe")
+        client.post(f"/api/v1/evaluation-methods/{method_id}:freeze")
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": [method_id],
+                "judge_runner": "lexical",
+            },
+        ).json()
+
+    worker = LocalWorker(settings)
+    try:
+        assert worker.run_once() is True
+        assert worker.run_once() is True
+    finally:
+        worker.close()
+
+    run_directory = case_directory / "runs" / submission["timestamp"]
+    assert (run_directory / "result.json").is_file()
+    with TestClient(create_app(settings)) as client:
+        deleted = client.delete(
+            f"/api/v1/evaluation-submissions/{submission['id']}"
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {
+            "submissions_deleted": 1,
+            "case_runs_deleted": 1,
+            "method_runs_deleted": 1,
+            "local_directories_deleted": 1,
+        }
+        assert (
+            client.get(f"/api/v1/evaluation-submissions/{submission['id']}").status_code
+            == 404
+        )
+        assert client.get(f"/api/v1/evaluation-methods/{method_id}").status_code == 200
+    assert not run_directory.exists()
+    assert (case_directory / "case.json").is_file()
+    assert (logs_directory / "log.txt").is_file()
+
+
+def test_timed_out_method_keeps_terminal_timing_in_api_and_result(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "log.txt").write_text("chmod hung", encoding="utf-8")
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    (tool_directory / "slow.py").write_text(
+        "import time\n"
+        "time.sleep(2)\n"
+        "print('too late')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "slow-script",
+                "tool_dir": str(tool_directory),
+                "command_template": f"{sys.executable} {{tool_dir}}/slow.py",
+                "timeout_seconds": 1,
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze")
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": [method["id"]],
+                "judge_runner": "lexical",
+            },
+        ).json()
+
+    worker = LocalWorker(settings)
+    try:
+        assert worker.run_once() is True
+    finally:
+        worker.close()
+
+    with TestClient(create_app(settings)) as client:
+        current = client.get(
+            f"/api/v1/evaluation-submissions/{submission['id']}"
+        ).json()
+        case_runs = client.get(
+            f"/api/v1/evaluation-submissions/{submission['id']}/case-runs"
+        ).json()
+    assert current["status"] == "failed"
+    method_run = case_runs[0]["methods"][0]
+    assert method_run["status"] == "timeout"
+    assert method_run["started_at"].endswith("Z")
+    assert method_run["finished_at"].endswith("Z")
+    assert method_run["duration_ms"] >= 900
+    result = json.loads(
+        (
+            case_directory
+            / "runs"
+            / submission["timestamp"]
+            / "result.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        result["generation"]["methods"][0]["duration_ms"]
+        == method_run["duration_ms"]
+    )
 
 
 def test_deleting_one_method_removes_shared_submission_but_keeps_other_method(
@@ -493,6 +875,13 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
                 "command_template": f'{sys.executable} -c "print(1)"',
             },
         )
+        trailing_parenthesis = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "agent(deepseek)",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        )
         unsafe = client.post(
             "/api/v1/evaluation-methods",
             json={
@@ -506,6 +895,9 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
     assert response.status_code == 201
     assert response.json()["key"] == "codeAgent(glm5.1)-native"
     assert response.json()["name"] == "codeAgent(glm5.1)-native"
+    assert trailing_parenthesis.status_code == 201
+    assert trailing_parenthesis.json()["key"] == "agent(deepseek)"
+    assert trailing_parenthesis.json()["name"] == "agent(deepseek)"
     assert deleted.status_code == 200
     assert deleted.json()["submissions_deleted"] == 0
     assert all(item["id"] != response.json()["id"] for item in remaining)

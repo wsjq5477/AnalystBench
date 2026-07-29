@@ -154,7 +154,7 @@ export default appOptions;
               <div class="schedule-main">
                 <strong>{{ schedule.name }}</strong>
                 <span>{{ schedule.dataset_key }} · 每天 {{ schedule.local_time }} · {{ schedule.timezone }}</span>
-                <small>{{ schedule.case_mode === 'all_ready' ? '全部日志就绪 Case' : `${schedule.case_paths.length} 个固定 Case` }} · {{ schedule.methods.map((item) => `${item.key} v${item.version}`).join('、') }}</small>
+                <small>{{ schedule.case_mode === 'all_ready' ? '全部日志就绪 Case' : `${schedule.case_paths.length} 个固定 Case` }} · {{ schedule.target_ids?.length ? schedule.targets.map((item) => item.display_name || item.key).join('、') : schedule.methods.map((item) => `${item.key} v${item.version}`).join('、') }}</small>
               </div>
               <div class="schedule-state">
                 <span :class="schedule.enabled ? 'tag-match' : 'tag-missing'">{{ schedule.enabled ? '已启用' : '已停用' }}</span>
@@ -178,7 +178,7 @@ export default appOptions;
               <button v-for="submission in evaluationSubmissions" :key="submission.id" :class="['submission-item', { active: selectedSubmissionId === submission.id }]" @click="selectEvaluationSubmission(submission.id)">
                 <strong>{{ submission.dataset_key }} · {{ submission.timestamp }}</strong>
                 <span :class="submission.status === 'completed' ? 'tag-match' : submission.status === 'failed' || submission.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ submission.status }}</span>
-                <small>{{ submission.case_count }} Case · {{ submission.methods.map((item) => item.key).join('、') }}<template v-if="submission.schedule_run_id"> · 定时</template></small>
+                <small>{{ submission.case_count }} Case · {{ submission.target_ids?.length ? submission.targets.map((item) => item.display_name || item.key).join('、') : submission.methods.map((item) => item.key).join('、') }}<template v-if="submission.schedule_run_id"> · 定时</template></small>
               </button>
             </div>
             <div class="submission-cases">
@@ -186,14 +186,16 @@ export default appOptions;
                 <strong>{{ selectedSubmission.dataset_key }}</strong>
                 <span>{{ selectedSubmission.summary.completed ?? 0 }}/{{ selectedSubmission.case_count }} 完成</span>
                 <button v-if="['completed', 'completed_with_errors', 'failed'].includes(selectedSubmission.status)" class="ghost-button" @click="showEvaluationSubmissionResults(selectedSubmission)">查看正式结果</button>
+                <button v-if="selectedSubmission.target_ids?.length && ['completed', 'completed_with_errors', 'failed'].includes(selectedSubmission.status)" class="ghost-button" @click="openTargetComparison(selectedSubmission)">组合对比</button>
                 <button v-if="!['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(selectedSubmission.status)" class="ghost-button" @click="cancelEvaluationSubmission(selectedSubmission)">取消批次</button>
+                <button v-if="['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(selectedSubmission.status)" class="tree-delete" title="删除测评批次及正式结果" @click="deleteEvaluationSubmission(selectedSubmission)"><IconTrash :size="14" /></button>
               </div>
               <div v-for="caseRun in submissionCaseRuns" :key="caseRun.id" class="submission-case-row">
                 <div>
                   <strong>{{ caseRun.case_path }}</strong>
                   <small>打分：{{ caseRun.scoring_status }}</small>
                   <small class="method-run-links">
-                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.key }} {{ methodRun.status }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
+                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.key }} {{ methodRun.status }} · {{ formatMethodRunTiming(methodRun) }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
                   </small>
                 </div>
                 <span :class="caseRun.status === 'completed' ? 'tag-match' : caseRun.status === 'failed' || caseRun.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ caseRun.status }}</span>
@@ -242,6 +244,7 @@ export default appOptions;
                   <div v-for="(report, idx) in resultRankedReports" :key="'sc-' + report.candidate_name" class="result-score-row" :style="{ '--row-color': resultColors[idx] }">
                     <span class="result-score-name"><i></i>{{ report.candidate_name }}</span>
                     <strong>{{ parseFloat(report.score).toFixed(1) }}</strong>
+                    <span class="result-score-duration">生成耗时 {{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</span>
                     <i class="result-score-bar"><b :style="{ width: `${parseFloat(report.score)}%` }" /></i>
                     <span :class="report.passed ? 'tag-match' : 'tag-missing'">{{ report.passed ? '通过' : '未通过' }}</span>
                   </div>
@@ -250,12 +253,13 @@ export default appOptions;
               <section class="surface result-overview-section">
                 <h3>总览</h3>
                 <table class="result-overview-table">
-                  <thead><tr><th>排名</th><th>报告</th><th>得分</th><th>结果</th><th>命中</th><th>缺失链</th></tr></thead>
+                  <thead><tr><th>排名</th><th>报告</th><th>得分</th><th>生成耗时</th><th>结果</th><th>命中</th><th>缺失链</th></tr></thead>
                   <tbody>
                     <tr v-for="(report, idx) in parseSummary(selectedResultData).reports" :key="report.candidate_name">
                       <td>{{ idx + 1 }}</td>
                       <td :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</td>
                       <td>{{ parseFloat(report.score).toFixed(1) }}</td>
+                      <td>{{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</td>
                       <td><span :class="report.passed ? 'tag-match' : 'tag-missing'">{{ report.passed ? '通过' : '未通过' }}</span></td>
                       <td>{{ report.hit_count }}/{{ report.claim_count }}</td>
                       <td>{{ report.missing_chains.length ? report.missing_chains.join('；') : '—' }}</td>
@@ -374,6 +378,7 @@ export default appOptions;
                     <div v-for="(report, idx) in resultRankedReports" :key="'sc-' + report.candidate_name" class="result-score-row" :style="{ '--row-color': resultColors[idx] }">
                       <span class="result-score-name"><i></i>{{ report.candidate_name }}</span>
                       <strong>{{ parseFloat(report.score).toFixed(1) }}</strong>
+                      <span class="result-score-duration">生成耗时 {{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</span>
                       <i class="result-score-bar"><b :style="{ width: `${parseFloat(report.score)}%` }" /></i>
                       <span :class="report.passed ? 'tag-match' : 'tag-missing'">{{ report.passed ? '通过' : '未通过' }}</span>
                     </div>
@@ -382,12 +387,13 @@ export default appOptions;
                 <section class="surface result-overview-section">
                   <h3>总览</h3>
                   <table class="result-overview-table">
-                    <thead><tr><th>排名</th><th>报告</th><th>得分</th><th>结果</th><th>命中</th><th>缺失链</th></tr></thead>
+                    <thead><tr><th>排名</th><th>报告</th><th>得分</th><th>生成耗时</th><th>结果</th><th>命中</th><th>缺失链</th></tr></thead>
                     <tbody>
                       <tr v-for="(report, idx) in parseSummary(selectedResultData).reports" :key="report.candidate_name">
                         <td>{{ idx + 1 }}</td>
                         <td :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</td>
                         <td>{{ parseFloat(report.score).toFixed(1) }}</td>
+                        <td>{{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</td>
                         <td><span :class="report.passed ? 'tag-match' : 'tag-missing'">{{ report.passed ? '通过' : '未通过' }}</span></td>
                         <td>{{ report.hit_count }}/{{ report.claim_count }}</td>
                         <td>{{ report.missing_chains.length ? report.missing_chains.join('；') : '—' }}</td>
@@ -473,7 +479,7 @@ export default appOptions;
 
       <!-- Settings view -->
       <section v-if="activeView === 'settings'" class="work-page settings-page">
-        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径和可执行的测评方式。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods()"><IconRefresh :size="16" />刷新</button></div>
+        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径、Harness、模型和运行组合。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods(); loadEvaluationCatalog()"><IconRefresh :size="16" />刷新</button></div>
         <section class="surface form-card">
           <div class="panel-heading"><h2>结果路径配置</h2></div>
           <label>临时结果目录<span>单次评测默认输出到此目录</span><input v-model="appSettings.results_tmp_path" placeholder="data/results/tmp" /></label>
@@ -481,7 +487,7 @@ export default appOptions;
           <button class="primary-button wide" @click="saveAppSettings"><IconSettings :size="16" />保存设置</button>
         </section>
         <section class="surface form-card method-card">
-          <div class="panel-heading"><h2>测评方式</h2><button class="primary-button" @click="openMethodDialog"><IconPlus :size="16" />新建方式</button></div>
+          <div class="panel-heading"><h2>旧测评方式</h2><button class="primary-button" @click="openMethodDialog"><IconPlus :size="16" />新建方式</button></div>
           <p class="form-note">命令在隔离目录执行，仅能看到本次复制的原始日志。标准输出会保存为对应的 Markdown 报告。</p>
           <div v-if="visibleEvaluationMethods.length" class="method-list">
             <div v-for="method in visibleEvaluationMethods" :key="method.id" class="method-row">
@@ -495,6 +501,47 @@ export default appOptions;
             </div>
           </div>
           <div v-else class="empty-state"><IconTerminal2 :size="26" /><p>暂无测评方式</p><span>新建并检测、冻结后，即可在结果页提交测评。</span></div>
+        </section>
+        <section class="surface form-card method-card">
+          <div class="panel-heading"><h2>Harness</h2><button class="primary-button" @click="openHarnessDialog"><IconPlus :size="16" />新建 Harness</button></div>
+          <p class="form-note">定义工程、Prompt、命令与共享并发。需要模型时，命令模板使用 <code>{model}</code>。</p>
+          <div v-if="evaluationHarnesses.length" class="method-list">
+            <div v-for="harness in evaluationHarnesses" :key="harness.id" class="method-row">
+              <div><strong>{{ harness.name }} <small>{{ harness.key }} v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code></div>
+              <span :class="harness.status === 'frozen' ? 'tag-match' : harness.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ harness.status }}</span>
+              <span :class="harness.probe?.available ? 'tag-match' : 'tag-partial'">{{ harness.probe?.available ? '命令可用' : '未检测' }}</span>
+              <button v-if="harness.status === 'draft'" class="ghost-button" @click="probeEvaluationHarness(harness)">检测</button>
+              <button v-if="harness.status === 'draft'" class="primary-button" :disabled="!harness.probe?.available" @click="freezeEvaluationHarness(harness)">冻结</button>
+              <button class="ghost-button" @click="openHarnessDialog(harness)">修改</button>
+            </div>
+          </div>
+          <div v-else class="empty-state"><IconTerminal2 :size="26" /><p>暂无 Harness</p><span>先新建一个脚本或 Agent Harness。</span></div>
+        </section>
+        <section class="surface form-card method-card">
+          <div class="panel-heading"><h2>模型</h2><button class="primary-button" @click="openModelDialog"><IconPlus :size="16" />新建模型</button></div>
+          <p class="form-note">这里只保存传给 Harness 的模型名称，不管理 endpoint、密钥或模型参数。</p>
+          <div v-if="evaluationModels.length" class="method-list">
+            <div v-for="model in evaluationModels" :key="model.id" class="method-row">
+              <div><strong>{{ model.name }} <small>{{ model.key }} v{{ model.version }}</small></strong><code>--model {{ model.argument }}</code></div>
+              <span :class="model.status === 'frozen' ? 'tag-match' : 'tag-missing'">{{ model.status }}</span>
+              <button class="ghost-button" @click="openModelDialog(model)">修改</button>
+            </div>
+          </div>
+          <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>暂无模型</p></div>
+        </section>
+        <section class="surface form-card method-card">
+          <div class="panel-heading"><h2>运行组合</h2><button class="primary-button" @click="openTargetDialog"><IconPlus :size="16" />新建组合</button></div>
+          <p class="form-note">一个组合固定一个 Harness 与可选模型；冻结后可直接提交或加入定时计划。</p>
+          <div v-if="evaluationTargets.length" class="method-list">
+            <div v-for="target in evaluationTargets" :key="target.id" class="method-row">
+              <div><strong>{{ target.display_name }} <small>{{ target.key }} v{{ target.version }}</small></strong><code>{{ target.harness?.command_template }}</code></div>
+              <span :class="target.status === 'frozen' ? 'tag-match' : target.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ target.status }}</span>
+              <span :class="target.probe?.available ? 'tag-match' : 'tag-partial'">{{ target.probe?.available ? '组合可用' : '未检测' }}</span>
+              <button v-if="target.status === 'draft'" class="ghost-button" @click="probeEvaluationTarget(target)">检测</button>
+              <button v-if="target.status === 'draft'" class="primary-button" :disabled="!target.probe?.available" @click="freezeEvaluationTarget(target)">冻结</button>
+            </div>
+          </div>
+          <div v-else class="empty-state"><IconFlask :size="26" /><p>暂无运行组合</p></div>
         </section>
       </section>
     </main>
@@ -541,20 +588,32 @@ export default appOptions;
           </fieldset>
         </template>
         <fieldset v-else-if="submissionStep === 2" class="method-picker">
-            <legend>测评方式</legend>
+          <template v-if="frozenEvaluationTargetGroups.length">
+            <legend>运行组合</legend>
+            <div v-for="group in frozenEvaluationTargetGroups" :key="group.harness.id" class="target-picker-group">
+              <strong>{{ group.harness.name }} <small>{{ group.harness.key }} v{{ group.harness.version }}</small></strong>
+              <label v-for="target in group.targets" :key="target.id" class="check-row">
+                <input v-model="submissionForm.target_ids" type="checkbox" :value="target.id" />
+                <span><strong>{{ target.model?.name || '无模型基线' }}</strong><code>{{ target.key }} · {{ target.model_argument || 'script-only' }}</code></span>
+              </label>
+            </div>
+          </template>
+          <template v-else>
+            <legend>旧测评方式</legend>
             <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
               <input v-model="submissionForm.method_ids" type="checkbox" :value="method.id" />
               <span><strong>{{ method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
             </label>
             <p v-if="!frozenEvaluationMethods.length" class="form-note">没有可用方式，请先到设置页新建、检测并冻结。</p>
+          </template>
         </fieldset>
         <template v-else>
           <div class="case-info-grid">
             <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ submissionForm.dataset_key }}</span></div>
             <div class="case-info-item"><span class="case-info-label">本次 Case 数</span><span class="case-info-value">{{ submissionForm.case_paths.length }}</span></div>
             <div class="case-info-item"><span class="case-info-label">未纳入 Case</span><span class="case-info-value">{{ selectedSubmissionCases.length - submissionForm.case_paths.length }}</span></div>
-            <div class="case-info-item"><span class="case-info-label">测评方式数</span><span class="case-info-value">{{ submissionForm.method_ids.length }}</span></div>
-            <div class="case-info-item"><span class="case-info-label">生成任务数</span><span class="case-info-value">{{ submissionForm.case_paths.length * submissionForm.method_ids.length }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">运行组合数</span><span class="case-info-value">{{ submissionForm.target_ids.length || submissionForm.method_ids.length }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">生成任务数</span><span class="case-info-value">{{ submissionForm.case_paths.length * (submissionForm.target_ids.length || submissionForm.method_ids.length) }}</span></div>
           </div>
           <label>打分 Judge
             <select v-model="submissionForm.judge_runner">
@@ -567,7 +626,7 @@ export default appOptions;
           <button v-if="submissionStep === 1" class="ghost-button" @click="showSubmitEvaluationDialog = false">取消</button>
           <button v-else class="ghost-button" @click="submissionStep -= 1">上一步</button>
           <button v-if="submissionStep < 3" class="primary-button" @click="advanceSubmissionStep">下一步<IconChevronRight :size="16" /></button>
-          <button v-else class="primary-button" :disabled="submissionRunning || !submissionForm.dataset_key || !submissionForm.method_ids.length" @click="createEvaluationSubmission"><IconFlask :size="16" />{{ submissionRunning ? '提交中…' : '开始测评' }}</button>
+          <button v-else class="primary-button" :disabled="submissionRunning || !submissionForm.dataset_key || (!submissionForm.target_ids.length && !submissionForm.method_ids.length)" @click="createEvaluationSubmission"><IconFlask :size="16" />{{ submissionRunning ? '提交中…' : '开始测评' }}</button>
         </div>
       </section>
     </div>
@@ -599,6 +658,43 @@ export default appOptions;
           <button class="ghost-button" @click="showMethodDialog = false">取消</button>
           <button class="primary-button" :disabled="methodSaving" @click="createEvaluationMethod"><IconPlus :size="16" />{{ methodSaving ? '保存中…' : editingMethodId ? '保存为新版本并检测' : '创建并检测' }}</button>
         </div>
+      </section>
+    </div>
+
+    <div v-if="showHarnessDialog" class="dialog-overlay" @click.self="showHarnessDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>{{ editingHarnessId ? '修改 Harness' : '新建 Harness' }}</h2></div>
+        <p class="form-note">需要模型的 Harness 必须在命令模板中且仅一次使用 <code>{model}</code>；命令不经过 Shell。</p>
+        <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="codeagent-native" /></label>
+        <label>显示名称<input v-model="harnessForm.name" placeholder="CodeAgent Native" /></label>
+        <label>工程族（可选）<input v-model="harnessForm.family" placeholder="codeagent" /></label>
+        <label>模型策略<select v-model="harnessForm.model_policy"><option value="required">需要模型</option><option value="none">无模型</option></select></label>
+        <label>工具目录（可选）<input v-model="harnessForm.tool_dir" placeholder="/home/user/codeagent" /></label>
+        <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='codeagent -p "分析 {input}" --model {model}'></textarea></label>
+        <div class="form-grid"><label>超时（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>最大输出（字节）<input v-model.number="harnessForm.max_output_bytes" type="number" min="1024" /></label><label>Harness 并发<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
+        <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>
+      </section>
+    </div>
+
+    <div v-if="showModelDialog" class="dialog-overlay" @click.self="showModelDialog = false">
+      <section class="surface dialog-card">
+        <div class="panel-heading"><h2>{{ editingModelId ? '修改模型' : '新建模型' }}</h2></div>
+        <p class="form-note">仅保存传给 Harness 的模型参数，不保存任何凭据或 endpoint。</p>
+        <label>Key<input v-model="modelForm.key" :disabled="Boolean(editingModelId)" placeholder="glm-5.1" /></label>
+        <label>显示名称<input v-model="modelForm.name" placeholder="GLM 5.1" /></label>
+        <label>模型参数<input v-model="modelForm.argument" placeholder="glm5.1" /></label>
+        <div class="dialog-actions"><button class="ghost-button" @click="showModelDialog = false">取消</button><button class="primary-button" :disabled="modelSaving" @click="saveEvaluationModel">{{ modelSaving ? '保存中…' : '保存模型' }}</button></div>
+      </section>
+    </div>
+
+    <div v-if="showTargetDialog" class="dialog-overlay" @click.self="showTargetDialog = false">
+      <section class="surface dialog-card">
+        <div class="panel-heading"><h2>新建运行组合</h2></div>
+        <label>Harness<select v-model="targetForm.harness_id"><option value="" disabled>请选择冻结 Harness</option><option v-for="harness in evaluationHarnesses.filter((item) => item.status === 'frozen')" :key="harness.id" :value="harness.id">{{ harness.name }} · {{ harness.key }} v{{ harness.version }}</option></select></label>
+        <label v-if="selectedTargetHarness?.model_policy === 'required'">模型<select v-model="targetForm.model_id"><option value="" disabled>请选择冻结模型</option><option v-for="model in evaluationModels.filter((item) => item.status === 'frozen')" :key="model.id" :value="model.id">{{ model.name }} · {{ model.argument }}</option></select></label>
+        <label>该 Harness 的模型参数覆盖（可选）<input v-model="targetForm.model_argument" :disabled="selectedTargetHarness?.model_policy === 'none'" placeholder="默认使用模型参数" /></label>
+        <label>组合并发限制（可选）<input v-model.number="targetForm.concurrency_limit" type="number" min="1" max="32" placeholder="继承 Harness" /></label>
+        <div class="dialog-actions"><button class="ghost-button" @click="showTargetDialog = false">取消</button><button class="primary-button" :disabled="targetSaving" @click="saveEvaluationTarget">{{ targetSaving ? '保存中…' : '创建并检测' }}</button></div>
       </section>
     </div>
 
@@ -647,8 +743,18 @@ export default appOptions;
             <span :class="caseItem.case_data?.submission_ready ? 'tag-match' : 'tag-missing'">{{ caseItem.case_data?.submission_ready ? `${caseItem.case_data.log_count} 个日志` : '缺少有效日志' }}</span>
           </label>
         </fieldset>
-        <fieldset class="method-picker">
-          <legend>测评方式（固定到当前版本）</legend>
+        <fieldset v-if="frozenEvaluationTargetGroups.length" class="method-picker">
+          <legend>运行组合（固定到当前版本）</legend>
+          <div v-for="group in frozenEvaluationTargetGroups" :key="group.harness.id" class="target-picker-group">
+            <strong>{{ group.harness.name }} <small>{{ group.harness.key }} v{{ group.harness.version }}</small></strong>
+            <label v-for="target in group.targets" :key="target.id" class="check-row">
+              <input v-model="scheduleForm.target_ids" type="checkbox" :value="target.id" />
+              <span><strong>{{ target.model?.name || '无模型基线' }}</strong><code>{{ target.key }}</code></span>
+            </label>
+          </div>
+        </fieldset>
+        <fieldset v-else class="method-picker">
+          <legend>旧测评方式（固定到当前版本）</legend>
           <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
             <input v-model="scheduleForm.method_ids" type="checkbox" :value="method.id" />
             <span><strong>{{ method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
@@ -697,6 +803,11 @@ export default appOptions;
       <section class="surface dialog-card dialog-card-wide">
         <div class="panel-heading"><h2>方式运行审计</h2><span>{{ methodArtifactView?.status }} · attempt {{ methodArtifactView?.attempt }}</span></div>
         <p v-if="methodArtifactView?.message" class="form-note tone-warning">{{ methodArtifactView.message }}</p>
+        <div class="artifact-timing">
+          <span>开始<strong>{{ formatMethodTimestamp(methodArtifactView?.started_at) }}</strong></span>
+          <span>结束<strong>{{ formatMethodTimestamp(methodArtifactView?.finished_at) }}</strong></span>
+          <span>执行耗时<strong>{{ formatDuration(methodArtifactView?.duration_ms) }}</strong></span>
+        </div>
         <label>命令
           <div class="code-block">{{ (methodArtifactView?.command || []).join(' ') }}</div>
         </label>
@@ -707,6 +818,32 @@ export default appOptions;
           <div class="code-block">{{ methodArtifactView?.stderr || '（空）' }}</div>
         </label>
         <div class="dialog-actions"><button class="primary-button" @click="showArtifactDialog = false">关闭</button></div>
+      </section>
+    </div>
+
+    <div v-if="showTargetComparisonDialog" class="dialog-overlay" @click.self="showTargetComparisonDialog = false">
+      <section class="surface dialog-card dialog-card-wide">
+        <div class="panel-heading"><h2>Harness / 模型组合对比</h2><span :class="targetComparison?.controlled ? 'tag-match' : 'tag-missing'">{{ targetComparison?.controlled ? '受控' : '非受控' }}</span></div>
+        <p v-for="warning in targetComparison?.warnings || []" :key="warning" class="form-note tone-warning">{{ warning }}</p>
+        <div class="target-comparison-grid">
+          <article v-for="item in targetComparison?.targets || []" :key="item.target.key" class="target-metric-card">
+            <strong>{{ item.target.display_name }}</strong><small>{{ item.target.key }}</small>
+            <span>平均得分 <b>{{ item.average_score === null ? '—' : item.average_score.toFixed(1) }}</b></span>
+            <span>通过率 <b>{{ item.pass_rate === null ? '—' : `${(item.pass_rate * 100).toFixed(0)}%` }}</b></span>
+            <span>成功率 <b>{{ `${(item.generation_success_rate * 100).toFixed(0)}%` }}</b></span>
+            <span>中位 / P95 <b>{{ formatDuration(item.median_duration_ms) }} / {{ formatDuration(item.p95_duration_ms) }}</b></span>
+            <small>覆盖 {{ item.scored_case_count }}/{{ item.requested_case_count }} · 耗时样本 {{ item.duration_sample_count }}</small>
+          </article>
+        </div>
+        <div v-if="targetComparison?.by_harness?.length || targetComparison?.by_model?.length" class="comparison-groups">
+          <p v-for="group in targetComparison.by_harness" :key="`h-${group.key}`"><strong>固定 Harness {{ group.key }}</strong>：{{ group.target_keys.join(' vs ') }}</p>
+          <p v-for="group in targetComparison.by_model" :key="`m-${group.key}`"><strong>固定模型 {{ group.key }}</strong>：{{ group.target_keys.join(' vs ') }}</p>
+        </div>
+        <div v-if="targetComparison?.pairwise?.length" class="comparison-groups">
+          <p v-for="pair in targetComparison.pairwise" :key="`${pair.group}-${pair.baseline}-${pair.candidate}`"><strong>{{ pair.baseline }} → {{ pair.candidate }}</strong>：共同 Case {{ pair.shared_scored_case_count }}，平均得分差 {{ pair.average_score_delta === null ? '—' : pair.average_score_delta.toFixed(1) }}</p>
+        </div>
+        <p v-else class="form-note">选择至少两个共享同一 Harness 或同一模型的组合后，会显示成对比较。</p>
+        <div class="dialog-actions"><button class="primary-button" @click="showTargetComparisonDialog = false">关闭</button></div>
       </section>
     </div>
 

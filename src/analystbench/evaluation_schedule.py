@@ -25,6 +25,7 @@ from analystbench.db.models import (
 )
 from analystbench.errors import AnalystBenchError
 from analystbench.evaluation_submission import EvaluationSubmissionService
+from analystbench.evaluation_target import EvaluationTargetService
 from analystbench.jobs import JobQueue
 from analystbench.services import transaction
 
@@ -116,6 +117,7 @@ class EvaluationScheduleService:
         case_mode: str,
         case_paths: list[str],
         method_ids: list[str],
+        target_ids: list[str],
         judge_runner: str,
         timezone: str,
         local_time: str,
@@ -168,8 +170,27 @@ class EvaluationScheduleService:
                     "evaluation_schedule_invalid",
                     "固定选择模式至少需要一个 Case。",
                 )
-        if not method_ids:
-            raise AnalystBenchError("evaluation_schedule_invalid", "至少选择一种测评方式。")
+        if bool(method_ids) == bool(target_ids):
+            raise AnalystBenchError(
+                "evaluation_schedule_invalid", "请选择测评方式或运行组合中的一种，且不能混用。"
+            )
+        if target_ids:
+            targets, target_snapshots = EvaluationTargetService(
+                self.session_factory, self.settings
+            ).snapshots(target_ids)
+            return {
+                "name": normalized_name,
+                "dataset_key": normalized_dataset,
+                "case_mode": case_mode,
+                "case_paths": normalized_cases,
+                "method_ids": [str(item.materialized_method_id) for item in targets],
+                "target_ids": [item.id for item in targets],
+                "targets": target_snapshots,
+                "methods": [],
+                "judge_runner": self._validate_judge(judge_runner),
+                "timezone": self._validate_timezone(timezone),
+                "local_time": self._validate_local_time(local_time),
+            }
         normalized_method_ids = list(dict.fromkeys(method_ids))
         with transaction(self.session_factory) as session:
             methods: list[EvaluationMethod] = []
@@ -198,6 +219,8 @@ class EvaluationScheduleService:
             "case_mode": case_mode,
             "case_paths": normalized_cases,
             "method_ids": normalized_method_ids,
+            "target_ids": [],
+            "targets": [],
             "methods": [
                 {
                     "id": method.id,
@@ -206,10 +229,28 @@ class EvaluationScheduleService:
                 }
                 for method in methods
             ],
-            "judge_runner": judge_runner,
-            "timezone": normalized_timezone,
-            "local_time": normalized_time,
+            "judge_runner": self._validate_judge(judge_runner),
+            "timezone": self._validate_timezone(normalized_timezone),
+            "local_time": self._validate_local_time(normalized_time),
         }
+
+    @staticmethod
+    def _validate_judge(value: str) -> str:
+        if value not in JUDGE_RUNNERS:
+            raise AnalystBenchError("evaluation_schedule_invalid", "不支持的评分 Judge。")
+        return value
+
+    @staticmethod
+    def _validate_timezone(value: str) -> str:
+        normalized = value.strip()
+        _parse_timezone(normalized)
+        return normalized
+
+    @staticmethod
+    def _validate_local_time(value: str) -> str:
+        normalized = value.strip()
+        _parse_local_time(normalized)
+        return normalized
 
     @staticmethod
     def _snapshot(schedule: EvaluationSchedule) -> dict[str, Any]:
@@ -220,6 +261,7 @@ class EvaluationScheduleService:
             "case_mode": schedule.case_mode,
             "case_paths": json.loads(schedule.case_paths_json or "[]"),
             "method_ids": json.loads(schedule.method_ids_json or "[]"),
+            "target_ids": json.loads(schedule.target_ids_json or "[]"),
             "judge_runner": schedule.judge_runner,
             "timezone": schedule.timezone,
             "local_time": schedule.local_time,
@@ -233,6 +275,7 @@ class EvaluationScheduleService:
         case_mode: str,
         case_paths: list[str],
         method_ids: list[str],
+        target_ids: list[str] | None = None,
         judge_runner: str,
         timezone: str,
         local_time: str,
@@ -244,6 +287,7 @@ class EvaluationScheduleService:
             case_mode=case_mode,
             case_paths=case_paths,
             method_ids=method_ids,
+            target_ids=target_ids or [],
             judge_runner=judge_runner,
             timezone=timezone,
             local_time=local_time,
@@ -256,6 +300,7 @@ class EvaluationScheduleService:
                 case_mode=config["case_mode"],
                 case_paths_json=canonical_json(config["case_paths"]),
                 method_ids_json=canonical_json(config["method_ids"]),
+                target_ids_json=canonical_json(config["target_ids"]),
                 judge_runner=config["judge_runner"],
                 timezone=config["timezone"],
                 local_time=config["local_time"],
@@ -307,6 +352,7 @@ class EvaluationScheduleService:
         case_mode: str,
         case_paths: list[str],
         method_ids: list[str],
+        target_ids: list[str] | None = None,
         judge_runner: str,
         timezone: str,
         local_time: str,
@@ -318,6 +364,7 @@ class EvaluationScheduleService:
             case_mode=case_mode,
             case_paths=case_paths,
             method_ids=method_ids,
+            target_ids=target_ids or [],
             judge_runner=judge_runner,
             timezone=timezone,
             local_time=local_time,
@@ -335,6 +382,7 @@ class EvaluationScheduleService:
             item.case_mode = config["case_mode"]
             item.case_paths_json = canonical_json(config["case_paths"])
             item.method_ids_json = canonical_json(config["method_ids"])
+            item.target_ids_json = canonical_json(config["target_ids"])
             item.judge_runner = config["judge_runner"]
             item.timezone = config["timezone"]
             item.local_time = config["local_time"]
@@ -569,11 +617,13 @@ class EvaluationScheduleService:
         case_paths = (
             None if snapshot["case_mode"] == "all_ready" else snapshot["case_paths"]
         )
+        target_ids = snapshot.get("target_ids") or []
         try:
             submission = self.submissions.create_submission(
                 snapshot["dataset_key"],
-                snapshot["method_ids"],
+                [] if target_ids else snapshot["method_ids"],
                 snapshot["judge_runner"],
+                target_ids=target_ids or None,
                 case_paths=case_paths,
                 schedule_run_id=schedule_run_id,
             )
@@ -683,7 +733,11 @@ class EvaluationScheduleService:
         }
 
     def view(self, item: EvaluationSchedule) -> dict[str, Any]:
-        method_ids = json.loads(item.method_ids_json or "[]")
+        stored_method_ids = json.loads(item.method_ids_json or "[]")
+        target_ids = json.loads(item.target_ids_json or "[]")
+        # Target schedules keep materialized Method ids only as an internal
+        # execution bridge.  The public schedule contract remains Target-only.
+        method_ids = [] if target_ids else stored_method_ids
         with transaction(self.session_factory) as session:
             methods = [
                 method
@@ -698,6 +752,14 @@ class EvaluationScheduleService:
             )
             if latest is not None:
                 session.expunge(latest)
+        target_views: list[dict[str, Any]] = []
+        if target_ids:
+            service = EvaluationTargetService(self.session_factory, self.settings)
+            for target_id in target_ids:
+                try:
+                    target_views.append(service.target_view(target_id))
+                except AnalystBenchError:
+                    target_views.append({"id": target_id, "status": "missing"})
         return {
             "id": item.id,
             "name": item.name,
@@ -714,6 +776,8 @@ class EvaluationScheduleService:
                 }
                 for method in methods
             ],
+            "target_ids": target_ids,
+            "targets": target_views,
             "judge_runner": item.judge_runner,
             "timezone": item.timezone,
             "local_time": item.local_time,

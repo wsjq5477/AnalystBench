@@ -49,6 +49,23 @@ def _inline_code(value: Any) -> str:
     return str(value or "").replace("`", "ˋ")
 
 
+def _duration_label(value: Any) -> str:
+    try:
+        duration_ms = max(0, int(value))
+    except (TypeError, ValueError):
+        return "—"
+    if duration_ms < 10_000:
+        return f"{duration_ms / 1000:.1f} 秒"
+    total_seconds = round(duration_ms / 1000)
+    if total_seconds < 60:
+        return f"{total_seconds} 秒"
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes < 60:
+        return f"{minutes} 分 {seconds:02d} 秒"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} 时 {minutes:02d} 分"
+
+
 def build_human_summary(
     case_key: str,
     case_payload: dict[str, Any],
@@ -164,8 +181,26 @@ def build_human_summary(
     }
 
 
-def render_markdown(summary: dict[str, Any]) -> str:
+def render_markdown(
+    summary: dict[str, Any],
+    generation: dict[str, Any] | None = None,
+) -> str:
     reports_by_name = {item["candidate_name"]: item for item in summary["reports"]}
+    generation_entries = (generation or {}).get("targets") or (generation or {}).get(
+        "methods", []
+    )
+    durations_by_name = {
+        item.get("target_key") or item.get("key"): item.get("duration_ms")
+        for item in generation_entries
+        if isinstance(item, dict) and (item.get("target_key") or item.get("key"))
+    }
+    display_by_name = {
+        item.get("target_key") or item.get("key"): item.get("display_name")
+        for item in generation_entries
+        if isinstance(item, dict)
+        and (item.get("target_key") or item.get("key"))
+        and item.get("display_name")
+    }
     lines = [
         "# AnalystBench 评分报告",
         "",
@@ -192,14 +227,15 @@ def render_markdown(summary: dict[str, Any]) -> str:
             "",
             "## 总览",
             "",
-            "| 排名 | 报告 | 得分 | 结果 | 命中评分项 | 缺失链 | 警告 |",
-            "|---:|---|---:|---|---:|---:|---:|",
+            "| 排名 | 报告 | 得分 | 生成耗时 | 结果 | 命中评分项 | 缺失链 | 警告 |",
+            "|---:|---|---:|---:|---|---:|---:|---:|",
         ]
     )
     for index, name in enumerate(summary["ranking"], 1):
         report = reports_by_name[name]
         lines.append(
-            f"| {index} | {name} | {report['score'] or '-'} | "
+            f"| {index} | {display_by_name.get(name, name)} | {report['score'] or '-'} | "
+            f"{_duration_label(durations_by_name.get(name))} | "
             f"{'通过' if report['passed'] else '未通过'} | "
             f"{report['hit_count']}/{report['claim_count']} | "
             f"{len(report['missing_chains'])} | {len(report['warnings'])} |"
@@ -209,9 +245,10 @@ def render_markdown(summary: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                f"## {name}",
+                f"## {display_by_name.get(name, name)}",
                 "",
                 f"- 总分：**{report['score'] or '-'} / 100**",
+                f"- 生成耗时：**{_duration_label(durations_by_name.get(name))}**",
                 f"- 结果：**{'通过' if report['passed'] else '未通过'}**",
             ]
         )

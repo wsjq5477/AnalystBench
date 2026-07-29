@@ -18,7 +18,8 @@ class EvaluationScheduleWrite(BaseModel):
     dataset_key: str = Field(min_length=1, max_length=255)
     case_mode: str = "all_ready"
     case_paths: list[str] = Field(default_factory=list)
-    method_ids: list[str] = Field(min_length=1)
+    method_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
     judge_runner: str = "claude-code"
     timezone: str = "Asia/Shanghai"
     local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -47,6 +48,8 @@ class EvaluationScheduleResponse(BaseModel):
     case_paths: list[str]
     method_ids: list[str]
     methods: list[dict[str, Any]]
+    target_ids: list[str] = Field(default_factory=list)
+    targets: list[dict[str, Any]] = Field(default_factory=list)
     judge_runner: str
     timezone: str
     local_time: str

@@ -63,5 +63,21 @@ def test_p16_upgrades_existing_p15_sqlite_database(tmp_path: Path) -> None:
             index["name"]
             for index in inspector.get_indexes("evaluation_submissions")
         }
+        method_run_columns = {
+            column["name"]
+            for column in inspector.get_columns(
+                "evaluation_submission_method_runs"
+            )
+        }
+        assert {"started_at", "finished_at", "duration_ms"} <= method_run_columns
+        assert {
+            "evaluation_harnesses",
+            "evaluation_models",
+            "evaluation_targets",
+        } <= set(inspector.get_table_names())
+        schedule_columns = {
+            column["name"] for column in inspector.get_columns("evaluation_schedules")
+        }
+        assert "target_ids_json" in schedule_columns
     finally:
         engine.dispose()

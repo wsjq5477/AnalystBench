@@ -353,6 +353,162 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] 保留 API 与 Worker 的独立进程职责和原有拆分调试命令。
 - [x] Case Draft 生成统一由数据库 Job 和 Local Worker 执行。
 - [x] 增加启动顺序、后台记录和过期 PID 清理测试。
+- [x] 端口预检允许正常复用刚关闭的监听地址，避免服务重启被残留 socket 状态误判。
 
 验收门禁：一条命令完成迁移和启动；关闭终端不影响后台服务；重复启动被拒绝；
 停止时 API 与 Worker 一起退出；API 进程不直接执行持久化后台任务。
+
+## P18 测评方式执行耗时
+
+状态：已实现（2026-07-29）。详细契约见
+`evaluation-method-timing-design.md`。
+
+### P18.0 文档与契约
+
+- [x] 确认以 Method Run 为计时对象，手工提交和定时测评复用同一结构。
+- [x] 确认耗时只覆盖实际命令执行，不包含排队、工作区准备和评分。
+- [x] 确认失败、超时、取消、重试和旧结果的计时语义。
+- [x] 确认前端批次详情、综合得分区与正式结果总览展示位置。
+- [x] 确认终态批次可删除，运行中批次必须先取消。
+
+验收门禁：计时起止点、结果结构、重试和前端展示无未决项。
+
+### P18.1 持久化与执行计时
+
+- [x] Method Run 增加 `started_at`、`finished_at`、`duration_ms` 和数据库迁移。
+- [x] 使用 UTC 时间记录审计点，使用单调时钟计算毫秒耗时。
+- [x] 成功、非零退出、超时和运行中取消统一写入终态计时。
+- [x] 重试重置当前计时，启动前取消或启动失败保持空值。
+
+验收门禁：排队时间不进入实际执行耗时，并发方式互不覆盖且耗时非负。
+
+### P18.2 结果与 API
+
+- [x] Case Run API 和 `run.json` 的每个 Method 返回计时字段。
+- [x] `result.json` 增加独立 `generation.methods[]`，按方式 Key 对应评分报告。
+- [x] `result.md` 排名表增加生成耗时且不改变评分和排名。
+- [x] 旧结果缺少计时字段时兼容读取并显示空值。
+
+验收门禁：同一 Case 的 `claude`、`script`、`skill` 均能在本次正式结果中找到各自
+耗时。
+
+### P18.3 前端闭环
+
+- [x] 批次详情为运行中的方式显示“已运行”，终态显示固定耗时。
+- [x] 正式结果“综合得分”和“总览”增加“生成耗时”。
+- [x] 审计弹窗展示开始时间、结束时间和耗时。
+- [x] 秒、分秒和空值使用统一格式并复用深浅主题变量。
+
+验收门禁：用户能在运行期间观察耗时，并在结果详情中直接对比质量与速度。
+
+### P18.4 测评批次删除
+
+- [x] 新增终态 Submission 安全删除 API 和稳定 404/409 错误。
+- [x] 删除关联 Case Run、Method Run、Job、工作区和正式结果目录。
+- [x] 目录清理与数据库事务失败时可恢复，不删除 Case 输入和测评方式。
+- [x] 前端批次详情增加确认删除入口并刷新批次、结果和 Dashboard 数据。
+
+验收门禁：终态批次可以完整删除；运行中批次不会被部分删除；定时计划和触发历史
+继续保留。
+
+### P18.5 测试与交付
+
+- [x] 覆盖成功、超时、排队、并发及既有取消/重试状态计时路径。
+- [x] 覆盖手工提交与定时触发产生相同结果结构。
+- [x] 覆盖旧结果兼容、API、`run.json`、`result.json` 和 Markdown。
+- [x] 运行数据库迁移、后端回归、前端测试、生产构建和 Sites Worker 测试。
+
+验收门禁：计时可持久化、可审计、可展示，并且不改变现有生成和评分行为。
+
+实现状态：后端、迁移、前端和自动化测试已完成；本地服务已升级到 0012 并重载。
+内置浏览器受 WSL 路径桥接限制，截图级深浅主题视觉验收待后续补充。
+
+## P19 Harness 与 Model 解耦评测
+
+状态：核心实现与回归已完成（2026-07-29）；历史名称映射、旧计划迁移和完整视觉验收仍待后续批次。详细契约见
+`harness-model-evaluation-design.md`。
+
+### P19.0 文档与兼容契约
+
+- [x] 确认 AnalystBench 只选择模型名称，本地 Harness 管理 endpoint、凭据和参数。
+- [x] 确认 Harness、Model、Evaluation Target 和 Target Run 的领域边界。
+- [x] 确认 `required` 与 `none` 两种模型策略及 `script-only` 无模型基线。
+- [x] 确认提交默认全选可用 Target，定时计划固定精确 Target。
+- [x] 确认固定 Harness 比 Model、固定 Model 比 Harness 的质量和耗时口径。
+- [ ] 将新对象、版本和可比较性规则同步到 `domain-model.md`、`architecture.md` 和
+  `api-design.md`。
+
+验收门禁：模型选择、命令参数、基线、版本、比较、兼容和定时行为无未决产品边界。
+
+### P19.1 数据模型与迁移
+
+- [x] 新增 Harness Version、Model Version 和 Evaluation Target 持久化模型。
+- [x] Target 唯一引用一个 Harness Version 和一个可空 Model Version。
+- [x] 扩展 Method Run 作为内部执行桥接并投影 Target Run，保留 P18 计时字段。
+- [x] Submission、Schedule 和运行清单支持冻结 `target_ids` 与完整 Target 快照。
+- [x] 增加 Alembic 迁移、外键、唯一约束、状态和 content hash。
+- [x] 保留旧 Evaluation Method、Method Run、Schedule 和结果的兼容路径。
+
+验收门禁：升级不改写或丢失历史运行；新 Target 版本不可变且所有引用可追溯。
+
+### P19.2 Harness、Model 与 Target 管理
+
+- [x] 实现 Harness 创建、probe、冻结、修订和归档。
+- [ ] 实现未引用 Harness 草稿删除。
+- [x] 校验 `{model}` 与 `model_policy`，继续使用 argv 和 `shell=False`。
+- [x] 实现轻量 Model 目录，只保存显示信息和命令行 `argument`。
+- [x] 实现 Target 兼容绑定、模型参数覆盖、probe、冻结和归档。
+- [x] probe 不调用真实模型、不读取本地 endpoint 或凭据。
+- [x] 采集 Harness Git revision 和 dirty 状态供运行审计。
+
+验收门禁：三个 Agent Harness 和 `script-only` 均可配置；错误模型组合不能冻结或
+提交。
+
+### P19.3 Submission、Worker 与并发
+
+- [x] 提交 API 使用冻结 `target_ids`，服务端重新校验并展开 Case × Target。
+- [x] Manifest、工作区、报告文件和审计产物使用稳定 Target Key。
+- [x] Target 冻结时解析 `{model}`，实际 argv 精确传递选中模型参数。
+- [x] 使用内部 Materialized Method 复用 P15 隔离、取消、重试、租约和评分编排。
+- [x] JobQueue 原子执行 Worker 全局、Harness 共享和 Target 可选并发门禁。
+- [x] 失败、超时、取消和重试继续保留 P18 实际执行耗时。
+
+验收门禁：两个 Case × 三个 Harness × 多个 Model 能并发生成互相隔离的报告，
+Harness 共享上限不会被不同模型绕过。
+
+### P19.4 结果、评分与聚合比较
+
+- [x] `run.json` 和 `result.json` 增加 `generation.targets[]` 结构化身份和计时。
+- [x] 评分候选使用 Target Key，显示名不再承担结果关联。
+- [x] `result.md`、批次详情和组合对比页展示结构化 Harness、Model、得分、状态和生成耗时。
+- [x] 实现全 Target 总览、固定 Harness 比 Model、固定 Model 比 Harness 三种视图。
+- [x] 聚合平均得分、通过率、覆盖率、生成成功率、中位耗时、P95 和样本数。
+- [x] 成对比较只使用共同 Case，并列出缺失、失败、超时和非受控差异。
+- [x] `script-only` 参加总榜并标记为无模型基线，不进入固定模型透视。
+
+验收门禁：同一批次既能判断 Harness 差异，也能判断 Model 差异；失败任务不会因
+幸存者偏差从质量或速度统计中消失。
+
+### P19.5 定时测评与前端闭环
+
+- [x] 设置页拆分 Harness、Model 和运行组合管理。
+- [x] 提交页按 Harness 展开兼容 Model，默认全选并显示 Case × Target 任务数。
+- [x] 定时计划保存精确 Target，新组合不自动加入已有计划。
+- [ ] 旧 Method 计划可继续运行，编辑后转换为 Target 计划。
+- [ ] 批次详情、正式结果和 Dashboard 使用结构化 Target 元数据。
+- [ ] 深浅主题下验证长名称、空 Model、失败状态和聚合表格。
+
+验收门禁：用户无需拼接名称或处理内部 ID，即可配置组合、提交矩阵、观察运行并按
+Harness/Model 比较。
+
+### P19.6 历史兼容、测试与交付
+
+- [ ] 旧 `generation.methods[]` 投影为 legacy Target，旧报告和结果继续可读。
+- [ ] 为已确认的四个直接文件候选提供显式映射元数据，不正则解析历史名称。
+- [ ] 覆盖模板校验、参数注入、无模型基线、版本、归档和删除规则。
+- [ ] 覆盖矩阵展开、共享并发、取消、重试、定时触发和进程恢复。
+- [ ] 覆盖聚合统计、共同 Case、失败覆盖率、旧数据和非受控比较。
+- [ ] 运行迁移、后端全量测试、前端单测、生产构建和 Sites Worker 测试。
+
+验收门禁：新旧评测可以并存，历史事实不被删除或错误归类，完整回归通过后再停用
+旧 Evaluation Method 写入口。

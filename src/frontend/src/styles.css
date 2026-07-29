@@ -208,10 +208,11 @@ button { color: inherit; cursor: pointer; }
 .engine-note { margin: 8px 0 16px; color: #9298a0; font-size: 12px; line-height: 1.6; }
 .result-score-panel { margin-bottom: 12px; padding: 15px 18px; }
 .result-score-list { display: grid; gap: 14px; margin-top: 16px; }
-.result-score-row { display: grid; grid-template-columns: 1fr 56px 2.5fr auto; gap: 14px; align-items: center; }
+.result-score-row { display: grid; grid-template-columns: 1fr 56px minmax(112px, auto) 2.5fr auto; gap: 14px; align-items: center; }
 .result-score-row strong { font-family: "Inter Variable", Inter, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; font-size: 28px; letter-spacing: -1px; color: var(--row-color); text-align: left; }
 .result-score-name { display: flex; align-items: center; gap: 9px; font-size: 14px; color: #e0e3e7; }
 .result-score-name i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--row-color); }
+.result-score-duration { color: var(--text-muted); font-family: var(--font-code); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .result-score-bar { height: 6px; width: 100%; display: block; overflow: hidden; border-radius: 4px; background: #312f2a; }
 .result-score-bar b { display: block; height: 100%; border-radius: inherit; background: var(--row-color); }
 .result-overview-section, .claim-detail-section, .comparison-section, .metrics-section { margin-top: 12px; padding: 14px; }
@@ -1111,6 +1112,31 @@ a:focus-visible,
   gap: 3px;
   color: var(--text-secondary);
 }
+.artifact-timing {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.artifact-timing span {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-control);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.artifact-timing strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-code);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .method-card { margin-top: 16px; }
 .method-row {
   display: flex;
@@ -1147,6 +1173,60 @@ a:focus-visible,
   border-radius: 9px;
 }
 .method-picker legend { color: var(--text-primary); font-size: 12px; }
+.target-picker-group {
+  display: grid;
+  gap: 7px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-light);
+}
+.target-picker-group:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+.target-picker-group > strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.target-picker-group > strong small {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.target-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.target-metric-card {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: var(--bg-control);
+}
+.target-metric-card > strong { color: var(--text-primary); }
+.target-metric-card > small { color: var(--text-muted); font-size: 11px; }
+.target-metric-card > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.target-metric-card b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.comparison-groups {
+  display: grid;
+  gap: 7px;
+  margin-top: 13px;
+  padding: 11px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.comparison-groups p { margin: 0; }
+.comparison-groups strong { color: var(--text-primary); }
 .submission-case-picker-head {
   display: flex;
   align-items: center;
@@ -1276,6 +1356,11 @@ a:focus-visible,
     border-bottom: 1px solid var(--border-light);
   }
   .score-item:last-child { padding-bottom: 0; border-bottom: 0; }
+  .result-score-row { grid-template-columns: minmax(0, 1fr) auto; gap: 9px 12px; }
+  .result-score-duration { grid-column: 1; grid-row: 2; }
+  .result-score-row > :last-child { grid-column: 2; grid-row: 2; justify-self: end; }
+  .result-score-bar { grid-column: 1 / -1; grid-row: 3; }
+  .artifact-timing { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -435,6 +435,79 @@ class EvaluationMethod(TimestampedModel, Base):
     last_probe_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class EvaluationHarness(TimestampedModel, Base):
+    """One immutable report-generation harness version."""
+
+    __tablename__ = "evaluation_harnesses"
+    __table_args__ = (
+        UniqueConstraint("harness_key", "version_number", name="uq_evaluation_harnesses_key_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    harness_key: Mapped[str] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    family: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    model_policy: Mapped[str] = mapped_column(String(16))
+    tool_dir: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    command_template: Mapped[str] = mapped_column(Text)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
+    max_output_bytes: Mapped[int] = mapped_column(Integer, default=10 * 1024 * 1024)
+    concurrency_limit: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    last_probe_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class EvaluationModel(TimestampedModel, Base):
+    """A local harness-selectable model name, not a provider configuration."""
+
+    __tablename__ = "evaluation_models"
+    __table_args__ = (
+        UniqueConstraint("model_key", "version_number", name="uq_evaluation_models_key_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    model_key: Mapped[str] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    version_number: Mapped[int] = mapped_column(Integer)
+    argument: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="frozen", index=True)
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+
+
+class EvaluationTarget(TimestampedModel, Base):
+    """A frozen compatible Harness x Model execution target."""
+
+    __tablename__ = "evaluation_targets"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_key", "version_number", name="uq_evaluation_targets_key_version"
+        ),
+        UniqueConstraint(
+            "materialized_method_id", name="uq_evaluation_targets_materialized_method"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    target_key: Mapped[str] = mapped_column(String(255), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    harness_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_harnesses.id", ondelete="RESTRICT"), index=True
+    )
+    model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evaluation_models.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    model_argument: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    concurrency_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    last_probe_json: Mapped[str] = mapped_column(Text, default="{}")
+    materialized_method_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evaluation_methods.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
+
 class EvaluationSchedule(TimestampedModel, Base):
     """One persistent daily schedule that creates evaluation submissions."""
 
@@ -446,6 +519,7 @@ class EvaluationSchedule(TimestampedModel, Base):
     case_mode: Mapped[str] = mapped_column(String(32))
     case_paths_json: Mapped[str] = mapped_column(Text, default="[]")
     method_ids_json: Mapped[str] = mapped_column(Text)
+    target_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     judge_runner: Mapped[str] = mapped_column(String(32))
     timezone: Mapped[str] = mapped_column(String(100))
     local_time: Mapped[str] = mapped_column(String(5))
@@ -531,5 +605,12 @@ class EvaluationSubmissionMethodRun(TimestampedModel, Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     artifact_json: Mapped[str] = mapped_column(Text, default="{}")
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)

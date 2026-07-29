@@ -8,7 +8,13 @@ from uuid import uuid4
 from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from analystbench.db.models import EvaluationMethod, EvaluationSubmissionMethodRun, Job
+from analystbench.db.models import (
+    EvaluationHarness,
+    EvaluationMethod,
+    EvaluationSubmissionMethodRun,
+    EvaluationTarget,
+    Job,
+)
 from analystbench.services import transaction
 
 
@@ -46,12 +52,12 @@ class JobQueue:
             else:
                 statement = statement.with_for_update(skip_locked=True)
 
-            active_methods = self._active_evaluation_methods(session, now)
+            active_resources = self._active_evaluation_resources(session, now)
             job = next(
                 (
                     candidate
                     for candidate in session.scalars(statement)
-                    if self._claim_allowed(session, candidate, active_methods)
+                    if self._claim_allowed(session, candidate, active_resources)
                 ),
                 None,
             )
@@ -141,12 +147,29 @@ class JobQueue:
             )
         )
 
-    def _active_evaluation_methods(
+    def _target_resources(
+        self,
+        session: Session,
+        method_id: str,
+    ) -> tuple[str, str, int | None, int] | None:
+        row = session.execute(
+            select(EvaluationTarget, EvaluationHarness)
+            .join(EvaluationHarness, EvaluationHarness.id == EvaluationTarget.harness_id)
+            .where(EvaluationTarget.materialized_method_id == method_id)
+        ).one_or_none()
+        if row is None:
+            return None
+        target, harness = row
+        return target.id, harness.id, target.concurrency_limit, harness.concurrency_limit
+
+    def _active_evaluation_resources(
         self,
         session: Session,
         now: datetime,
-    ) -> Counter[str]:
-        active = Counter[str]()
+    ) -> tuple[Counter[str], Counter[str], Counter[str]]:
+        active_methods = Counter[str]()
+        active_targets = Counter[str]()
+        active_harnesses = Counter[str]()
         jobs = session.scalars(
             select(Job).where(
                 Job.kind == "evaluation_method_run",
@@ -158,18 +181,32 @@ class JobQueue:
         for job in jobs:
             method_id = self._method_id(session, job)
             if method_id is not None:
-                active[method_id] += 1
-        return active
+                resources = self._target_resources(session, method_id)
+                if resources is None:
+                    active_methods[method_id] += 1
+                else:
+                    target_id, harness_id, _target_limit, _harness_limit = resources
+                    active_targets[target_id] += 1
+                    active_harnesses[harness_id] += 1
+        return active_methods, active_targets, active_harnesses
 
     def _claim_allowed(
         self,
         session: Session,
         job: Job,
-        active_methods: Counter[str],
+        active_resources: tuple[Counter[str], Counter[str], Counter[str]],
     ) -> bool:
         method_id = self._method_id(session, job)
         if method_id is None:
             return True
+        active_methods, active_targets, active_harnesses = active_resources
+        target_resources = self._target_resources(session, method_id)
+        if target_resources is not None:
+            target_id, harness_id, target_limit, harness_limit = target_resources
+            return (
+                (target_limit is None or active_targets[target_id] < target_limit)
+                and active_harnesses[harness_id] < harness_limit
+            )
         concurrency_limit = session.scalar(
             select(EvaluationMethod.concurrency_limit).where(EvaluationMethod.id == method_id)
         )

@@ -8,6 +8,7 @@ import {
   THEME_PALETTES,
   THEME_STORAGE_KEY,
 } from "./theme";
+import { elapsedDurationMs, formatDurationMs } from "./timing-display";
 
 const VIEW_PATHS = {
   dashboard: "/dashboard",
@@ -57,6 +58,9 @@ export default {
       caseCreateLogFiles: [],
 
       evaluationMethods: [],
+      evaluationHarnesses: [],
+      evaluationModels: [],
+      evaluationTargets: [],
       evaluationSubmissions: [],
       evaluationSchedules: [],
       selectedSubmissionId: "",
@@ -67,11 +71,15 @@ export default {
         dataset_key: "",
         case_paths: [],
         method_ids: [],
+        target_ids: [],
         judge_runner: "claude-code",
       },
       submissionRunning: false,
+      methodTimingNow: Date.now(),
       showArtifactDialog: false,
       methodArtifactView: null,
+      showTargetComparisonDialog: false,
+      targetComparison: null,
       showMethodDialog: false,
       methodSaving: false,
       editingMethodId: "",
@@ -83,6 +91,32 @@ export default {
         max_output_bytes: 10485760,
         concurrency_limit: 1,
       },
+      showHarnessDialog: false,
+      harnessSaving: false,
+      editingHarnessId: "",
+      harnessForm: {
+        key: "",
+        name: "",
+        family: "",
+        model_policy: "required",
+        tool_dir: "",
+        command_template: "",
+        timeout_seconds: 1800,
+        max_output_bytes: 10485760,
+        concurrency_limit: 1,
+      },
+      showModelDialog: false,
+      modelSaving: false,
+      editingModelId: "",
+      modelForm: { key: "", name: "", argument: "" },
+      showTargetDialog: false,
+      targetSaving: false,
+      targetForm: {
+        harness_id: "",
+        model_id: "",
+        model_argument: "",
+        concurrency_limit: null,
+      },
       showScheduleDialog: false,
       scheduleSaving: false,
       editingScheduleId: "",
@@ -92,6 +126,7 @@ export default {
         case_mode: "all_ready",
         case_paths: [],
         method_ids: [],
+        target_ids: [],
         judge_runner: "claude-code",
         timezone: "Asia/Shanghai",
         local_time: "23:00",
@@ -143,6 +178,26 @@ export default {
     },
     frozenEvaluationMethods() {
       return this.evaluationMethods.filter((item) => item.status === "frozen");
+    },
+    frozenEvaluationTargets() {
+      return this.evaluationTargets.filter(
+        (item) => item.status === "frozen" && item.probe?.available,
+      );
+    },
+    frozenEvaluationTargetGroups() {
+      const grouped = new Map();
+      this.frozenEvaluationTargets.forEach((target) => {
+        const harness = target.harness || {};
+        const key = harness.id || target.id;
+        if (!grouped.has(key)) grouped.set(key, { harness, targets: [] });
+        grouped.get(key).targets.push(target);
+      });
+      return [...grouped.values()];
+    },
+    selectedTargetHarness() {
+      return this.evaluationHarnesses.find(
+        (item) => item.id === this.targetForm.harness_id,
+      );
     },
     visibleEvaluationMethods() {
       return this.evaluationMethods.filter((item) => item.status !== "archived");
@@ -381,6 +436,14 @@ export default {
       }
     }
     this.loadLocalCaseTree();
+    this._methodTimingTimer = window.setInterval(() => {
+      const hasRunningMethod = this.submissionCaseRuns.some((caseRun) =>
+        (caseRun.methods || []).some(
+          (methodRun) => methodRun.status === "running" && methodRun.started_at,
+        ),
+      );
+      if (hasRunningMethod) this.methodTimingNow = Date.now();
+    }, 1000);
     if (this.activeView === "dashboard") this.loadDashboardData();
     if (this.activeView === "results") {
       this.refreshDirectResults();
@@ -390,9 +453,14 @@ export default {
     if (this.activeView === "settings") {
       this.loadAppSettings();
       this.loadEvaluationMethods();
+      this.loadEvaluationCatalog();
     }
   },
   beforeDestroy() {
+    if (this._methodTimingTimer) {
+      window.clearInterval(this._methodTimingTimer);
+      this._methodTimingTimer = null;
+    }
     if (!this._themeMediaQuery || !this._themeMediaListener) return;
     if (this._themeMediaQuery.removeEventListener) {
       this._themeMediaQuery.removeEventListener(
@@ -433,6 +501,7 @@ export default {
       if (view === "settings") {
         this.loadAppSettings();
         this.loadEvaluationMethods();
+        this.loadEvaluationCatalog();
       }
       if (view === "dashboard" && !this.dashboardLoaded) {
         this.loadDashboardData();
@@ -833,6 +902,199 @@ export default {
         this.connection = "offline";
       }
     },
+    async loadEvaluationCatalog() {
+      try {
+        const [harnesses, models, targets] = await Promise.all([
+          analystBenchApi.listEvaluationHarnesses(),
+          analystBenchApi.listEvaluationModels(),
+          analystBenchApi.listEvaluationTargets(),
+        ]);
+        this.evaluationHarnesses = harnesses;
+        this.evaluationModels = models;
+        this.evaluationTargets = targets;
+        this.connection = "connected";
+      } catch {
+        this.evaluationHarnesses = [];
+        this.evaluationModels = [];
+        this.evaluationTargets = [];
+      }
+    },
+    openHarnessDialog(harness = null) {
+      this.editingHarnessId = harness ? harness.id : "";
+      this.harnessForm = harness
+        ? {
+            key: harness.key,
+            name: harness.name,
+            family: harness.family || "",
+            model_policy: harness.model_policy,
+            tool_dir: harness.tool_dir || "",
+            command_template: harness.command_template,
+            timeout_seconds: harness.timeout_seconds,
+            max_output_bytes: harness.max_output_bytes,
+            concurrency_limit: harness.concurrency_limit,
+          }
+        : {
+            key: "",
+            name: "",
+            family: "",
+            model_policy: "required",
+            tool_dir: "",
+            command_template: "",
+            timeout_seconds: 1800,
+            max_output_bytes: 10485760,
+            concurrency_limit: 1,
+          };
+      this.showHarnessDialog = true;
+    },
+    async saveEvaluationHarness() {
+      const form = this.harnessForm;
+      if (!form.key.trim() || !form.command_template.trim()) {
+        this.showToast("请填写 Harness Key 和命令模板");
+        return;
+      }
+      this.harnessSaving = true;
+      try {
+        const payload = {
+          name: form.name.trim() || form.key.trim(),
+          family: form.family.trim() || null,
+          model_policy: form.model_policy,
+          tool_dir: form.tool_dir.trim() || null,
+          command_template: form.command_template.trim(),
+          timeout_seconds: form.timeout_seconds,
+          max_output_bytes: form.max_output_bytes,
+          concurrency_limit: form.concurrency_limit,
+        };
+        const item = this.editingHarnessId
+          ? await analystBenchApi.reviseEvaluationHarness(this.editingHarnessId, payload)
+          : await analystBenchApi.createEvaluationHarness({
+              ...payload,
+              key: form.key.trim(),
+            });
+        const probed = await analystBenchApi.probeEvaluationHarness(item.id);
+        await this.loadEvaluationCatalog();
+        this.showHarnessDialog = false;
+        this.showToast(
+          probed.probe?.available
+            ? "Harness 已创建并检测成功，请冻结后创建运行组合"
+            : "Harness 已创建，但命令检测失败",
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "保存 Harness 失败");
+      } finally {
+        this.harnessSaving = false;
+      }
+    },
+    async probeEvaluationHarness(harness) {
+      try {
+        await analystBenchApi.probeEvaluationHarness(harness.id);
+        await this.loadEvaluationCatalog();
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "Harness 检测失败");
+      }
+    },
+    async freezeEvaluationHarness(harness) {
+      try {
+        await analystBenchApi.freezeEvaluationHarness(harness.id);
+        await this.loadEvaluationCatalog();
+        this.showToast("Harness 已冻结");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "冻结 Harness 失败");
+      }
+    },
+    openModelDialog(model = null) {
+      this.editingModelId = model ? model.id : "";
+      this.modelForm = model
+        ? { key: model.key, name: model.name, argument: model.argument }
+        : { key: "", name: "", argument: "" };
+      this.showModelDialog = true;
+    },
+    async saveEvaluationModel() {
+      const form = this.modelForm;
+      if (!form.key.trim() || !form.argument.trim()) {
+        this.showToast("请填写模型 Key 和模型参数");
+        return;
+      }
+      this.modelSaving = true;
+      try {
+        if (this.editingModelId) {
+          await analystBenchApi.reviseEvaluationModel(this.editingModelId, {
+            name: form.name.trim() || form.key.trim(),
+            argument: form.argument.trim(),
+          });
+        } else {
+          await analystBenchApi.createEvaluationModel({
+            key: form.key.trim(),
+            name: form.name.trim() || form.key.trim(),
+            argument: form.argument.trim(),
+          });
+        }
+        await this.loadEvaluationCatalog();
+        this.showModelDialog = false;
+        this.showToast("模型已保存");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "保存模型失败");
+      } finally {
+        this.modelSaving = false;
+      }
+    },
+    openTargetDialog() {
+      const frozenHarnesses = this.evaluationHarnesses.filter(
+        (item) => item.status === "frozen",
+      );
+      this.targetForm = {
+        harness_id: frozenHarnesses[0]?.id || "",
+        model_id: "",
+        model_argument: "",
+        concurrency_limit: null,
+      };
+      this.showTargetDialog = true;
+    },
+    async saveEvaluationTarget() {
+      const form = this.targetForm;
+      const harness = this.selectedTargetHarness;
+      if (!harness) return this.showToast("请选择冻结 Harness");
+      if (harness.model_policy === "required" && !form.model_id) {
+        return this.showToast("该 Harness 必须选择模型");
+      }
+      this.targetSaving = true;
+      try {
+        const target = await analystBenchApi.createEvaluationTarget({
+          harness_id: form.harness_id,
+          model_id: harness.model_policy === "required" ? form.model_id : null,
+          model_argument: form.model_argument.trim() || null,
+          concurrency_limit: form.concurrency_limit || null,
+        });
+        const probed = await analystBenchApi.probeEvaluationTarget(target.id);
+        await this.loadEvaluationCatalog();
+        this.showTargetDialog = false;
+        this.showToast(
+          probed.probe?.available
+            ? "运行组合已创建并检测成功，请冻结后提交"
+            : "运行组合已创建，但检测失败",
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "保存运行组合失败");
+      } finally {
+        this.targetSaving = false;
+      }
+    },
+    async probeEvaluationTarget(target) {
+      try {
+        await analystBenchApi.probeEvaluationTarget(target.id);
+        await this.loadEvaluationCatalog();
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "组合检测失败");
+      }
+    },
+    async freezeEvaluationTarget(target) {
+      try {
+        await analystBenchApi.freezeEvaluationTarget(target.id);
+        await this.loadEvaluationCatalog();
+        this.showToast("运行组合已冻结，可用于提交测评");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "冻结运行组合失败");
+      }
+    },
     openMethodDialog(method = null) {
       this.editingMethodId = method ? method.id : "";
       this.methodForm = method
@@ -959,7 +1221,11 @@ export default {
       }
     },
     async openScheduleDialog(schedule = null) {
-      await Promise.all([this.loadLocalCaseTree(), this.loadEvaluationMethods()]);
+      await Promise.all([
+        this.loadLocalCaseTree(),
+        this.loadEvaluationMethods(),
+        this.loadEvaluationCatalog(),
+      ]);
       this.editingScheduleId = schedule ? schedule.id : "";
       this.scheduleForm = schedule
         ? {
@@ -968,6 +1234,7 @@ export default {
             case_mode: schedule.case_mode,
             case_paths: [...schedule.case_paths],
             method_ids: [...schedule.method_ids],
+            target_ids: [...(schedule.target_ids || [])],
             judge_runner: schedule.judge_runner,
             timezone: schedule.timezone,
             local_time: schedule.local_time,
@@ -981,9 +1248,10 @@ export default {
             case_mode: "all_ready",
             case_paths: [],
             method_ids:
-              this.frozenEvaluationMethods.length === 1
+              !this.frozenEvaluationTargets.length && this.frozenEvaluationMethods.length === 1
                 ? [this.frozenEvaluationMethods[0].id]
                 : [],
+            target_ids: this.frozenEvaluationTargets.map((item) => item.id),
             judge_runner: "claude-code",
             timezone: "Asia/Shanghai",
             local_time: "23:00",
@@ -995,7 +1263,9 @@ export default {
       const form = this.scheduleForm;
       if (!form.name.trim()) return this.showToast("请输入计划名称");
       if (!form.dataset_key) return this.showToast("请选择测试集");
-      if (!form.method_ids.length) return this.showToast("请选择至少一种测评方式");
+      if (!form.method_ids.length && !form.target_ids.length) {
+        return this.showToast("请选择至少一种运行组合");
+      }
       if (form.case_mode === "selected" && !form.case_paths.length) {
         return this.showToast("固定选择模式至少选择一个 Case");
       }
@@ -1119,6 +1389,43 @@ export default {
         return String(value);
       }
     },
+    formatDuration(value) {
+      return formatDurationMs(value);
+    },
+    methodRunDuration(methodRun) {
+      if (methodRun?.status === "running" && methodRun?.started_at) {
+        return elapsedDurationMs(methodRun.started_at, this.methodTimingNow);
+      }
+      return methodRun?.duration_ms ?? null;
+    },
+    formatMethodRunTiming(methodRun) {
+      const duration = this.methodRunDuration(methodRun);
+      if (duration === null) return "—";
+      const prefix = methodRun?.status === "running" ? "已运行" : "耗时";
+      return `${prefix} ${formatDurationMs(duration)}`;
+    },
+    resultGenerationDuration(candidateName) {
+      const targets = this.selectedResultData?.generation?.targets || [];
+      const target = targets.find((item) => item.target_key === candidateName);
+      if (target) return target.duration_ms ?? null;
+      const methods = this.selectedResultData?.generation?.methods || [];
+      const method = methods.find((item) => item.key === candidateName);
+      return method?.duration_ms ?? null;
+    },
+    formatMethodTimestamp(value) {
+      if (!value) return "—";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(parsed);
+    },
     scheduleStatusClass(status) {
       if (status === "completed") return "tag-match";
       if (
@@ -1134,12 +1441,20 @@ export default {
       return "tag-partial";
     },
     async openSubmitEvaluationDialog() {
-      await Promise.all([this.loadLocalCaseTree(), this.loadEvaluationMethods()]);
+      await Promise.all([
+        this.loadLocalCaseTree(),
+        this.loadEvaluationMethods(),
+        this.loadEvaluationCatalog(),
+      ]);
       const frozenMethods = this.frozenEvaluationMethods;
       this.submissionForm = {
         dataset_key: this.localCaseTree.length ? this.localCaseTree[0].key : "",
         case_paths: [],
-        method_ids: frozenMethods.length === 1 ? [frozenMethods[0].id] : [],
+        method_ids:
+          !this.frozenEvaluationTargets.length && frozenMethods.length === 1
+            ? [frozenMethods[0].id]
+            : [],
+        target_ids: this.frozenEvaluationTargets.map((item) => item.id),
         judge_runner: "claude-code",
       };
       this.selectAllReadySubmissionCases();
@@ -1168,11 +1483,15 @@ export default {
       if (this.submissionStep === 1 && !this.validateSubmissionCaseSelection()) {
         return;
       }
-      if (this.submissionStep === 2 && !this.submissionForm.method_ids.length) {
+      if (
+        this.submissionStep === 2 &&
+        !this.submissionForm.method_ids.length &&
+        !this.submissionForm.target_ids.length
+      ) {
         this.showToast(
-          this.frozenEvaluationMethods.length
-            ? "请选择至少一种测评方式"
-            : "没有可用的测评方式，请先检测并冻结",
+          this.frozenEvaluationMethods.length || this.frozenEvaluationTargets.length
+            ? "请选择至少一种运行组合"
+            : "没有可用运行组合，请先检测并冻结 Harness 和组合",
         );
         return;
       }
@@ -1197,8 +1516,11 @@ export default {
       if (!this.validateSubmissionCaseSelection()) {
         return;
       }
-      if (!this.submissionForm.method_ids.length) {
-        this.showToast("请选择至少一种测评方式");
+      if (
+        !this.submissionForm.method_ids.length &&
+        !this.submissionForm.target_ids.length
+      ) {
+        this.showToast("请选择至少一种运行组合");
         return;
       }
       this.submissionRunning = true;
@@ -1310,6 +1632,33 @@ export default {
         this.showToast(error instanceof Error ? error.message : "取消失败");
       }
     },
+    async deleteEvaluationSubmission(submission) {
+      if (
+        !window.confirm(
+          `永久删除测评批次 ${submission.dataset_key} · ${submission.timestamp} 吗？\n\n` +
+            "该批次的运行记录、审计任务和正式结果目录都会被删除。",
+        )
+      ) {
+        return;
+      }
+      try {
+        const result = await analystBenchApi.deleteEvaluationSubmission(
+          submission.id,
+        );
+        if (this.selectedSubmissionId === submission.id) {
+          this.selectedSubmissionId = "";
+          this.submissionCaseRuns = [];
+        }
+        await this.loadEvaluationSubmissions();
+        await this.refreshDirectResults();
+        this.dashboardLoaded = false;
+        this.showToast(
+          `批次已删除，同时清理 ${result.local_directories_deleted || 0} 个正式结果目录`,
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "删除批次失败");
+      }
+    },
     async retryEvaluationCaseRun(caseRun) {
       try {
         await analystBenchApi.retryEvaluationCaseRun(caseRun.id);
@@ -1327,6 +1676,16 @@ export default {
         this.showArtifactDialog = true;
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "读取审计产物失败");
+      }
+    },
+    async openTargetComparison(submission) {
+      try {
+        this.targetComparison = await analystBenchApi.getEvaluationTargetComparison(
+          submission.id,
+        );
+        this.showTargetComparisonDialog = true;
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "读取组合对比失败");
       }
     },
     async saveAppSettings() {

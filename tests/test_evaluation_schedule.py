@@ -126,6 +126,38 @@ def create_frozen_method(client: TestClient) -> dict:
     return client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze").json()
 
 
+def create_frozen_script_target(client: TestClient) -> dict:
+    harness = client.post(
+        "/api/v1/evaluation-harnesses",
+        json={
+            "key": "script-only",
+            "name": "Script Only",
+            "model_policy": "none",
+            "command_template": (
+                f"{sys.executable} -c "
+                "\"print('问题分类：SYSTEM_DEADLOCK\\n"
+                "问题根因：chmod 进程发生系统死锁\\n"
+                "证据1：chmod hung\\n结论1：chmod 进程长期阻塞')\""
+            ),
+        },
+    )
+    assert harness.status_code == 201
+    harness_id = harness.json()["id"]
+    assert client.post(f"/api/v1/evaluation-harnesses/{harness_id}:probe").json()[
+        "probe"
+    ]["available"]
+    assert client.post(f"/api/v1/evaluation-harnesses/{harness_id}:freeze").json()[
+        "status"
+    ] == "frozen"
+    target = client.post("/api/v1/evaluation-targets", json={"harness_id": harness_id})
+    assert target.status_code == 201
+    target_id = target.json()["id"]
+    assert client.post(f"/api/v1/evaluation-targets/{target_id}:probe").json()[
+        "probe"
+    ]["available"]
+    return client.post(f"/api/v1/evaluation-targets/{target_id}:freeze").json()
+
+
 def test_daily_time_calculation_uses_schedule_timezone() -> None:
     before = datetime(2026, 7, 28, 14, 59, tzinfo=UTC)
     after = datetime(2026, 7, 28, 15, 1, tzinfo=UTC)
@@ -203,7 +235,10 @@ def test_run_now_creates_normal_submission_and_preserves_next_run(
             == 409
         )
     timestamp = runs[0]["submission_timestamp"]
-    assert (case_directory / "runs" / timestamp / "result.json").is_file()
+    result_path = case_directory / "runs" / timestamp / "result.json"
+    assert result_path.is_file()
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["generation"]["methods"][0]["duration_ms"] >= 0
     with TestClient(create_app(settings)) as client:
         deleted = client.delete(
             f"/api/v1/evaluation-methods/{method['id']}"
@@ -219,6 +254,54 @@ def test_run_now_creates_normal_submission_and_preserves_next_run(
             == 404
         )
     assert not (case_directory / "runs" / timestamp).exists()
+
+
+def test_run_now_accepts_script_only_target(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case(settings)
+    with TestClient(create_app(settings)) as client:
+        target = create_frozen_script_target(client)
+        created = client.post(
+            "/api/v1/evaluation-schedules",
+            json={
+                "name": "脚本基线",
+                "dataset_key": "kdiag",
+                "case_mode": "all_ready",
+                "target_ids": [target["id"]],
+                "judge_runner": "lexical",
+                "timezone": "Asia/Shanghai",
+                "local_time": "23:00",
+                "enabled": False,
+            },
+        )
+        assert created.status_code == 201
+        schedule = created.json()
+        assert schedule["target_ids"] == [target["id"]]
+        assert schedule["method_ids"] == []
+        assert schedule["targets"][0]["model"] is None
+        assert (
+            client.post(f"/api/v1/evaluation-schedules/{schedule['id']}:run-now").status_code
+            == 202
+        )
+
+    worker = LocalWorker(settings)
+    try:
+        while worker.run_once():
+            pass
+    finally:
+        worker.close()
+
+    with TestClient(create_app(settings)) as client:
+        run = client.get(f"/api/v1/evaluation-schedules/{schedule['id']}/runs").json()[0]
+        assert run["status"] == "completed"
+        submission = client.get(f"/api/v1/evaluation-submissions/{run['submission_id']}").json()
+        assert submission["target_ids"] == [target["id"]]
+    result = json.loads(
+        (case_directory / "runs" / run["submission_timestamp"] / "result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["generation"]["targets"][0]["target_key"] == "script-only"
 
 
 def test_due_scan_backfills_only_latest_occurrence(tmp_path: Path) -> None:
