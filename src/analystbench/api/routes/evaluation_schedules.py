@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from analystbench.api.routes.evaluation_submissions import EvaluationTargetSelection
 from analystbench.evaluation_schedule import EvaluationScheduleService
 
 router = APIRouter(tags=["evaluation-schedules"])
@@ -20,6 +21,7 @@ class EvaluationScheduleWrite(BaseModel):
     case_paths: list[str] = Field(default_factory=list)
     method_ids: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
+    target_selections: list[EvaluationTargetSelection] = Field(default_factory=list)
     judge_runner: str = "claude-code"
     timezone: str = "Asia/Shanghai"
     local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -50,6 +52,7 @@ class EvaluationScheduleResponse(BaseModel):
     methods: list[dict[str, Any]]
     target_ids: list[str] = Field(default_factory=list)
     targets: list[dict[str, Any]] = Field(default_factory=list)
+    target_selections: list[EvaluationTargetSelection] = Field(default_factory=list)
     judge_runner: str
     timezone: str
     local_time: str

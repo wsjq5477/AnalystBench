@@ -60,7 +60,6 @@ export default {
       evaluationMethods: [],
       evaluationHarnesses: [],
       evaluationModels: [],
-      evaluationTargets: [],
       evaluationSubmissions: [],
       evaluationSchedules: [],
       selectedSubmissionId: "",
@@ -71,7 +70,7 @@ export default {
         dataset_key: "",
         case_paths: [],
         method_ids: [],
-        target_ids: [],
+        target_selection_keys: [],
         judge_runner: "claude-code",
       },
       submissionRunning: false,
@@ -93,30 +92,19 @@ export default {
       },
       showHarnessDialog: false,
       harnessSaving: false,
+      harnessActionId: "",
+      harnessAction: "",
       editingHarnessId: "",
       harnessForm: {
         key: "",
-        name: "",
-        family: "",
-        model_policy: "required",
-        tool_dir: "",
         command_template: "",
         timeout_seconds: 1800,
-        max_output_bytes: 10485760,
         concurrency_limit: 1,
       },
       showModelDialog: false,
       modelSaving: false,
-      editingModelId: "",
-      modelForm: { key: "", name: "", argument: "" },
-      showTargetDialog: false,
-      targetSaving: false,
-      targetForm: {
-        harness_id: "",
-        model_id: "",
-        model_argument: "",
-        concurrency_limit: null,
-      },
+      modelForm: { key: "" },
+      catalogActionId: "",
       showScheduleDialog: false,
       scheduleSaving: false,
       editingScheduleId: "",
@@ -126,7 +114,7 @@ export default {
         case_mode: "all_ready",
         case_paths: [],
         method_ids: [],
-        target_ids: [],
+        target_selection_keys: [],
         judge_runner: "claude-code",
         timezone: "Asia/Shanghai",
         local_time: "23:00",
@@ -179,24 +167,44 @@ export default {
     frozenEvaluationMethods() {
       return this.evaluationMethods.filter((item) => item.status === "frozen");
     },
-    frozenEvaluationTargets() {
-      return this.evaluationTargets.filter(
-        (item) => item.status === "frozen" && item.probe?.available,
-      );
+    frozenEvaluationHarnesses() {
+      return this.evaluationHarnesses.filter((item) => item.status === "frozen");
     },
-    frozenEvaluationTargetGroups() {
-      const grouped = new Map();
-      this.frozenEvaluationTargets.forEach((target) => {
-        const harness = target.harness || {};
-        const key = harness.id || target.id;
-        if (!grouped.has(key)) grouped.set(key, { harness, targets: [] });
-        grouped.get(key).targets.push(target);
-      });
-      return [...grouped.values()];
+    frozenEvaluationModels() {
+      return this.evaluationModels.filter((item) => item.status === "frozen");
     },
-    selectedTargetHarness() {
-      return this.evaluationHarnesses.find(
-        (item) => item.id === this.targetForm.harness_id,
+    visibleEvaluationHarnesses() {
+      return this.evaluationHarnesses.filter((item) => item.status !== "archived");
+    },
+    visibleEvaluationModels() {
+      return this.evaluationModels.filter((item) => item.status !== "archived");
+    },
+    evaluationSelectionGroups() {
+      return this.frozenEvaluationHarnesses
+        .map((harness) => ({
+          harness,
+          options:
+            harness.model_policy === "none"
+              ? [
+                  {
+                    key: this.targetSelectionKey(harness.id, null),
+                    harness_id: harness.id,
+                    model_id: null,
+                    model: null,
+                  },
+                ]
+              : this.frozenEvaluationModels.map((model) => ({
+                  key: this.targetSelectionKey(harness.id, model.id),
+                  harness_id: harness.id,
+                  model_id: model.id,
+                  model,
+                })),
+        }))
+        .filter((group) => group.options.length);
+    },
+    allEvaluationSelectionKeys() {
+      return this.evaluationSelectionGroups.flatMap((group) =>
+        group.options.map((option) => option.key),
       );
     },
     visibleEvaluationMethods() {
@@ -904,19 +912,16 @@ export default {
     },
     async loadEvaluationCatalog() {
       try {
-        const [harnesses, models, targets] = await Promise.all([
+        const [harnesses, models] = await Promise.all([
           analystBenchApi.listEvaluationHarnesses(),
           analystBenchApi.listEvaluationModels(),
-          analystBenchApi.listEvaluationTargets(),
         ]);
         this.evaluationHarnesses = harnesses;
         this.evaluationModels = models;
-        this.evaluationTargets = targets;
         this.connection = "connected";
       } catch {
         this.evaluationHarnesses = [];
         this.evaluationModels = [];
-        this.evaluationTargets = [];
       }
     },
     openHarnessDialog(harness = null) {
@@ -924,24 +929,14 @@ export default {
       this.harnessForm = harness
         ? {
             key: harness.key,
-            name: harness.name,
-            family: harness.family || "",
-            model_policy: harness.model_policy,
-            tool_dir: harness.tool_dir || "",
             command_template: harness.command_template,
             timeout_seconds: harness.timeout_seconds,
-            max_output_bytes: harness.max_output_bytes,
             concurrency_limit: harness.concurrency_limit,
           }
         : {
             key: "",
-            name: "",
-            family: "",
-            model_policy: "required",
-            tool_dir: "",
             command_template: "",
             timeout_seconds: 1800,
-            max_output_bytes: 10485760,
             concurrency_limit: 1,
           };
       this.showHarnessDialog = true;
@@ -955,13 +950,8 @@ export default {
       this.harnessSaving = true;
       try {
         const payload = {
-          name: form.name.trim() || form.key.trim(),
-          family: form.family.trim() || null,
-          model_policy: form.model_policy,
-          tool_dir: form.tool_dir.trim() || null,
           command_template: form.command_template.trim(),
           timeout_seconds: form.timeout_seconds,
-          max_output_bytes: form.max_output_bytes,
           concurrency_limit: form.concurrency_limit,
         };
         const item = this.editingHarnessId
@@ -975,7 +965,7 @@ export default {
         this.showHarnessDialog = false;
         this.showToast(
           probed.probe?.available
-            ? "Harness 已创建并检测成功，请冻结后创建运行组合"
+            ? "Harness 已创建并检测成功，冻结后即可用于测评"
             : "Harness 已创建，但命令检测失败",
         );
       } catch (error) {
@@ -985,49 +975,87 @@ export default {
       }
     },
     async probeEvaluationHarness(harness) {
+      this.harnessActionId = harness.id;
+      this.harnessAction = "probe";
+      this.showToast(`正在检测 ${harness.name}…`);
       try {
-        await analystBenchApi.probeEvaluationHarness(harness.id);
+        const updated = await analystBenchApi.probeEvaluationHarness(harness.id);
         await this.loadEvaluationCatalog();
+        this.showToast(
+          updated.probe?.available
+            ? `${harness.name} 检测成功`
+            : this.harnessProbeFailureMessage(updated),
+        );
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "Harness 检测失败");
+      } finally {
+        this.harnessActionId = "";
+        this.harnessAction = "";
       }
     },
     async freezeEvaluationHarness(harness) {
+      if (!harness.probe?.available) {
+        this.showToast(
+          harness.probe?.checked_at
+            ? this.harnessProbeFailureMessage(harness)
+            : "请先检测 Harness 命令",
+        );
+        return;
+      }
+      this.harnessActionId = harness.id;
+      this.harnessAction = "freeze";
       try {
         await analystBenchApi.freezeEvaluationHarness(harness.id);
         await this.loadEvaluationCatalog();
         this.showToast("Harness 已冻结");
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "冻结 Harness 失败");
+      } finally {
+        this.harnessActionId = "";
+        this.harnessAction = "";
       }
     },
-    openModelDialog(model = null) {
-      this.editingModelId = model ? model.id : "";
-      this.modelForm = model
-        ? { key: model.key, name: model.name, argument: model.argument }
-        : { key: "", name: "", argument: "" };
+    harnessProbeFailureMessage(harness) {
+      const probe = harness.probe || {};
+      if (probe.reason === "tool_dir_not_found" || probe.tool_dir_ok === false) {
+        return `Harness 检测失败：工具目录不存在（${harness.tool_dir || "未配置"}）`;
+      }
+      const executable =
+        probe.requested_executable || probe.executable || "命令中的可执行文件";
+      return `Harness 检测失败：找不到可执行命令 ${executable}。请使用绝对路径，或确保 AnalystBench 服务 PATH 可见。`;
+    },
+    async deleteEvaluationHarness(harness) {
+      if (
+        !window.confirm(
+          `删除 Harness“${harness.key}”v${harness.version} 吗？历史测评仍会保留该版本快照。`,
+        )
+      ) {
+        return;
+      }
+      this.catalogActionId = harness.id;
+      try {
+        await analystBenchApi.archiveEvaluationHarness(harness.id);
+        await this.loadEvaluationCatalog();
+        this.showToast(`Harness“${harness.key}”已删除`);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "删除 Harness 失败");
+      } finally {
+        this.catalogActionId = "";
+      }
+    },
+    openModelDialog() {
+      this.modelForm = { key: "" };
       this.showModelDialog = true;
     },
     async saveEvaluationModel() {
       const form = this.modelForm;
-      if (!form.key.trim() || !form.argument.trim()) {
-        this.showToast("请填写模型 Key 和模型参数");
+      if (!form.key.trim()) {
+        this.showToast("请填写模型名称");
         return;
       }
       this.modelSaving = true;
       try {
-        if (this.editingModelId) {
-          await analystBenchApi.reviseEvaluationModel(this.editingModelId, {
-            name: form.name.trim() || form.key.trim(),
-            argument: form.argument.trim(),
-          });
-        } else {
-          await analystBenchApi.createEvaluationModel({
-            key: form.key.trim(),
-            name: form.name.trim() || form.key.trim(),
-            argument: form.argument.trim(),
-          });
-        }
+        await analystBenchApi.createEvaluationModel({ key: form.key.trim() });
         await this.loadEvaluationCatalog();
         this.showModelDialog = false;
         this.showToast("模型已保存");
@@ -1037,62 +1065,23 @@ export default {
         this.modelSaving = false;
       }
     },
-    openTargetDialog() {
-      const frozenHarnesses = this.evaluationHarnesses.filter(
-        (item) => item.status === "frozen",
-      );
-      this.targetForm = {
-        harness_id: frozenHarnesses[0]?.id || "",
-        model_id: "",
-        model_argument: "",
-        concurrency_limit: null,
-      };
-      this.showTargetDialog = true;
-    },
-    async saveEvaluationTarget() {
-      const form = this.targetForm;
-      const harness = this.selectedTargetHarness;
-      if (!harness) return this.showToast("请选择冻结 Harness");
-      if (harness.model_policy === "required" && !form.model_id) {
-        return this.showToast("该 Harness 必须选择模型");
+    async deleteEvaluationModel(model) {
+      if (
+        !window.confirm(
+          `删除模型“${model.key}”v${model.version} 吗？历史测评仍会保留该版本快照。`,
+        )
+      ) {
+        return;
       }
-      this.targetSaving = true;
+      this.catalogActionId = model.id;
       try {
-        const target = await analystBenchApi.createEvaluationTarget({
-          harness_id: form.harness_id,
-          model_id: harness.model_policy === "required" ? form.model_id : null,
-          model_argument: form.model_argument.trim() || null,
-          concurrency_limit: form.concurrency_limit || null,
-        });
-        const probed = await analystBenchApi.probeEvaluationTarget(target.id);
+        await analystBenchApi.archiveEvaluationModel(model.id);
         await this.loadEvaluationCatalog();
-        this.showTargetDialog = false;
-        this.showToast(
-          probed.probe?.available
-            ? "运行组合已创建并检测成功，请冻结后提交"
-            : "运行组合已创建，但检测失败",
-        );
+        this.showToast(`模型“${model.key}”已删除`);
       } catch (error) {
-        this.showToast(error instanceof Error ? error.message : "保存运行组合失败");
+        this.showToast(error instanceof Error ? error.message : "删除模型失败");
       } finally {
-        this.targetSaving = false;
-      }
-    },
-    async probeEvaluationTarget(target) {
-      try {
-        await analystBenchApi.probeEvaluationTarget(target.id);
-        await this.loadEvaluationCatalog();
-      } catch (error) {
-        this.showToast(error instanceof Error ? error.message : "组合检测失败");
-      }
-    },
-    async freezeEvaluationTarget(target) {
-      try {
-        await analystBenchApi.freezeEvaluationTarget(target.id);
-        await this.loadEvaluationCatalog();
-        this.showToast("运行组合已冻结，可用于提交测评");
-      } catch (error) {
-        this.showToast(error instanceof Error ? error.message : "冻结运行组合失败");
+        this.catalogActionId = "";
       }
     },
     openMethodDialog(method = null) {
@@ -1208,6 +1197,15 @@ export default {
     scheduleCasePath(caseItem) {
       return `${this.scheduleForm.dataset_key}/${caseItem.category}/${caseItem.key}`;
     },
+    targetSelectionKey(harnessId, modelId) {
+      return `${harnessId}|${modelId || ""}`;
+    },
+    targetSelectionPayload(keys) {
+      return keys.map((key) => {
+        const [harness_id, modelId] = key.split("|");
+        return { harness_id, model_id: modelId || null };
+      });
+    },
     resetScheduleCaseSelection() {
       this.scheduleForm.case_paths = [];
     },
@@ -1227,14 +1225,19 @@ export default {
         this.loadEvaluationCatalog(),
       ]);
       this.editingScheduleId = schedule ? schedule.id : "";
+      const scheduleSelectionKeys = schedule
+        ? (schedule.target_selections || []).map((selection) =>
+            this.targetSelectionKey(selection.harness_id, selection.model_id),
+          )
+        : [];
       this.scheduleForm = schedule
         ? {
             name: schedule.name,
             dataset_key: schedule.dataset_key,
             case_mode: schedule.case_mode,
             case_paths: [...schedule.case_paths],
-            method_ids: [...schedule.method_ids],
-            target_ids: [...(schedule.target_ids || [])],
+            method_ids: scheduleSelectionKeys.length ? [] : [...schedule.method_ids],
+            target_selection_keys: scheduleSelectionKeys,
             judge_runner: schedule.judge_runner,
             timezone: schedule.timezone,
             local_time: schedule.local_time,
@@ -1248,10 +1251,11 @@ export default {
             case_mode: "all_ready",
             case_paths: [],
             method_ids:
-              !this.frozenEvaluationTargets.length && this.frozenEvaluationMethods.length === 1
+              !this.allEvaluationSelectionKeys.length &&
+              this.frozenEvaluationMethods.length === 1
                 ? [this.frozenEvaluationMethods[0].id]
                 : [],
-            target_ids: this.frozenEvaluationTargets.map((item) => item.id),
+            target_selection_keys: [...this.allEvaluationSelectionKeys],
             judge_runner: "claude-code",
             timezone: "Asia/Shanghai",
             local_time: "23:00",
@@ -1263,7 +1267,7 @@ export default {
       const form = this.scheduleForm;
       if (!form.name.trim()) return this.showToast("请输入计划名称");
       if (!form.dataset_key) return this.showToast("请选择测试集");
-      if (!form.method_ids.length && !form.target_ids.length) {
+      if (!form.method_ids.length && !form.target_selection_keys.length) {
         return this.showToast("请选择至少一种运行组合");
       }
       if (form.case_mode === "selected" && !form.case_paths.length) {
@@ -1271,10 +1275,12 @@ export default {
       }
       this.scheduleSaving = true;
       try {
+        const { target_selection_keys, ...formPayload } = form;
         const payload = {
-          ...form,
+          ...formPayload,
           name: form.name.trim(),
           timezone: form.timezone.trim(),
+          target_selections: this.targetSelectionPayload(target_selection_keys),
         };
         if (this.editingScheduleId) {
           await analystBenchApi.updateEvaluationSchedule(
@@ -1451,10 +1457,10 @@ export default {
         dataset_key: this.localCaseTree.length ? this.localCaseTree[0].key : "",
         case_paths: [],
         method_ids:
-          !this.frozenEvaluationTargets.length && frozenMethods.length === 1
+          !this.allEvaluationSelectionKeys.length && frozenMethods.length === 1
             ? [frozenMethods[0].id]
             : [],
-        target_ids: this.frozenEvaluationTargets.map((item) => item.id),
+        target_selection_keys: [...this.allEvaluationSelectionKeys],
         judge_runner: "claude-code",
       };
       this.selectAllReadySubmissionCases();
@@ -1486,12 +1492,12 @@ export default {
       if (
         this.submissionStep === 2 &&
         !this.submissionForm.method_ids.length &&
-        !this.submissionForm.target_ids.length
+        !this.submissionForm.target_selection_keys.length
       ) {
         this.showToast(
-          this.frozenEvaluationMethods.length || this.frozenEvaluationTargets.length
+          this.frozenEvaluationMethods.length || this.allEvaluationSelectionKeys.length
             ? "请选择至少一种运行组合"
-            : "没有可用运行组合，请先检测并冻结 Harness 和组合",
+            : "没有可用组合，请先检测并冻结 Harness，并添加冻结模型",
         );
         return;
       }
@@ -1518,15 +1524,19 @@ export default {
       }
       if (
         !this.submissionForm.method_ids.length &&
-        !this.submissionForm.target_ids.length
+        !this.submissionForm.target_selection_keys.length
       ) {
         this.showToast("请选择至少一种运行组合");
         return;
       }
       this.submissionRunning = true;
       try {
+        const { target_selection_keys, ...formPayload } = this.submissionForm;
         const submission = await analystBenchApi.createEvaluationSubmission(
-          this.submissionForm,
+          {
+            ...formPayload,
+            target_selections: this.targetSelectionPayload(target_selection_keys),
+          },
         );
         this.showSubmitEvaluationDialog = false;
         this.selectedSubmissionId = submission.id;

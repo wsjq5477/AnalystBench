@@ -21,7 +21,7 @@ class HarnessCreate(BaseModel):
     key: str = Field(min_length=1, max_length=100)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     family: str | None = Field(default=None, max_length=100)
-    model_policy: str
+    model_policy: str | None = None
     command_template: str = Field(min_length=1)
     tool_dir: str | None = None
     timeout_seconds: int = Field(default=1800, ge=1, le=7200)
@@ -47,7 +47,7 @@ class ModelCreate(BaseModel):
 
     key: str = Field(min_length=1, max_length=100)
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    argument: str = Field(min_length=1, max_length=255)
+    argument: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class ModelRevise(BaseModel):
@@ -130,7 +130,9 @@ def targets(request: Request) -> EvaluationTargetService:
 def create_harness(payload: HarnessCreate, request: Request) -> dict[str, Any]:
     item = harnesses(request).create(
         harness_key=payload.key,
-        **payload.model_dump(exclude={"key"}),
+        model_policy=payload.model_policy
+        or ("required" if "{model}" in payload.command_template else "none"),
+        **payload.model_dump(exclude={"key", "model_policy"}),
     )
     return EvaluationHarnessService.view(item)
 
@@ -173,8 +175,8 @@ def archive_harness(harness_id: str, request: Request) -> dict[str, Any]:
 def create_model(payload: ModelCreate, request: Request) -> dict[str, Any]:
     item = models(request).create(
         model_key=payload.key,
-        name=payload.name,
-        argument=payload.argument,
+        name=payload.name or payload.key,
+        argument=payload.argument or payload.key,
     )
     return EvaluationModelService.view(item)
 

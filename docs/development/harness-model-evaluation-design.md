@@ -76,6 +76,18 @@ hmdiagAgent(deepseek-v4-flash)
 
 ## 领域模型
 
+### 用户配置最小化
+
+设置页只暴露运行所需的最小字段：
+
+- Harness：`key`、命令模板、超时时间、共享并发数。
+- Model：一个模型名称；该值同时作为 key、显示名和传给 `{model}` 的 argv 参数。
+- Harness 是否需要模型由命令模板是否包含 `{model}` 自动推断。
+
+`name`、`family`、`tool_dir`、独立 `argument` 和输出上限继续作为后端兼容及
+内部默认字段保留，不再要求用户在创建表单中配置。已有版本和旧 API 请求仍可读取和
+执行这些字段。
+
 ### Harness Version
 
 Harness 继续采用同 Key 单调递增版本。冻结版本至少包含：
@@ -397,12 +409,14 @@ Model、Target、Case 日志或评分契约必须创建新 Submission。
 
 ## 定时测评
 
-P16 的 `method_ids` 在新计划中替换为精确 `target_ids`：
+P16 的 `method_ids` 在新计划中替换为 Harness × Model 选择。保存计划时，后端自动
+创建或复用精确的冻结 Target：
 
-- 计划保存创建或编辑时选中的冻结 Target。
-- 新增 Model、Harness 或 Target 不自动进入已有计划。
+- 页面直接选择 Harness 与 Model，不提供手工“新建运行组合”步骤。
+- 计划保存创建或编辑时，把选择固化为冻结 Target。
+- 新增 Model 或 Harness 不自动进入已有计划。
 - Target 被归档后，已有计划保留引用但后续触发预检失败，不能静默替换。
-- 编辑计划时提供“一键选择当前全部可用 Target”，保存后重新冻结明确列表。
+- 新计划默认选择当前全部可用 Harness × Model；保存后冻结明确列表。
 - Schedule Run 配置快照和 Submission Manifest 保存相同 Target 结构。
 
 历史计划继续按旧 Method ID 触发兼容流程，用户编辑后迁移为 Target。
@@ -429,14 +443,17 @@ POST      /api/v1/evaluation-targets/{id}:freeze
 POST      /api/v1/evaluation-targets/{id}:archive
 ```
 
-新 Submission 和 Schedule 写接口使用 `target_ids`。旧 `evaluation-methods` API 在
-兼容期只管理旧 Method，不再作为新页面主入口。
+新 Submission 和 Schedule 写接口使用 `target_selections` 接收 Harness × Model，
+后端解析为内部 `target_ids` 快照。`target_ids` 和旧 `evaluation-methods` API
+继续用于历史兼容，不再作为新页面主入口。
 
-设置页分为：
+设置页只保留：
 
 1. Harness：工程、版本、命令、模型策略和共享并发。
 2. Model：显示名和命令行参数。
-3. 运行组合：Harness 下支持的 Model、覆盖参数、probe 和状态。
+
+运行组合不是用户配置资源。提交和定时测评页面按 Harness 分组直接展示可选 Model，
+Target 只作为后端不可变快照用于历史追溯、执行和对比。
 
 结果页增加：
 
@@ -494,10 +511,10 @@ script-only                    -> script-only
 
 - 可以分别创建 `codeagent-native`、`codeagent-skill`、`hmdiag-agent` 和
   `script-only` Harness。
-- 可以创建 GLM 5.1、GLM 5.2、DeepSeek V4 等 Model，并为不同 Harness 配置兼容
-  Target。
+- 可以创建 GLM 5.1、GLM 5.2、DeepSeek V4 等 Model，测评时直接选择 Harness ×
+  Model。
 - `required` Harness 的实际 argv 精确包含所选模型参数；`script-only` 不包含模型。
-- 提交默认选中全部可用 Target，并准确展示 Case × Target 任务数。
+- 提交默认选中全部可用 Harness × Model，并准确展示 Case × Target 任务数。
 - 同一 Case 的报告、得分、状态和 P18 耗时按 Target Key 一一对应。
 - 可以固定 Harness 比较不同 Model，也可以固定 Model 比较不同 Harness。
 - 聚合同时展示质量、覆盖率、生成成功率、中位耗时、P95 和样本数。
@@ -510,8 +527,9 @@ script-only                    -> script-only
 
 - AnalystBench 只向 Harness 传递模型名称，本地工程负责全部模型运行配置。
 - Harness、Model 独立管理，通过 Evaluation Target 表达兼容绑定和运行组合。
+- 用户不手工管理 Target；提交和计划保存时由后端自动创建或复用冻结 Target。
 - 支持模型的 Harness 使用 `{model}`；无模型基线禁止使用 `{model}`。
 - `codeagent-native` 与 `codeagent-skill` 是独立 Harness。
-- 提交默认选择每个 Harness 下全部可用 Target。
+- 提交默认选择每个 Harness 下全部可用 Model。
 - 结果按 Harness 和 Model 两个维度比较质量与实际生成耗时。
 - 定时计划固定精确 Target，不自动跟随新增组合。

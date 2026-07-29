@@ -713,16 +713,25 @@ class EvaluationSubmissionService:
         judge_runner: str = "claude-code",
         *,
         target_ids: list[str] | None = None,
+        target_selections: list[dict[str, str | None]] | None = None,
         case_paths: list[str] | None = None,
         schedule_run_id: str | None = None,
     ) -> EvaluationSubmission:
-        if bool(method_ids) == bool(target_ids):
+        selection_modes = sum(
+            bool(value) for value in (method_ids, target_ids, target_selections)
+        )
+        if selection_modes != 1:
             raise AnalystBenchError(
                 "evaluation_selection_invalid",
-                "请选择测评方式或运行组合中的一种，且不能混用。",
+                "请选择旧测评方式或 Harness/模型组合中的一种，且不能混用。",
             )
         target_snapshots: list[dict[str, Any]] = []
-        if target_ids:
+        if target_selections:
+            targets, target_snapshots = EvaluationTargetService(
+                self.session_factory, self.settings
+            ).resolve_selections(target_selections)
+            method_ids = [str(item.materialized_method_id) for item in targets]
+        elif target_ids:
             targets, target_snapshots = EvaluationTargetService(
                 self.session_factory, self.settings
             ).snapshots(target_ids)

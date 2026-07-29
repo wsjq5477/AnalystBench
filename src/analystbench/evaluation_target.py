@@ -269,10 +269,19 @@ class EvaluationHarnessService:
         )
         executable = resolve_executable(argv[0])
         tool_dir_ok = tool_dir is None or Path(tool_dir).is_dir()
+        reason = (
+            "executable_not_found"
+            if executable is None
+            else "tool_dir_not_found"
+            if not tool_dir_ok
+            else None
+        )
         probe = {
             "available": bool(executable and tool_dir_ok),
-            "executable": executable or argv[0],
+            "requested_executable": argv[0],
+            "executable": executable,
             "tool_dir_ok": tool_dir_ok,
+            "reason": reason,
             "source_revision": _source_revision(tool_dir),
             "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
@@ -296,12 +305,21 @@ class EvaluationHarnessService:
 
     def revise(self, harness_id: str, **changes: Any) -> EvaluationHarness:
         current = self.get(harness_id)
+        command_template = changes.get(
+            "command_template", current.command_template
+        )
+        if changes.get("model_policy") is not None:
+            model_policy = changes["model_policy"]
+        elif "command_template" in changes:
+            model_policy = "required" if "{model}" in command_template else "none"
+        else:
+            model_policy = current.model_policy
         return self.create(
             harness_key=current.harness_key,
             name=changes.get("name", current.name),
             family=changes.get("family", current.family),
-            model_policy=changes.get("model_policy", current.model_policy),
-            command_template=changes.get("command_template", current.command_template),
+            model_policy=model_policy,
+            command_template=command_template,
             tool_dir=changes.get("tool_dir", current.tool_dir),
             timeout_seconds=changes.get("timeout_seconds", current.timeout_seconds),
             max_output_bytes=changes.get("max_output_bytes", current.max_output_bytes),
@@ -475,9 +493,17 @@ class EvaluationTargetService:
             raise AnalystBenchError("evaluation_target_invalid", "组合并发限制必须在 1 到 32。")
         target_key = self._target_key(harness, model)
         with transaction(self.session_factory) as session:
+            model_match = (
+                EvaluationTarget.model_id == model.id
+                if model is not None
+                else EvaluationTarget.model_id.is_(None)
+            )
             existing = session.scalar(
                 select(EvaluationTarget.id).where(
-                    EvaluationTarget.target_key == target_key,
+                    EvaluationTarget.harness_id == harness.id,
+                    model_match,
+                    EvaluationTarget.model_argument == argument,
+                    EvaluationTarget.concurrency_limit == concurrency_limit,
                     EvaluationTarget.status.in_(("draft", "frozen")),
                 )
             )
@@ -518,6 +544,92 @@ class EvaluationTargetService:
             session.expunge(item)
             return item
 
+    def resolve_selections(
+        self,
+        selections: list[dict[str, str | None]],
+    ) -> tuple[list[EvaluationTarget], list[dict[str, Any]]]:
+        """Resolve user-facing Harness x Model selections to frozen Targets."""
+        if not selections:
+            raise AnalystBenchError("evaluation_targets_missing", "至少选择一个 Harness。")
+        target_ids: list[str] = []
+        seen: set[tuple[str, str | None]] = set()
+        for selection in selections:
+            harness_id = str(selection.get("harness_id") or "")
+            model_id = (
+                str(selection["model_id"]) if selection.get("model_id") else None
+            )
+            identity = (harness_id, model_id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            harness = self.harnesses.get(harness_id)
+            model = self.models.get(model_id) if model_id else None
+            if harness.status != "frozen":
+                raise AnalystBenchError(
+                    "evaluation_harness_not_frozen",
+                    f"Harness {harness.harness_key} 尚未冻结。",
+                )
+            if harness.model_policy == "required" and model is None:
+                raise AnalystBenchError(
+                    "evaluation_target_invalid",
+                    f"Harness {harness.harness_key} 必须选择模型。",
+                )
+            if harness.model_policy == "none" and model is not None:
+                raise AnalystBenchError(
+                    "evaluation_target_invalid",
+                    f"Harness {harness.harness_key} 是无模型基线。",
+                )
+            if model is not None and model.status != "frozen":
+                raise AnalystBenchError(
+                    "evaluation_model_not_frozen",
+                    f"模型 {model.model_key} 尚未冻结。",
+                )
+            model_match = (
+                EvaluationTarget.model_id == model.id
+                if model is not None
+                else EvaluationTarget.model_id.is_(None)
+            )
+            argument = model.argument if model is not None else None
+            with transaction(self.session_factory) as session:
+                target_id = session.scalar(
+                    select(EvaluationTarget.id)
+                    .where(
+                        EvaluationTarget.harness_id == harness.id,
+                        model_match,
+                        EvaluationTarget.model_argument == argument,
+                        EvaluationTarget.concurrency_limit.is_(None),
+                        EvaluationTarget.status == "frozen",
+                    )
+                    .order_by(EvaluationTarget.version_number.desc())
+                    .limit(1)
+                )
+                draft_id = (
+                    None
+                    if target_id
+                    else session.scalar(
+                        select(EvaluationTarget.id)
+                        .where(
+                            EvaluationTarget.harness_id == harness.id,
+                            model_match,
+                            EvaluationTarget.model_argument == argument,
+                            EvaluationTarget.concurrency_limit.is_(None),
+                            EvaluationTarget.status == "draft",
+                        )
+                        .order_by(EvaluationTarget.version_number.desc())
+                        .limit(1)
+                    )
+                )
+            if target_id is None:
+                if draft_id is None:
+                    draft_id = self.create(
+                        harness_id=harness.id,
+                        model_id=model.id if model else None,
+                    ).id
+                self.probe(draft_id)
+                target_id = self.freeze(draft_id).id
+            target_ids.append(target_id)
+        return self.snapshots(target_ids)
+
     def get(self, target_id: str) -> EvaluationTarget:
         return self._resolve(target_id)[0]
 
@@ -551,6 +663,13 @@ class EvaluationTargetService:
             "available": bool(harness_probe.get("available") and compatible),
             "harness_probe": harness_probe,
             "model_argument": target.model_argument,
+            "reason": (
+                harness_probe.get("reason")
+                if not harness_probe.get("available")
+                else "model_incompatible"
+                if not compatible
+                else None
+            ),
             "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         with transaction(self.session_factory) as session:

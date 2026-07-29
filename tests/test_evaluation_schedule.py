@@ -126,13 +126,12 @@ def create_frozen_method(client: TestClient) -> dict:
     return client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze").json()
 
 
-def create_frozen_script_target(client: TestClient) -> dict:
+def create_frozen_script_harness(client: TestClient) -> dict:
     harness = client.post(
         "/api/v1/evaluation-harnesses",
         json={
             "key": "script-only",
             "name": "Script Only",
-            "model_policy": "none",
             "command_template": (
                 f"{sys.executable} -c "
                 "\"print('问题分类：SYSTEM_DEADLOCK\\n"
@@ -146,16 +145,9 @@ def create_frozen_script_target(client: TestClient) -> dict:
     assert client.post(f"/api/v1/evaluation-harnesses/{harness_id}:probe").json()[
         "probe"
     ]["available"]
-    assert client.post(f"/api/v1/evaluation-harnesses/{harness_id}:freeze").json()[
-        "status"
-    ] == "frozen"
-    target = client.post("/api/v1/evaluation-targets", json={"harness_id": harness_id})
-    assert target.status_code == 201
-    target_id = target.json()["id"]
-    assert client.post(f"/api/v1/evaluation-targets/{target_id}:probe").json()[
-        "probe"
-    ]["available"]
-    return client.post(f"/api/v1/evaluation-targets/{target_id}:freeze").json()
+    frozen = client.post(f"/api/v1/evaluation-harnesses/{harness_id}:freeze")
+    assert frozen.json()["status"] == "frozen"
+    return frozen.json()
 
 
 def test_daily_time_calculation_uses_schedule_timezone() -> None:
@@ -260,14 +252,16 @@ def test_run_now_accepts_script_only_target(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     case_directory = create_case(settings)
     with TestClient(create_app(settings)) as client:
-        target = create_frozen_script_target(client)
+        harness = create_frozen_script_harness(client)
         created = client.post(
             "/api/v1/evaluation-schedules",
             json={
                 "name": "脚本基线",
                 "dataset_key": "kdiag",
                 "case_mode": "all_ready",
-                "target_ids": [target["id"]],
+                "target_selections": [
+                    {"harness_id": harness["id"], "model_id": None}
+                ],
                 "judge_runner": "lexical",
                 "timezone": "Asia/Shanghai",
                 "local_time": "23:00",
@@ -276,9 +270,13 @@ def test_run_now_accepts_script_only_target(tmp_path: Path) -> None:
         )
         assert created.status_code == 201
         schedule = created.json()
-        assert schedule["target_ids"] == [target["id"]]
+        assert len(schedule["target_ids"]) == 1
+        target_id = schedule["target_ids"][0]
         assert schedule["method_ids"] == []
         assert schedule["targets"][0]["model"] is None
+        assert schedule["target_selections"] == [
+            {"harness_id": harness["id"], "model_id": None}
+        ]
         assert (
             client.post(f"/api/v1/evaluation-schedules/{schedule['id']}:run-now").status_code
             == 202
@@ -295,7 +293,7 @@ def test_run_now_accepts_script_only_target(tmp_path: Path) -> None:
         run = client.get(f"/api/v1/evaluation-schedules/{schedule['id']}/runs").json()[0]
         assert run["status"] == "completed"
         submission = client.get(f"/api/v1/evaluation-submissions/{run['submission_id']}").json()
-        assert submission["target_ids"] == [target["id"]]
+        assert submission["target_ids"] == [target_id]
     result = json.loads(
         (case_directory / "runs" / run["submission_timestamp"] / "result.json").read_text(
             encoding="utf-8"

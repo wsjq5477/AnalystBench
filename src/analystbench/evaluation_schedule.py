@@ -118,6 +118,7 @@ class EvaluationScheduleService:
         case_paths: list[str],
         method_ids: list[str],
         target_ids: list[str],
+        target_selections: list[dict[str, str | None]],
         judge_runner: str,
         timezone: str,
         local_time: str,
@@ -170,10 +171,32 @@ class EvaluationScheduleService:
                     "evaluation_schedule_invalid",
                     "固定选择模式至少需要一个 Case。",
                 )
-        if bool(method_ids) == bool(target_ids):
+        selection_modes = sum(
+            bool(value) for value in (method_ids, target_ids, target_selections)
+        )
+        if selection_modes != 1:
             raise AnalystBenchError(
-                "evaluation_schedule_invalid", "请选择测评方式或运行组合中的一种，且不能混用。"
+                "evaluation_schedule_invalid",
+                "请选择旧测评方式或 Harness/模型组合中的一种，且不能混用。",
             )
+        if target_selections:
+            targets, target_snapshots = EvaluationTargetService(
+                self.session_factory, self.settings
+            ).resolve_selections(target_selections)
+            target_ids = [item.id for item in targets]
+            return {
+                "name": normalized_name,
+                "dataset_key": normalized_dataset,
+                "case_mode": case_mode,
+                "case_paths": normalized_cases,
+                "method_ids": [str(item.materialized_method_id) for item in targets],
+                "target_ids": target_ids,
+                "targets": target_snapshots,
+                "methods": [],
+                "judge_runner": self._validate_judge(judge_runner),
+                "timezone": self._validate_timezone(timezone),
+                "local_time": self._validate_local_time(local_time),
+            }
         if target_ids:
             targets, target_snapshots = EvaluationTargetService(
                 self.session_factory, self.settings
@@ -276,6 +299,7 @@ class EvaluationScheduleService:
         case_paths: list[str],
         method_ids: list[str],
         target_ids: list[str] | None = None,
+        target_selections: list[dict[str, str | None]] | None = None,
         judge_runner: str,
         timezone: str,
         local_time: str,
@@ -288,6 +312,7 @@ class EvaluationScheduleService:
             case_paths=case_paths,
             method_ids=method_ids,
             target_ids=target_ids or [],
+            target_selections=target_selections or [],
             judge_runner=judge_runner,
             timezone=timezone,
             local_time=local_time,
@@ -353,6 +378,7 @@ class EvaluationScheduleService:
         case_paths: list[str],
         method_ids: list[str],
         target_ids: list[str] | None = None,
+        target_selections: list[dict[str, str | None]] | None = None,
         judge_runner: str,
         timezone: str,
         local_time: str,
@@ -365,6 +391,7 @@ class EvaluationScheduleService:
             case_paths=case_paths,
             method_ids=method_ids,
             target_ids=target_ids or [],
+            target_selections=target_selections or [],
             judge_runner=judge_runner,
             timezone=timezone,
             local_time=local_time,
@@ -778,6 +805,14 @@ class EvaluationScheduleService:
             ],
             "target_ids": target_ids,
             "targets": target_views,
+            "target_selections": [
+                {
+                    "harness_id": target.get("harness", {}).get("id"),
+                    "model_id": (target.get("model") or {}).get("id"),
+                }
+                for target in target_views
+                if target.get("harness", {}).get("id")
+            ],
             "judge_runner": item.judge_runner,
             "timezone": item.timezone,
             "local_time": item.local_time,

@@ -479,7 +479,7 @@ export default appOptions;
 
       <!-- Settings view -->
       <section v-if="activeView === 'settings'" class="work-page settings-page">
-        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径、Harness、模型和运行组合。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods(); loadEvaluationCatalog()"><IconRefresh :size="16" />刷新</button></div>
+        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径、Harness 和模型；测评时直接选择需要运行的组合。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods(); loadEvaluationCatalog()"><IconRefresh :size="16" />刷新</button></div>
         <section class="surface form-card">
           <div class="panel-heading"><h2>结果路径配置</h2></div>
           <label>临时结果目录<span>单次评测默认输出到此目录</span><input v-model="appSettings.results_tmp_path" placeholder="data/results/tmp" /></label>
@@ -504,15 +504,16 @@ export default appOptions;
         </section>
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>Harness</h2><button class="primary-button" @click="openHarnessDialog"><IconPlus :size="16" />新建 Harness</button></div>
-          <p class="form-note">定义工程、Prompt、命令与共享并发。需要模型时，命令模板使用 <code>{model}</code>。</p>
-          <div v-if="evaluationHarnesses.length" class="method-list">
-            <div v-for="harness in evaluationHarnesses" :key="harness.id" class="method-row">
-              <div><strong>{{ harness.name }} <small>{{ harness.key }} v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code></div>
+          <p class="form-note">定义 Harness 命令与共享并发；命令包含 <code>{model}</code> 时自动启用模型选择。</p>
+          <div v-if="visibleEvaluationHarnesses.length" class="method-list">
+            <div v-for="harness in visibleEvaluationHarnesses" :key="harness.id" class="method-row">
+              <div><strong>{{ harness.key }} <small>v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code></div>
               <span :class="harness.status === 'frozen' ? 'tag-match' : harness.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ harness.status }}</span>
-              <span :class="harness.probe?.available ? 'tag-match' : 'tag-partial'">{{ harness.probe?.available ? '命令可用' : '未检测' }}</span>
-              <button v-if="harness.status === 'draft'" class="ghost-button" @click="probeEvaluationHarness(harness)">检测</button>
-              <button v-if="harness.status === 'draft'" class="primary-button" :disabled="!harness.probe?.available" @click="freezeEvaluationHarness(harness)">冻结</button>
+              <span :class="harness.probe?.available ? 'tag-match' : harness.probe?.checked_at ? 'tag-missing' : 'tag-partial'">{{ harness.probe?.available ? '命令可用' : harness.probe?.checked_at ? '命令不可用' : '未检测' }}</span>
+              <button v-if="harness.status === 'draft'" class="ghost-button" :disabled="harnessActionId === harness.id" @click="probeEvaluationHarness(harness)">{{ harnessActionId === harness.id && harnessAction === 'probe' ? '检测中…' : '检测' }}</button>
+              <button v-if="harness.status === 'draft'" class="primary-button" :disabled="harnessActionId === harness.id" @click="freezeEvaluationHarness(harness)">{{ harnessActionId === harness.id && harnessAction === 'freeze' ? '冻结中…' : '冻结' }}</button>
               <button class="ghost-button" @click="openHarnessDialog(harness)">修改</button>
+              <button class="tree-delete" title="删除 Harness" :disabled="catalogActionId === harness.id" @click="deleteEvaluationHarness(harness)"><IconTrash :size="14" /></button>
             </div>
           </div>
           <div v-else class="empty-state"><IconTerminal2 :size="26" /><p>暂无 Harness</p><span>先新建一个脚本或 Agent Harness。</span></div>
@@ -520,28 +521,14 @@ export default appOptions;
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>模型</h2><button class="primary-button" @click="openModelDialog"><IconPlus :size="16" />新建模型</button></div>
           <p class="form-note">这里只保存传给 Harness 的模型名称，不管理 endpoint、密钥或模型参数。</p>
-          <div v-if="evaluationModels.length" class="method-list">
-            <div v-for="model in evaluationModels" :key="model.id" class="method-row">
-              <div><strong>{{ model.name }} <small>{{ model.key }} v{{ model.version }}</small></strong><code>--model {{ model.argument }}</code></div>
+          <div v-if="visibleEvaluationModels.length" class="method-list">
+            <div v-for="model in visibleEvaluationModels" :key="model.id" class="method-row">
+              <div><strong>{{ model.key }} <small>v{{ model.version }}</small></strong><code>--model {{ model.argument }}</code></div>
               <span :class="model.status === 'frozen' ? 'tag-match' : 'tag-missing'">{{ model.status }}</span>
-              <button class="ghost-button" @click="openModelDialog(model)">修改</button>
+              <button class="tree-delete" title="删除模型" :disabled="catalogActionId === model.id" @click="deleteEvaluationModel(model)"><IconTrash :size="14" /></button>
             </div>
           </div>
           <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>暂无模型</p></div>
-        </section>
-        <section class="surface form-card method-card">
-          <div class="panel-heading"><h2>运行组合</h2><button class="primary-button" @click="openTargetDialog"><IconPlus :size="16" />新建组合</button></div>
-          <p class="form-note">一个组合固定一个 Harness 与可选模型；冻结后可直接提交或加入定时计划。</p>
-          <div v-if="evaluationTargets.length" class="method-list">
-            <div v-for="target in evaluationTargets" :key="target.id" class="method-row">
-              <div><strong>{{ target.display_name }} <small>{{ target.key }} v{{ target.version }}</small></strong><code>{{ target.harness?.command_template }}</code></div>
-              <span :class="target.status === 'frozen' ? 'tag-match' : target.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ target.status }}</span>
-              <span :class="target.probe?.available ? 'tag-match' : 'tag-partial'">{{ target.probe?.available ? '组合可用' : '未检测' }}</span>
-              <button v-if="target.status === 'draft'" class="ghost-button" @click="probeEvaluationTarget(target)">检测</button>
-              <button v-if="target.status === 'draft'" class="primary-button" :disabled="!target.probe?.available" @click="freezeEvaluationTarget(target)">冻结</button>
-            </div>
-          </div>
-          <div v-else class="empty-state"><IconFlask :size="26" /><p>暂无运行组合</p></div>
         </section>
       </section>
     </main>
@@ -588,13 +575,13 @@ export default appOptions;
           </fieldset>
         </template>
         <fieldset v-else-if="submissionStep === 2" class="method-picker">
-          <template v-if="frozenEvaluationTargetGroups.length">
-            <legend>运行组合</legend>
-            <div v-for="group in frozenEvaluationTargetGroups" :key="group.harness.id" class="target-picker-group">
-              <strong>{{ group.harness.name }} <small>{{ group.harness.key }} v{{ group.harness.version }}</small></strong>
-              <label v-for="target in group.targets" :key="target.id" class="check-row">
-                <input v-model="submissionForm.target_ids" type="checkbox" :value="target.id" />
-                <span><strong>{{ target.model?.name || '无模型基线' }}</strong><code>{{ target.key }} · {{ target.model_argument || 'script-only' }}</code></span>
+          <template v-if="evaluationSelectionGroups.length">
+            <legend>Harness × 模型（默认全选）</legend>
+            <div v-for="group in evaluationSelectionGroups" :key="group.harness.id" class="target-picker-group">
+              <strong>{{ group.harness.key }} <small>v{{ group.harness.version }}</small></strong>
+              <label v-for="option in group.options" :key="option.key" class="check-row">
+                <input v-model="submissionForm.target_selection_keys" type="checkbox" :value="option.key" />
+                <span><strong>{{ option.model?.name || '无模型基线' }}</strong><code>{{ option.model?.argument || 'script-only' }}</code></span>
               </label>
             </div>
           </template>
@@ -612,8 +599,8 @@ export default appOptions;
             <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ submissionForm.dataset_key }}</span></div>
             <div class="case-info-item"><span class="case-info-label">本次 Case 数</span><span class="case-info-value">{{ submissionForm.case_paths.length }}</span></div>
             <div class="case-info-item"><span class="case-info-label">未纳入 Case</span><span class="case-info-value">{{ selectedSubmissionCases.length - submissionForm.case_paths.length }}</span></div>
-            <div class="case-info-item"><span class="case-info-label">运行组合数</span><span class="case-info-value">{{ submissionForm.target_ids.length || submissionForm.method_ids.length }}</span></div>
-            <div class="case-info-item"><span class="case-info-label">生成任务数</span><span class="case-info-value">{{ submissionForm.case_paths.length * (submissionForm.target_ids.length || submissionForm.method_ids.length) }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">运行组合数</span><span class="case-info-value">{{ submissionForm.target_selection_keys.length || submissionForm.method_ids.length }}</span></div>
+            <div class="case-info-item"><span class="case-info-label">生成任务数</span><span class="case-info-value">{{ submissionForm.case_paths.length * (submissionForm.target_selection_keys.length || submissionForm.method_ids.length) }}</span></div>
           </div>
           <label>打分 Judge
             <select v-model="submissionForm.judge_runner">
@@ -626,7 +613,7 @@ export default appOptions;
           <button v-if="submissionStep === 1" class="ghost-button" @click="showSubmitEvaluationDialog = false">取消</button>
           <button v-else class="ghost-button" @click="submissionStep -= 1">上一步</button>
           <button v-if="submissionStep < 3" class="primary-button" @click="advanceSubmissionStep">下一步<IconChevronRight :size="16" /></button>
-          <button v-else class="primary-button" :disabled="submissionRunning || !submissionForm.dataset_key || (!submissionForm.target_ids.length && !submissionForm.method_ids.length)" @click="createEvaluationSubmission"><IconFlask :size="16" />{{ submissionRunning ? '提交中…' : '开始测评' }}</button>
+          <button v-else class="primary-button" :disabled="submissionRunning || !submissionForm.dataset_key || (!submissionForm.target_selection_keys.length && !submissionForm.method_ids.length)" @click="createEvaluationSubmission"><IconFlask :size="16" />{{ submissionRunning ? '提交中…' : '开始测评' }}</button>
         </div>
       </section>
     </div>
@@ -664,37 +651,20 @@ export default appOptions;
     <div v-if="showHarnessDialog" class="dialog-overlay" @click.self="showHarnessDialog = false">
       <section class="surface dialog-card dialog-card-wide">
         <div class="panel-heading"><h2>{{ editingHarnessId ? '修改 Harness' : '新建 Harness' }}</h2></div>
-        <p class="form-note">需要模型的 Harness 必须在命令模板中且仅一次使用 <code>{model}</code>；命令不经过 Shell。</p>
+        <p class="form-note">命令含 <code>{model}</code> 时需要模型，不含则作为无模型基线；命令不经过 Shell。</p>
         <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="codeagent-native" /></label>
-        <label>显示名称<input v-model="harnessForm.name" placeholder="CodeAgent Native" /></label>
-        <label>工程族（可选）<input v-model="harnessForm.family" placeholder="codeagent" /></label>
-        <label>模型策略<select v-model="harnessForm.model_policy"><option value="required">需要模型</option><option value="none">无模型</option></select></label>
-        <label>工具目录（可选）<input v-model="harnessForm.tool_dir" placeholder="/home/user/codeagent" /></label>
         <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='codeagent -p "分析 {input}" --model {model}'></textarea></label>
-        <div class="form-grid"><label>超时（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>最大输出（字节）<input v-model.number="harnessForm.max_output_bytes" type="number" min="1024" /></label><label>Harness 并发<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
+        <div class="form-grid"><label>超时时间（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>并发数<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>
       </section>
     </div>
 
     <div v-if="showModelDialog" class="dialog-overlay" @click.self="showModelDialog = false">
       <section class="surface dialog-card">
-        <div class="panel-heading"><h2>{{ editingModelId ? '修改模型' : '新建模型' }}</h2></div>
-        <p class="form-note">仅保存传给 Harness 的模型参数，不保存任何凭据或 endpoint。</p>
-        <label>Key<input v-model="modelForm.key" :disabled="Boolean(editingModelId)" placeholder="glm-5.1" /></label>
-        <label>显示名称<input v-model="modelForm.name" placeholder="GLM 5.1" /></label>
-        <label>模型参数<input v-model="modelForm.argument" placeholder="glm5.1" /></label>
+        <div class="panel-heading"><h2>新建模型</h2></div>
+        <p class="form-note">模型名称会直接作为传给 Harness 的 <code>--model</code> 参数。</p>
+        <label>模型名称<input v-model="modelForm.key" placeholder="glm5.1" /></label>
         <div class="dialog-actions"><button class="ghost-button" @click="showModelDialog = false">取消</button><button class="primary-button" :disabled="modelSaving" @click="saveEvaluationModel">{{ modelSaving ? '保存中…' : '保存模型' }}</button></div>
-      </section>
-    </div>
-
-    <div v-if="showTargetDialog" class="dialog-overlay" @click.self="showTargetDialog = false">
-      <section class="surface dialog-card">
-        <div class="panel-heading"><h2>新建运行组合</h2></div>
-        <label>Harness<select v-model="targetForm.harness_id"><option value="" disabled>请选择冻结 Harness</option><option v-for="harness in evaluationHarnesses.filter((item) => item.status === 'frozen')" :key="harness.id" :value="harness.id">{{ harness.name }} · {{ harness.key }} v{{ harness.version }}</option></select></label>
-        <label v-if="selectedTargetHarness?.model_policy === 'required'">模型<select v-model="targetForm.model_id"><option value="" disabled>请选择冻结模型</option><option v-for="model in evaluationModels.filter((item) => item.status === 'frozen')" :key="model.id" :value="model.id">{{ model.name }} · {{ model.argument }}</option></select></label>
-        <label>该 Harness 的模型参数覆盖（可选）<input v-model="targetForm.model_argument" :disabled="selectedTargetHarness?.model_policy === 'none'" placeholder="默认使用模型参数" /></label>
-        <label>组合并发限制（可选）<input v-model.number="targetForm.concurrency_limit" type="number" min="1" max="32" placeholder="继承 Harness" /></label>
-        <div class="dialog-actions"><button class="ghost-button" @click="showTargetDialog = false">取消</button><button class="primary-button" :disabled="targetSaving" @click="saveEvaluationTarget">{{ targetSaving ? '保存中…' : '创建并检测' }}</button></div>
       </section>
     </div>
 
@@ -743,13 +713,13 @@ export default appOptions;
             <span :class="caseItem.case_data?.submission_ready ? 'tag-match' : 'tag-missing'">{{ caseItem.case_data?.submission_ready ? `${caseItem.case_data.log_count} 个日志` : '缺少有效日志' }}</span>
           </label>
         </fieldset>
-        <fieldset v-if="frozenEvaluationTargetGroups.length" class="method-picker">
-          <legend>运行组合（固定到当前版本）</legend>
-          <div v-for="group in frozenEvaluationTargetGroups" :key="group.harness.id" class="target-picker-group">
-            <strong>{{ group.harness.name }} <small>{{ group.harness.key }} v{{ group.harness.version }}</small></strong>
-            <label v-for="target in group.targets" :key="target.id" class="check-row">
-              <input v-model="scheduleForm.target_ids" type="checkbox" :value="target.id" />
-              <span><strong>{{ target.model?.name || '无模型基线' }}</strong><code>{{ target.key }}</code></span>
+        <fieldset v-if="evaluationSelectionGroups.length" class="method-picker">
+          <legend>Harness × 模型（保存时固定当前版本）</legend>
+          <div v-for="group in evaluationSelectionGroups" :key="group.harness.id" class="target-picker-group">
+            <strong>{{ group.harness.key }} <small>v{{ group.harness.version }}</small></strong>
+            <label v-for="option in group.options" :key="option.key" class="check-row">
+              <input v-model="scheduleForm.target_selection_keys" type="checkbox" :value="option.key" />
+              <span><strong>{{ option.model?.name || '无模型基线' }}</strong><code>{{ option.model?.argument || 'script-only' }}</code></span>
             </label>
           </div>
         </fieldset>

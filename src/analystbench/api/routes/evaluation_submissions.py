@@ -54,6 +54,13 @@ class EvaluationMethodResponse(BaseModel):
     updated_at: datetime
 
 
+class EvaluationTargetSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    harness_id: str
+    model_id: str | None = None
+
+
 class EvaluationSubmissionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,6 +68,7 @@ class EvaluationSubmissionCreate(BaseModel):
     case_paths: list[str] | None = None
     method_ids: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
+    target_selections: list[EvaluationTargetSelection] = Field(default_factory=list)
     judge_runner: str = "claude-code"
 
 
@@ -161,6 +169,10 @@ def create_submission(payload: EvaluationSubmissionCreate, request: Request) -> 
         payload.method_ids,
         payload.judge_runner,
         target_ids=payload.target_ids or None,
+        target_selections=[
+            item.model_dump() for item in payload.target_selections
+        ]
+        or None,
         case_paths=payload.case_paths,
     )
     return EvaluationSubmissionService.submission_view(item)

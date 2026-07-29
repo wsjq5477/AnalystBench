@@ -282,7 +282,12 @@ def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
         for line in timing_path.read_text(encoding="utf-8").splitlines()
     )
     assert len(intervals) == 4
-    assert all(next_start >= previous_end for (_, previous_end), (next_start, _) in zip(intervals, intervals[1:]))
+    assert all(
+        next_start >= previous_end
+        for (_, previous_end), (next_start, _) in zip(
+            intervals, intervals[1:], strict=False
+        )
+    )
     assert comparison["by_harness"] == [
         {
             "key": "codeagent-skill@v1",
@@ -493,6 +498,38 @@ def test_frozen_method_can_be_revised_as_new_draft(tmp_path: Path) -> None:
     assert "print(2)" in revised.json()["command_template"]
 
 
+def test_revising_harness_infers_model_policy_from_changed_command(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        harness = client.post(
+            "/api/v1/evaluation-harnesses",
+            json={
+                "key": "claude",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:probe")
+        frozen = client.post(
+            f"/api/v1/evaluation-harnesses/{harness['id']}:freeze"
+        ).json()
+
+        revised = client.post(
+            f"/api/v1/evaluation-harnesses/{frozen['id']}:revise",
+            json={
+                "command_template": (
+                    f'{sys.executable} -c "print(1)" --model {{model}}'
+                )
+            },
+        )
+
+    assert revised.status_code == 200
+    assert revised.json()["version"] == 2
+    assert revised.json()["status"] == "draft"
+    assert revised.json()["model_policy"] == "required"
+
+
 def test_target_uses_harness_model_argument_and_exposes_comparison(
     tmp_path: Path,
 ) -> None:
@@ -503,7 +540,8 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
     (logs_directory / "log.txt").write_text("chmod hung", encoding="utf-8")
     tool_directory = tmp_path / "target-tool"
     tool_directory.mkdir()
-    (tool_directory / "report.py").write_text(
+    report_script = tool_directory / "report.py"
+    report_script.write_text(
         "import sys\n"
         "from pathlib import Path\n"
         "assert sys.argv[1:3] == ['--model', 'glm5.1']\n"
@@ -519,11 +557,8 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
             "/api/v1/evaluation-harnesses",
             json={
                 "key": "codeagent-native",
-                "name": "CodeAgent Native",
-                "model_policy": "required",
-                "tool_dir": str(tool_directory),
                 "command_template": (
-                    f"{sys.executable} {{tool_dir}}/report.py --model {{model}} {{input}}"
+                    f"{sys.executable} {report_script} --model {{model}} {{input}}"
                 ),
                 "concurrency_limit": 1,
             },
@@ -538,37 +573,30 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         ] == "frozen"
         model = client.post(
             "/api/v1/evaluation-models",
-            json={"key": "glm-5.1", "name": "GLM 5.1", "argument": "glm5.1"},
+            json={"key": "glm5.1"},
         )
         assert model.status_code == 201
-        target = client.post(
-            "/api/v1/evaluation-targets",
-            json={"harness_id": harness_id, "model_id": model.json()["id"]},
-        )
-        assert target.status_code == 201
-        target_id = target.json()["id"]
-        assert client.post(f"/api/v1/evaluation-targets/{target_id}:probe").json()[
-            "probe"
-        ]["available"]
-        frozen_target = client.post(
-            f"/api/v1/evaluation-targets/{target_id}:freeze"
-        ).json()
-        assert frozen_target["status"] == "frozen"
-        assert frozen_target["key"] == "codeagent-native@glm-5.1"
-        assert frozen_target["materialized_method_id"]
         assert client.get("/api/v1/evaluation-methods").json() == []
 
         submission = client.post(
             "/api/v1/evaluation-submissions",
             json={
                 "dataset_key": "kdiag",
-                "target_ids": [target_id],
+                "target_selections": [
+                    {"harness_id": harness_id, "model_id": model.json()["id"]}
+                ],
                 "judge_runner": "lexical",
             },
         )
         assert submission.status_code == 202
         submission_id = submission.json()["id"]
-        assert submission.json()["target_ids"] == [target_id]
+        assert len(submission.json()["target_ids"]) == 1
+        frozen_target = submission.json()["targets"][0]
+        assert frozen_target["key"] == "codeagent-native@glm5.1"
+        assert frozen_target["materialized_method_id"]
+        generated_targets = client.get("/api/v1/evaluation-targets").json()
+        assert generated_targets[0]["id"] == frozen_target["id"]
+        assert generated_targets[0]["status"] == "frozen"
 
     worker = LocalWorker(settings)
     try:
@@ -582,7 +610,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         (case_directory / "runs" / timestamp / "result.json").read_text(encoding="utf-8")
     )
     generation = result["generation"]
-    assert generation["targets"][0]["target_key"] == "codeagent-native@glm-5.1"
+    assert generation["targets"][0]["target_key"] == "codeagent-native@glm5.1"
     assert generation["targets"][0]["model"]["argument"] == "glm5.1"
 
     with TestClient(create_app(settings)) as client:
@@ -598,7 +626,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
             f"/api/v1/evaluation-submissions/{submission_id}/target-comparison"
         )
         assert comparison.status_code == 200
-        assert comparison.json()["targets"][0]["target"]["key"] == "codeagent-native@glm-5.1"
+        assert comparison.json()["targets"][0]["target"]["key"] == "codeagent-native@glm5.1"
         assert comparison.json()["targets"][0]["generation_success_rate"] == 1.0
         assert comparison.json()["by_harness"] == []
         assert comparison.json()["by_model"] == []
