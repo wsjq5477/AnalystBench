@@ -17,6 +17,19 @@ const VIEW_PATHS = {
   settings: "/settings",
 };
 
+function averageScores(values, fallback = 0) {
+  return values.length
+    ? values.reduce((sum, value) => sum + Number(value), 0) / values.length
+    : fallback;
+}
+
+function averageAvailable(values) {
+  const available = values.filter(
+    (value) => value !== null && value !== undefined && Number.isFinite(Number(value)),
+  );
+  return available.length ? averageScores(available) : null;
+}
+
 export default {
   name: "AnalystBenchApp",
   components: {
@@ -144,6 +157,9 @@ export default {
       dashboardStats: null,
       dashboardLoaded: false,
       selectedTestSet: "",
+      dashboardComparisonDimension: "harness",
+      dashboardModelFilter: "",
+      dashboardHarnessFilter: "",
     };
   },
   computed: {
@@ -337,6 +353,10 @@ export default {
             );
             if (current) {
               current.avg_score = (current.avg_score + candidate.avg_score) / 2;
+              current.avg_duration_ms = averageAvailable([
+                current.avg_duration_ms,
+                candidate.avg_duration_ms,
+              ]);
             } else {
               existing.candidates.push({ ...candidate });
             }
@@ -346,13 +366,86 @@ export default {
       });
       return categories;
     },
+    dashboardComparisonLabel() {
+      return this.dashboardComparisonDimension === "model" ? "Model" : "Harness";
+    },
+    dashboardModelOptions() {
+      return [...new Set(
+        this.activeCandidates
+          .map((candidate) => this.splitEvaluationTargetName(candidate.name).model)
+          .filter((model) => model !== "-"),
+      )].sort((left, right) => left.localeCompare(right));
+    },
+    dashboardHarnessOptions() {
+      return [...new Set(
+        this.activeCandidates
+          .map((candidate) => this.splitEvaluationTargetName(candidate.name))
+          .filter((target) => target.model !== "-")
+          .map((target) => target.harness),
+      )].sort((left, right) => left.localeCompare(right));
+    },
+    activeDashboardModelFilter() {
+      return this.dashboardModelOptions.includes(this.dashboardModelFilter)
+        ? this.dashboardModelFilter
+        : this.dashboardModelOptions[0] || "";
+    },
+    activeDashboardHarnessFilter() {
+      return this.dashboardHarnessOptions.includes(this.dashboardHarnessFilter)
+        ? this.dashboardHarnessFilter
+        : this.dashboardHarnessOptions[0] || "";
+    },
+    dashboardComparisonContext() {
+      const filter =
+        this.dashboardComparisonDimension === "harness"
+          ? this.activeDashboardModelFilter
+          : this.activeDashboardHarnessFilter;
+      return filter ? `${this.dashboardComparisonLabel} · ${filter}` : this.dashboardComparisonLabel;
+    },
+    dashboardComparisonGroups() {
+      const groups = new Map();
+      this.activeCandidates.forEach((candidate) => {
+        const target = this.splitEvaluationTargetName(candidate.name);
+        const isBaseline = target.model === "-";
+        const matchesFilter =
+          isBaseline ||
+          (this.dashboardComparisonDimension === "harness"
+            ? target.model === this.activeDashboardModelFilter
+            : target.harness === this.activeDashboardHarnessFilter);
+        if (!matchesFilter) return;
+        const label =
+          this.dashboardComparisonDimension === "model" && !isBaseline
+            ? target.model
+            : target.harness;
+        const key = isBaseline
+          ? `baseline:${target.harness}`
+          : `${this.dashboardComparisonDimension}:${label}`;
+        if (!groups.has(key)) {
+          groups.set(key, { key, label, members: [], scores: [], durations: [] });
+        }
+        const group = groups.get(key);
+        group.members.push(candidate.name);
+        group.scores.push(candidate.avg_score);
+        group.durations.push(candidate.avg_duration_ms);
+      });
+      return [...groups.values()]
+        .map((group) => ({
+          key: group.key,
+          label: group.label,
+          members: group.members,
+          score: averageScores(group.scores),
+          duration_ms: averageAvailable(group.durations),
+        }))
+        .sort(
+          (left, right) =>
+            right.score - left.score || left.label.localeCompare(right.label),
+        );
+    },
     dashboardScoreCards() {
-      return this.activeCandidates.map((candidate, index) => ({
-        label: this.wrapName(candidate.name),
-        score: candidate.avg_score,
-        tone: this.toneFromRank(candidate.name),
+      return this.dashboardComparisonGroups.map((group, index) => ({
+        label: group.label,
+        score: group.score,
+        duration_ms: group.duration_ms,
         color: this.resultColors[index % this.resultColors.length],
-        change: "",
       }));
     },
     activeDailyScores() {
@@ -369,45 +462,74 @@ export default {
       return this.activeDailyScores.map((item) => item.date);
     },
     dailyScoreSeries() {
-      return this.activeCandidates.map((candidate) => ({
-        name: this.wrapName(candidate.name),
+      return this.dashboardComparisonGroups.map((group) => ({
+        name: group.label,
         values: this.activeDailyScores.map((item) => {
-          const value = item.candidates.find(
-            (entry) => entry.name === candidate.name,
-          );
-          return value ? value.avg_score : null;
+          const scores = item.candidates
+            .filter((entry) => group.members.includes(entry.name))
+            .map((entry) => entry.avg_score);
+          return averageScores(scores, null);
         }),
+        durations: this.activeDailyScores.map((item) =>
+          averageAvailable(
+            item.candidates
+              .filter((entry) => group.members.includes(entry.name))
+              .map((entry) => entry.avg_duration_ms),
+          ),
+        ),
       }));
     },
     categoryComparisonRows() {
-      return this.activeCandidates.map((candidate, index) => ({
-        name: this.wrapName(candidate.name),
-        color: this.resultColors[index % this.resultColors.length],
-        categoryScores: this.activeCategories.map((category) => {
-          const value = category.candidates.find(
-            (item) => item.name === candidate.name,
-          );
-          return value ? value.avg_score : 0;
-        }),
-        average: candidate.avg_score,
-      }));
+      return [...this.activeCandidates]
+        .sort(
+          (left, right) =>
+            Number(right.avg_score) - Number(left.avg_score) ||
+            String(left.name).localeCompare(String(right.name)),
+        )
+        .map((candidate, index) => {
+          const target = this.splitEvaluationTargetName(candidate.name);
+          return {
+            name: candidate.name,
+            rank: index + 1,
+            harness: target.harness,
+            model: target.model,
+            duration_ms: candidate.avg_duration_ms,
+            categoryScores: this.activeCategories.map((category) => {
+              const value = category.candidates.find(
+                (item) => item.name === candidate.name,
+              );
+              return value ? value.avg_score : 0;
+            }),
+            score: candidate.avg_score,
+          };
+        });
     },
     categoryBarLabels() {
       return this.activeCategories.map((category) => category.name);
     },
     categoryBarSeries() {
-      return this.activeCandidates.map((candidate) => ({
-        name: this.wrapName(candidate.name),
+      return this.dashboardComparisonGroups.map((group) => ({
+        name: group.label,
         values: this.activeCategories.map((category) => {
-          const value = category.candidates.find(
-            (item) => item.name === candidate.name,
-          );
-          return value ? value.avg_score : 0;
+          const scores = category.candidates
+            .filter((candidate) => group.members.includes(candidate.name))
+            .map((candidate) => candidate.avg_score);
+          return averageScores(scores);
         }),
+        durations: this.activeCategories.map((category) =>
+          averageAvailable(
+            category.candidates
+              .filter((candidate) => group.members.includes(candidate.name))
+              .map((candidate) => candidate.avg_duration_ms),
+          ),
+        ),
       }));
     },
   },
   watch: {
+    selectedTestSet() {
+      this.syncDashboardComparisonFilters();
+    },
     $route: {
       immediate: true,
       handler(route) {
@@ -513,6 +635,14 @@ export default {
       }
       if (view === "dashboard" && !this.dashboardLoaded) {
         this.loadDashboardData();
+      }
+    },
+    syncDashboardComparisonFilters() {
+      if (!this.dashboardModelOptions.includes(this.dashboardModelFilter)) {
+        this.dashboardModelFilter = this.dashboardModelOptions[0] || "";
+      }
+      if (!this.dashboardHarnessOptions.includes(this.dashboardHarnessFilter)) {
+        this.dashboardHarnessFilter = this.dashboardHarnessOptions[0] || "";
       }
     },
     async loadLocalCaseTree() {
@@ -811,6 +941,24 @@ export default {
       if (!match) return name;
       const rest = match[2].trim();
       return rest ? `${match[1]}\n${rest}` : name;
+    },
+    splitEvaluationTargetName(name) {
+      const value = String(name || "");
+      const separatorIndex = value.indexOf("@");
+      if (separatorIndex < 0) {
+        const legacyTarget = value.match(/^(.+?)\(([^()]*)\)(.*)$/);
+        if (legacyTarget) {
+          return {
+            harness: `${legacyTarget[1]}${legacyTarget[3]}`.trim() || "-",
+            model: legacyTarget[2].trim() || "-",
+          };
+        }
+        return { harness: value || "-", model: "-" };
+      }
+      return {
+        harness: value.slice(0, separatorIndex) || "-",
+        model: value.slice(separatorIndex + 1) || "-",
+      };
     },
     relationTagClass(relation) {
       if (relation === "match") return "tag-match";
@@ -1780,6 +1928,7 @@ export default {
         ) {
           this.selectedTestSet = this.dashboardStats.test_sets[0].key;
         }
+        this.syncDashboardComparisonFilters();
       } catch {
         this.connection = "offline";
         this.dashboardStats = null;

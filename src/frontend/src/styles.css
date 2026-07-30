@@ -253,6 +253,12 @@ body { font-weight: 430; letter-spacing: -.005em; }
 .panel-title, .metric-title, .panel-heading h2 { font-weight: 630; letter-spacing: -.027em; }
 .panel-title span, .metric-title span, .matrix-panel h2 span { font-weight: 430; letter-spacing: 0; }
 .score-item span { font-weight: 510; letter-spacing: -.015em; }
+.score-item small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .score-item strong, .metric-panel > strong { font-family: "Inter Variable", Inter, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums lining-nums; font-weight: 620; letter-spacing: -.055em; }
 .score-matrix th { font-weight: 510; letter-spacing: -.02em; }
 .score-matrix td, .score-matrix td.average, .sidebar-foot, .metric-bottom span { font-family: "Inter Variable", Inter, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums lining-nums; letter-spacing: -.02em; }
@@ -307,6 +313,9 @@ html.dark-theme,
   --success-soft: rgba(34, 197, 94, .14);
   --warning: #f5b83d;
   --warning-soft: rgba(245, 184, 61, .14);
+  --medal-gold: #f5b83d;
+  --medal-silver: #a8b2c1;
+  --medal-bronze: #c47b45;
   --danger: #ff6b6b;
   --danger-soft: rgba(255, 107, 107, .14);
   --info: #8b5cf6;
@@ -345,6 +354,9 @@ html.light-theme,
   --success-soft: rgba(21, 128, 61, .10);
   --warning: #9a6700;
   --warning-soft: rgba(154, 103, 0, .10);
+  --medal-gold: #9a6700;
+  --medal-silver: #667085;
+  --medal-bronze: #9a5b2c;
   --danger: #cf222e;
   --danger-soft: rgba(207, 34, 46, .09);
   --info: #6639ba;
@@ -632,6 +644,64 @@ input:disabled,
 select:disabled,
 textarea:disabled { color: var(--text-disabled) !important; }
 
+.test-set-selector {
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.comparison-filter-label {
+  margin-left: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 560;
+}
+.comparison-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: var(--bg-control);
+}
+.comparison-filter button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background-color .18s ease, border-color .18s ease, color .18s ease;
+}
+.comparison-filter button:hover {
+  color: var(--text-primary);
+}
+.comparison-filter button.active {
+  border-color: var(--border-hover);
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.comparison-filter button:focus-visible {
+  outline: 0;
+  box-shadow: var(--shadow-focus);
+}
+.comparison-value-selector {
+  margin-left: 4px;
+}
+.test-set-selector .comparison-value-selector span {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 560;
+}
+.test-set-selector .comparison-value-selector select {
+  min-width: 180px;
+}
+.chart-dimension {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .tree-panel .panel-heading,
 .detail-panel .panel-heading,
 .result-list-panel .panel-heading,
@@ -722,6 +792,141 @@ textarea:disabled { color: var(--text-disabled) !important; }
 .metrics-table td { color: var(--text-secondary); }
 .score-matrix td.average,
 .average.row-color-text { background: var(--bg-control); }
+.score-matrix {
+  width: max-content;
+  min-width: 100%;
+  table-layout: fixed;
+}
+.score-matrix col.rank-column { width: 56px; }
+.score-matrix col.harness-column { width: 220px; }
+.score-matrix col.model-column { width: 180px; }
+.score-matrix col.score-column { width: 96px; }
+.score-matrix col.runtime-column { width: 128px; }
+.score-matrix col.category-column { width: 132px; }
+.score-matrix th,
+.score-matrix td {
+  height: 48px;
+  padding: 0 16px;
+  border-right: 0;
+  text-align: left;
+}
+.score-matrix thead th {
+  height: 42px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .04em;
+}
+.score-matrix thead th:first-child,
+.score-matrix tbody th:first-child {
+  width: auto;
+  padding-left: 16px;
+}
+.score-matrix tbody tr {
+  transition: background-color .18s ease;
+}
+.score-matrix tbody tr:hover {
+  background: var(--bg-control-hover);
+}
+.score-matrix .rank-cell,
+.score-matrix .score-cell,
+.score-matrix .runtime-cell,
+.score-matrix .category-cell {
+  font-variant-numeric: tabular-nums;
+}
+.score-matrix th.rank-cell,
+.score-matrix td.rank-cell {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  padding-left: 8px;
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--bg-card-solid);
+}
+.score-matrix thead .rank-cell {
+  z-index: 3;
+}
+.score-matrix .harness-cell {
+  position: sticky;
+  left: 56px;
+  z-index: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  background: var(--bg-card-solid);
+  font-size: 13px;
+  font-weight: 650;
+}
+.score-matrix thead .harness-cell {
+  z-index: 3;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.score-matrix .model-cell {
+  position: sticky;
+  left: 276px;
+  z-index: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+  background: var(--bg-card-solid);
+  font-size: 13px;
+}
+.score-matrix thead .model-cell {
+  z-index: 3;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.score-matrix .score-cell {
+  position: sticky;
+  left: 456px;
+  z-index: 2;
+  color: var(--text-primary);
+  background: var(--bg-card-solid);
+  font-size: 13px;
+  font-weight: 750;
+}
+.score-matrix thead .score-cell {
+  z-index: 3;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.score-matrix .runtime-cell {
+  position: sticky;
+  left: 552px;
+  z-index: 2;
+  color: var(--text-secondary);
+  background: var(--bg-card-solid);
+  font-size: 12px;
+}
+.score-matrix thead .runtime-cell {
+  z-index: 3;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.score-matrix .category-cell {
+  color: var(--text-muted);
+  text-align: center;
+}
+.score-matrix thead .category-cell {
+  color: var(--text-muted);
+}
+.score-matrix .rank-medal {
+  display: inline-block;
+  vertical-align: middle;
+}
+.score-matrix .rank-1 { color: var(--medal-gold); }
+.score-matrix .rank-2 { color: var(--medal-silver); }
+.score-matrix .rank-3 { color: var(--medal-bronze); }
+.score-matrix tbody tr:hover .rank-cell,
+.score-matrix tbody tr:hover .harness-cell,
+.score-matrix tbody tr:hover .model-cell,
+.score-matrix tbody tr:hover .score-cell,
+.score-matrix tbody tr:hover .runtime-cell {
+  background: var(--bg-control-hover);
+}
 .result-overview-section h3,
 .comparison-section h3,
 .metrics-section h3 { color: var(--text-primary); }

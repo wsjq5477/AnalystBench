@@ -39,6 +39,7 @@ export const IconFolder = createIcon("IconFolder", "el-icon-folder");
 export const IconInfoCircle = createIcon("IconInfoCircle", "el-icon-info");
 export const IconLayoutDashboard = createIcon("IconLayoutDashboard", "el-icon-menu");
 export const IconLoader2 = createIcon("IconLoader2", "el-icon-loading");
+export const IconMedal = createIcon("IconMedal", "el-icon-medal");
 export const IconPlus = createIcon("IconPlus", "el-icon-plus");
 export const IconRefresh = createIcon("IconRefresh", "el-icon-refresh");
 export const IconSettings = createIcon("IconSettings", "el-icon-setting");
@@ -62,6 +63,7 @@ export const analystBenchIcons = {
   IconInfoCircle,
   IconLayoutDashboard,
   IconLoader2,
+  IconMedal,
   IconPlus,
   IconRefresh,
   IconSettings,

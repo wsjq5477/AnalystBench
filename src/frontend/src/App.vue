@@ -47,25 +47,79 @@ export default appOptions;
             <option value="">全部测试集</option>
             <option v-for="ts in dashboardStats?.test_sets ?? []" :key="ts.key" :value="ts.key">{{ ts.name }}</option>
           </select>
+          <span class="comparison-filter-label">对比维度</span>
+          <div class="comparison-filter" role="group" aria-label="图表对比维度">
+            <button type="button" :class="{ active: dashboardComparisonDimension === 'harness' }" :aria-pressed="dashboardComparisonDimension === 'harness'" @click="dashboardComparisonDimension = 'harness'">按 Harness</button>
+            <button type="button" :class="{ active: dashboardComparisonDimension === 'model' }" :aria-pressed="dashboardComparisonDimension === 'model'" @click="dashboardComparisonDimension = 'model'">按 Model</button>
+          </div>
+          <label v-if="dashboardComparisonDimension === 'harness'" class="comparison-value-selector">
+            <span>Model</span>
+            <select v-model="dashboardModelFilter" aria-label="选择要对比的 Model">
+              <option v-for="model in dashboardModelOptions" :key="model" :value="model">{{ model }}</option>
+            </select>
+          </label>
+          <label v-else class="comparison-value-selector">
+            <span>Harness</span>
+            <select v-model="dashboardHarnessFilter" aria-label="选择要对比的 Harness">
+              <option v-for="harness in dashboardHarnessOptions" :key="harness" :value="harness">{{ harness }}</option>
+            </select>
+          </label>
           <button class="ghost-button" @click="loadDashboardData()"><IconRefresh :size="16" />刷新</button>
         </div>
         <section class="surface score-panel">
-          <div class="panel-title">综合得分 <span>（越高越好）</span><IconInfoCircle :size="15" /></div>
+          <div class="panel-title">Overall Score <span>({{ dashboardComparisonContext }} · Higher Is Better)</span><IconInfoCircle :size="15" /></div>
           <div class="score-list">
             <article v-for="card in dashboardScoreCards" :key="card.label" class="score-item" :style="{ '--row-color': card.color }">
-              <span>{{ card.label }}</span><strong>{{ card.score.toFixed(1) }}</strong><i><b :style="{ width: `${card.score}%` }" /></i>
+              <span>{{ card.label }}</span>
+              <strong>{{ card.score.toFixed(1) }}</strong>
+              <small>AVG DURATION {{ formatDuration(card.duration_ms) }}</small>
+              <i><b :style="{ width: `${card.score}%` }" /></i>
             </article>
           </div>
         </section>
 
         <div class="chart-grid">
-          <section class="surface chart-panel"><div class="panel-heading"><h2>按问题种类得分对比</h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />真实运行数据</span></div><ChartCanvas kind="bar" :theme="theme" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
-          <section class="surface chart-panel"><div class="panel-heading"><h2>综合得分按日期对比</h2></div><ChartCanvas kind="bar" :theme="theme" :labels="dailyScoreLabels" :series="dailyScoreSeries" :height="276" /></section>
+          <section class="surface chart-panel"><div class="panel-heading"><h2>Score by Issue Type <span class="chart-dimension">({{ dashboardComparisonContext }} · Hover for Duration)</span></h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />Live Run Data</span></div><ChartCanvas kind="bar" :theme="theme" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
+          <section class="surface chart-panel"><div class="panel-heading"><h2>Score Over Time <span class="chart-dimension">({{ dashboardComparisonContext }} · Hover for Duration)</span></h2></div><ChartCanvas kind="trend" :theme="theme" :labels="dailyScoreLabels" :series="dailyScoreSeries" :height="276" /></section>
         </div>
 
         <section class="surface matrix-panel">
-          <div class="panel-heading"><h2>按问题种类对比 <span>（各分类平均得分）</span></h2><button class="text-button" @click="navigate('results')">查看全部 <IconChevronRight :size="15" /></button></div>
-          <div class="matrix-scroll"><table class="score-matrix"><thead><tr><th>方案</th><th v-for="cat in activeCategories" :key="cat.key">{{ cat.name }}<small v-if="cat.case_count > 1">（{{ cat.case_count }} case）</small></th><th>总平均</th></tr></thead><tbody><tr v-for="row in categoryComparisonRows" :key="row.name" :style="{ '--row-color': row.color }"><th class="row-color-dot"><i></i><span v-html="row.name.replace(/\n/g, '<br>')"></span></th><td v-for="(score, index) in row.categoryScores" :key="`${row.name}-${index}`" class="row-color-text">{{ score.toFixed(1) }}</td><td class="average row-color-text">{{ row.average.toFixed(1) }}</td></tr></tbody></table></div>
+          <div class="panel-heading"><h2>Score by Issue Type <span>(Average by Category)</span></h2><button class="text-button" @click="navigate('results')">查看全部 <IconChevronRight :size="15" /></button></div>
+          <div class="matrix-scroll">
+            <table class="score-matrix">
+              <colgroup>
+                <col class="rank-column" />
+                <col class="harness-column" />
+                <col class="model-column" />
+                <col class="score-column" />
+                <col class="runtime-column" />
+                <col v-for="cat in activeCategories" :key="`column-${cat.key}`" class="category-column" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="rank-cell">#</th>
+                  <th class="harness-cell">HARNESS</th>
+                  <th class="model-cell">MODEL</th>
+                  <th class="score-cell">SCORE</th>
+                  <th class="runtime-cell">DURATION</th>
+                  <th v-for="cat in activeCategories" :key="cat.key" class="category-cell">{{ cat.name }}<small v-if="cat.case_count > 1">（{{ cat.case_count }} case）</small></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in categoryComparisonRows" :key="row.name">
+                  <td class="rank-cell" :aria-label="`第 ${row.rank} 名`">
+                    <IconMedal v-if="row.rank <= 3" :class="`rank-medal rank-${row.rank}`" :size="17" />
+                    <span v-else>{{ row.rank }}</span>
+                  </td>
+                  <th class="harness-cell" scope="row">{{ row.harness }}</th>
+                  <td class="model-cell">{{ row.model }}</td>
+                  <td class="score-cell">{{ row.score.toFixed(1) }}</td>
+                  <td class="runtime-cell">{{ formatDuration(row.duration_ms) }}</td>
+                  <td v-for="(score, index) in row.categoryScores" :key="`${row.name}-${index}`" class="category-cell">{{ score.toFixed(1) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
         </template>
       </section>
@@ -239,7 +293,7 @@ export default appOptions;
               <div class="panel-heading"><h2>评测结果详情</h2><span>{{ String(selectedResultData.case_key ?? '') }} · {{ String(selectedResultData.id ?? '') }}</span></div>
               <p class="engine-note">{{ parseSummary(selectedResultData).engine_note }}</p>
               <section class="surface result-score-panel">
-                <div class="panel-title">综合得分 <span>（越高越好）</span></div>
+                <div class="panel-title">Overall Score <span>(Higher Is Better)</span></div>
                 <div class="result-score-list">
                   <div v-for="(report, idx) in resultRankedReports" :key="'sc-' + report.candidate_name" class="result-score-row" :style="{ '--row-color': resultColors[idx] }">
                     <span class="result-score-name"><i></i>{{ report.candidate_name }}</span>
@@ -373,7 +427,7 @@ export default appOptions;
                 <div class="panel-heading"><h2>评测结果详情</h2><span>{{ String(selectedResultData.case_key ?? '') }} · {{ String(selectedResultData.id ?? '') }}</span></div>
                 <p class="engine-note">{{ parseSummary(selectedResultData).engine_note }}</p>
                 <section class="surface result-score-panel">
-                  <div class="panel-title">综合得分 <span>（越高越好）</span></div>
+                  <div class="panel-title">Overall Score <span>(Higher Is Better)</span></div>
                   <div class="result-score-list">
                     <div v-for="(report, idx) in resultRankedReports" :key="'sc-' + report.candidate_name" class="result-score-row" :style="{ '--row-color': resultColors[idx] }">
                       <span class="result-score-name"><i></i>{{ report.candidate_name }}</span>

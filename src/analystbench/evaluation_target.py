@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from analystbench.config import Settings
@@ -26,7 +26,6 @@ from analystbench.db.models import (
 from analystbench.errors import AnalystBenchError
 from analystbench.executable_resolver import resolve_executable
 from analystbench.services import transaction
-
 
 KEY_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9)])?$")
 RESERVED_KEYS = {"result", "run", "inputs", "artifacts", "_artifacts", "logs"}
@@ -688,11 +687,18 @@ class EvaluationTargetService:
         if not probe.get("available"):
             raise AnalystBenchError("evaluation_target_unavailable", "请先成功检测运行组合。")
         with transaction(self.session_factory) as session:
-            stored = session.get(EvaluationTarget, target_id)
+            target_statement = select(EvaluationTarget).where(
+                EvaluationTarget.id == target_id
+            )
+            if session.get_bind().dialect.name == "sqlite":
+                # Target materialization is a short read-modify-write operation.
+                # Serialize it on SQLite so concurrent submissions cannot both
+                # insert the same Method key/version.
+                session.execute(text("BEGIN IMMEDIATE"))
+            else:
+                target_statement = target_statement.with_for_update()
+            stored = session.scalar(target_statement)
             assert stored is not None
-            if stored.status == "frozen":
-                session.expunge(stored)
-                return stored
             command_template = harness.command_template
             if harness.model_policy == "required":
                 assert stored.model_argument
@@ -709,21 +715,38 @@ class EvaluationTargetService:
                 "max_output_bytes": harness.max_output_bytes,
                 "concurrency_limit": stored.concurrency_limit or 32,
             }
-            method = EvaluationMethod(
-                id=str(uuid4()),
-                method_key=stored.target_key,
-                name=self.display_name(harness, model),
-                version_number=stored.version_number,
-                tool_dir=harness.tool_dir,
-                command_template=command_template,
-                timeout_seconds=harness.timeout_seconds,
-                max_output_bytes=harness.max_output_bytes,
-                concurrency_limit=stored.concurrency_limit or 32,
-                status="frozen",
-                content_hash=content_hash(canonical_json(method_manifest).encode("utf-8")),
-                last_probe_json=stored.last_probe_json,
+            method_hash = content_hash(
+                canonical_json(method_manifest).encode("utf-8")
             )
-            session.add(method)
+            method = (
+                session.get(EvaluationMethod, stored.materialized_method_id)
+                if stored.materialized_method_id
+                else None
+            )
+            if method is None:
+                method = session.scalar(
+                    select(EvaluationMethod).where(
+                        EvaluationMethod.method_key == stored.target_key,
+                        EvaluationMethod.version_number == stored.version_number,
+                    )
+                )
+            if method is None:
+                method = EvaluationMethod(
+                    id=str(uuid4()),
+                    method_key=stored.target_key,
+                    version_number=stored.version_number,
+                )
+                session.add(method)
+            if method.content_hash != method_hash:
+                method.name = self.display_name(harness, model)
+                method.tool_dir = harness.tool_dir
+                method.command_template = command_template
+                method.timeout_seconds = harness.timeout_seconds
+                method.max_output_bytes = harness.max_output_bytes
+                method.concurrency_limit = stored.concurrency_limit or 32
+                method.content_hash = method_hash
+            method.status = "frozen"
+            method.last_probe_json = stored.last_probe_json
             session.flush()
             stored.materialized_method_id = method.id
             stored.status = "frozen"

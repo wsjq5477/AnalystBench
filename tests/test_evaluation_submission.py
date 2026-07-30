@@ -2,15 +2,21 @@ import json
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from uuid import uuid4
 
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from alembic import command
 from analystbench.api.app import create_app
 from analystbench.config import Settings
+from analystbench.db.models import EvaluationMethod
+from analystbench.db.session import create_database_engine, create_session_factory
 from analystbench.evaluation_submission import EvaluationSubmissionService
+from analystbench.services import transaction
 from analystbench.worker import LocalWorker
 
 
@@ -528,6 +534,137 @@ def test_revising_harness_infers_model_policy_from_changed_command(
     assert revised.json()["version"] == 2
     assert revised.json()["status"] == "draft"
     assert revised.json()["model_policy"] == "required"
+
+
+def test_target_freeze_reuses_and_refreshes_existing_materialized_method(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    stale_hash = f"sha256:{'a' * 64}"
+    changed_hash = f"sha256:{'b' * 64}"
+    existing_method_id = str(uuid4())
+    try:
+        with TestClient(create_app(settings)) as client:
+            harness = client.post(
+                "/api/v1/evaluation-harnesses",
+                json={
+                    "key": "script-only",
+                    "command_template": f'{sys.executable} -c "print(1)"',
+                },
+            ).json()
+            client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:probe")
+            frozen_harness = client.post(
+                f"/api/v1/evaluation-harnesses/{harness['id']}:freeze"
+            ).json()
+            target = client.post(
+                "/api/v1/evaluation-targets",
+                json={"harness_id": frozen_harness["id"]},
+            ).json()
+            client.post(f"/api/v1/evaluation-targets/{target['id']}:probe")
+
+            with transaction(session_factory) as session:
+                session.add(
+                    EvaluationMethod(
+                        id=existing_method_id,
+                        method_key=target["key"],
+                        name="stale",
+                        version_number=target["version"],
+                        tool_dir=None,
+                        command_template="stale",
+                        timeout_seconds=1,
+                        max_output_bytes=1024,
+                        concurrency_limit=1,
+                        status="draft",
+                        content_hash=stale_hash,
+                        last_probe_json="{}",
+                    )
+                )
+
+            first = client.post(
+                f"/api/v1/evaluation-targets/{target['id']}:freeze"
+            )
+            assert first.status_code == 200
+            assert first.json()["materialized_method_id"] == existing_method_id
+
+            with transaction(session_factory) as session:
+                method = session.get(EvaluationMethod, existing_method_id)
+                assert method is not None
+                assert method.command_template == frozen_harness["command_template"]
+                assert method.content_hash != stale_hash
+                method.command_template = "changed-after-freeze"
+                method.content_hash = changed_hash
+
+            second = client.post(
+                f"/api/v1/evaluation-targets/{target['id']}:freeze"
+            )
+            assert second.status_code == 200
+            assert second.json()["materialized_method_id"] == existing_method_id
+
+        with transaction(session_factory) as session:
+            method = session.get(EvaluationMethod, existing_method_id)
+            assert method is not None
+            assert method.command_template == frozen_harness["command_template"]
+            assert method.content_hash not in {stale_hash, changed_hash}
+            count = session.scalar(
+                select(func.count(EvaluationMethod.id)).where(
+                    EvaluationMethod.method_key == target["key"],
+                    EvaluationMethod.version_number == target["version"],
+                )
+            )
+            assert count == 1
+    finally:
+        engine.dispose()
+
+
+def test_concurrent_target_freeze_materializes_one_method(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        harness = client.post(
+            "/api/v1/evaluation-harnesses",
+            json={
+                "key": "script-only",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:probe")
+        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:freeze")
+        target = client.post(
+            "/api/v1/evaluation-targets",
+            json={"harness_id": harness["id"]},
+        ).json()
+        client.post(f"/api/v1/evaluation-targets/{target['id']}:probe")
+
+    barrier = threading.Barrier(2)
+
+    def freeze() -> tuple[int, str | None]:
+        with TestClient(create_app(settings)) as client:
+            barrier.wait()
+            response = client.post(
+                f"/api/v1/evaluation-targets/{target['id']}:freeze"
+            )
+            return response.status_code, response.json().get("materialized_method_id")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: freeze(), range(2)))
+
+    assert [status for status, _ in results] == [200, 200]
+    assert results[0][1] == results[1][1]
+
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        with transaction(session_factory) as session:
+            count = session.scalar(
+                select(func.count(EvaluationMethod.id)).where(
+                    EvaluationMethod.method_key == target["key"],
+                    EvaluationMethod.version_number == target["version"],
+                )
+            )
+        assert count == 1
+    finally:
+        engine.dispose()
 
 
 def test_target_uses_harness_model_argument_and_exposes_comparison(

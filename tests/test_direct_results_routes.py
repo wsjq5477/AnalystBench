@@ -36,6 +36,7 @@ def write_scored_result(
     directory: Path,
     result_id: str,
     reports: list[tuple[str, float]],
+    durations: dict[str, int] | None = None,
 ) -> None:
     directory.mkdir(parents=True)
     (directory / "result.json").write_text(
@@ -52,6 +53,15 @@ def write_scored_result(
                     }
                     for candidate_name, score in reports
                 ],
+                "generation": {
+                    "targets": [
+                        {
+                            "target_key": candidate_name,
+                            "duration_ms": duration_ms,
+                        }
+                        for candidate_name, duration_ms in (durations or {}).items()
+                    ]
+                },
             }
         ),
         encoding="utf-8",
@@ -97,25 +107,56 @@ def test_stats_exposes_daily_candidate_scores_by_test_set(tmp_path: Path) -> Non
         {
             "date": "2026-07-27",
             "candidates": [
-                {"name": "agent-a", "avg_score": 80.0},
-                {"name": "agent-b", "avg_score": 50.0},
+                {"name": "agent-a", "avg_score": 80.0, "avg_duration_ms": None},
+                {"name": "agent-b", "avg_score": 50.0, "avg_duration_ms": None},
             ],
         },
         {
             "date": "2026-07-28",
             "candidates": [
-                {"name": "agent-a", "avg_score": 90.0},
-                {"name": "agent-b", "avg_score": 70.0},
+                {"name": "agent-a", "avg_score": 90.0, "avg_duration_ms": None},
+                {"name": "agent-b", "avg_score": 70.0, "avg_duration_ms": None},
             ],
         },
     ]
     assert stats["daily_scores"][-1] == {
         "date": "2026-07-28",
         "candidates": [
-            {"name": "agent-a", "avg_score": 60.0},
-            {"name": "agent-b", "avg_score": 70.0},
+            {"name": "agent-a", "avg_score": 60.0, "avg_duration_ms": None},
+            {"name": "agent-b", "avg_score": 70.0, "avg_duration_ms": None},
         ],
     }
+
+
+def test_stats_exposes_average_generation_duration(tmp_path: Path) -> None:
+    settings = Settings(
+        results_tmp_path=tmp_path / "results" / "tmp",
+        results_formal_path=tmp_path / "results",
+    )
+    base = settings.results_formal_path
+    write_scored_result(
+        base / "kdiag" / "deadlock" / "case_a" / "runs" / "202607271000",
+        "kdiag/deadlock/case_a/runs/202607271000",
+        [("agent-a", 80), ("script", 50)],
+        {"agent-a": 1200, "script": 200},
+    )
+    write_scored_result(
+        base / "kdiag" / "panic" / "case_b" / "runs" / "202607281000",
+        "kdiag/panic/case_b/runs/202607281000",
+        [("agent-a", 90), ("script", 60)],
+        {"agent-a": 1800, "script": 400},
+    )
+
+    stats = get_direct_result_stats(request_for(settings))
+
+    assert stats["candidates"] == [
+        {"name": "agent-a", "avg_score": 85.0, "avg_duration_ms": 1500},
+        {"name": "script", "avg_score": 55.0, "avg_duration_ms": 300},
+    ]
+    assert stats["daily_scores"][0]["candidates"][0]["avg_duration_ms"] == 1200
+    assert stats["test_sets"][0]["categories"][0]["candidates"][0][
+        "avg_duration_ms"
+    ] == 1200
 
 
 def test_promote_tmp_result_uses_runs_directory(tmp_path: Path) -> None:

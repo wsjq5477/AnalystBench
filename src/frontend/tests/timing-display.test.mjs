@@ -7,10 +7,11 @@ import {
 } from "../src/timing-display.js";
 
 test("formats milliseconds as seconds, minutes, and hours", () => {
-  assert.equal(formatDurationMs(2400), "2.4 秒");
-  assert.equal(formatDurationMs(38000), "38 秒");
-  assert.equal(formatDurationMs(77000), "1 分 17 秒");
-  assert.equal(formatDurationMs(3_660_000), "1 时 01 分");
+  assert.equal(formatDurationMs(2400), "2.4 sec");
+  assert.equal(formatDurationMs(38000), "38 sec");
+  assert.equal(formatDurationMs(77_000), "1 min 17 sec");
+  assert.equal(formatDurationMs(142_000), "2 min 22 sec");
+  assert.equal(formatDurationMs(3_660_000), "1 hr 01 min");
 });
 
 test("shows an empty marker for missing or invalid durations", () => {

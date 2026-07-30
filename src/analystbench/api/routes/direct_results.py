@@ -131,6 +131,31 @@ def _result_date(data: dict[str, Any], rel_path: Path) -> str:
     return ""
 
 
+def _generation_durations(data: dict[str, Any]) -> dict[str, float]:
+    durations: dict[str, float] = {}
+    generation = data.get("generation") or {}
+    if not isinstance(generation, dict):
+        return durations
+    for field, key_field in (("methods", "key"), ("targets", "target_key")):
+        items = generation.get(field) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            candidate_name = item.get(key_field)
+            duration = item.get("duration_ms")
+            if (
+                isinstance(candidate_name, str)
+                and candidate_name
+                and isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and duration >= 0
+            ):
+                durations[candidate_name] = float(duration)
+    return durations
+
+
 @router.get("/direct-results/stats")
 def get_direct_result_stats(request: Request) -> dict[str, Any]:
     """Aggregate average scores per test_set, category, and case_dir from formal results."""
@@ -143,9 +168,15 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     scores: dict[
         str, dict[str, dict[str, dict[str, list[float]]]]
     ] = {}  # ts > cat > case_dir > candidate -> [scores]
+    durations: dict[
+        str, dict[str, dict[str, dict[str, list[float]]]]
+    ] = {}  # ts > cat > case_dir > candidate -> [duration_ms]
     daily_case_scores: dict[
         str, dict[str, dict[str, dict[str, list[float]]]]
     ] = {}  # date > ts > cat/case_dir > candidate -> [scores]
+    daily_case_durations: dict[
+        str, dict[str, dict[str, dict[str, list[float]]]]
+    ] = {}  # date > ts > cat/case_dir > candidate -> [duration_ms]
 
     if formal_dir.is_dir():
         for json_file in formal_dir.rglob("result.json"):
@@ -186,9 +217,11 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             reports = (
                 summary.get("reports") if isinstance(summary, dict) else data.get("reports", [])
             )
+            generation_durations = _generation_durations(data)
             for report in reports:
                 candidate_name = report.get("candidate_name", "")
                 score = float(report.get("score", 0))
+                duration = report.get("duration_ms", generation_durations.get(candidate_name))
                 if ts_key not in scores:
                     scores[ts_key] = {}
                 if cat_key not in scores[ts_key]:
@@ -198,11 +231,29 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 if candidate_name not in scores[ts_key][cat_key][case_dir]:
                     scores[ts_key][cat_key][case_dir][candidate_name] = []
                 scores[ts_key][cat_key][case_dir][candidate_name].append(score)
+                if (
+                    isinstance(duration, (int, float))
+                    and not isinstance(duration, bool)
+                    and duration >= 0
+                ):
+                    durations.setdefault(ts_key, {}).setdefault(cat_key, {}).setdefault(
+                        case_dir, {}
+                    ).setdefault(candidate_name, []).append(float(duration))
                 if result_date:
                     case_key = f"{cat_key}/{case_dir}"
                     daily_case_scores.setdefault(result_date, {}).setdefault(ts_key, {}).setdefault(
                         case_key, {}
                     ).setdefault(candidate_name, []).append(score)
+                    if (
+                        isinstance(duration, (int, float))
+                        and not isinstance(duration, bool)
+                        and duration >= 0
+                    ):
+                        daily_case_durations.setdefault(result_date, {}).setdefault(
+                            ts_key, {}
+                        ).setdefault(case_key, {}).setdefault(candidate_name, []).append(
+                            float(duration)
+                        )
 
     # Try to also read names from case.json files
     if formal_dir.is_dir():
@@ -238,16 +289,32 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         for result_date in sorted(daily_case_scores):
             candidate_case_scores: dict[str, list[float]] = {}
+            candidate_case_durations: dict[str, list[float]] = {}
             for ts_key, cases in daily_case_scores[result_date].items():
                 if test_set is not None and ts_key != test_set:
                     continue
-                for case_scores in cases.values():
+                for case_key, case_scores in cases.items():
                     for candidate_name, values in case_scores.items():
                         candidate_case_scores.setdefault(candidate_name, []).append(_avg(values))
+                        duration_values = (
+                            daily_case_durations.get(result_date, {})
+                            .get(ts_key, {})
+                            .get(case_key, {})
+                            .get(candidate_name, [])
+                        )
+                        if duration_values:
+                            candidate_case_durations.setdefault(candidate_name, []).append(
+                                _avg(duration_values)
+                            )
             candidates = [
                 {
                     "name": candidate_name,
                     "avg_score": round(_avg(candidate_case_scores[candidate_name]), 2),
+                    "avg_duration_ms": (
+                        round(_avg(candidate_case_durations[candidate_name]))
+                        if candidate_name in candidate_case_durations
+                        else None
+                    ),
                 }
                 for candidate_name in all_candidate_names
                 if candidate_name in candidate_case_scores
@@ -259,6 +326,7 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     # Collect all candidate names across all results
     all_candidate_names: list[str] = []
     candidate_scores_global: dict[str, list[float]] = {}
+    candidate_durations_global: dict[str, list[float]] = {}
     for ts_key in sorted(scores.keys()):
         for cat_key in sorted(scores[ts_key].keys()):
             for case_dir in sorted(scores[ts_key][cat_key].keys()):
@@ -269,6 +337,16 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                     candidate_scores_global[c_name].extend(
                         scores[ts_key][cat_key][case_dir][c_name]
                     )
+                    duration_values = (
+                        durations.get(ts_key, {})
+                        .get(cat_key, {})
+                        .get(case_dir, {})
+                        .get(c_name, [])
+                    )
+                    if duration_values:
+                        candidate_durations_global.setdefault(c_name, []).extend(
+                            duration_values
+                        )
 
     # Sort candidates by global avg score descending
     all_candidate_names.sort(key=lambda n: _avg(candidate_scores_global[n]), reverse=True)
@@ -278,11 +356,13 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
         ts_info = ts_data.get(ts_key, {"key": ts_key, "name": ts_key})
         categories: list[dict[str, Any]] = []
         ts_candidate_scores: dict[str, list[float]] = {}
+        ts_candidate_durations: dict[str, list[float]] = {}
         for cat_key in sorted(scores[ts_key].keys()):
             cat_info = cat_data.get(f"{ts_key}/{cat_key}", {"key": cat_key, "name": cat_key})
             case_dirs = scores[ts_key][cat_key]
             # Category-level: average across all case_dirs for each candidate
             cat_candidate_scores: dict[str, list[float]] = {}
+            cat_candidate_durations: dict[str, list[float]] = {}
             case_count = len(case_dirs)
             for case_dir in case_dirs:
                 for c_name in case_dirs[case_dir]:
@@ -293,9 +373,27 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                     if c_name not in ts_candidate_scores:
                         ts_candidate_scores[c_name] = []
                     ts_candidate_scores[c_name].append(score_avg)
+                    duration_values = (
+                        durations.get(ts_key, {})
+                        .get(cat_key, {})
+                        .get(case_dir, {})
+                        .get(c_name, [])
+                    )
+                    if duration_values:
+                        duration_avg = _avg(duration_values)
+                        cat_candidate_durations.setdefault(c_name, []).append(duration_avg)
+                        ts_candidate_durations.setdefault(c_name, []).append(duration_avg)
 
             cat_candidates = [
-                {"name": c_name, "avg_score": round(_avg(cat_candidate_scores.get(c_name, [])), 2)}
+                {
+                    "name": c_name,
+                    "avg_score": round(_avg(cat_candidate_scores.get(c_name, [])), 2),
+                    "avg_duration_ms": (
+                        round(_avg(cat_candidate_durations[c_name]))
+                        if c_name in cat_candidate_durations
+                        else None
+                    ),
+                }
                 for c_name in all_candidate_names
                 if c_name in cat_candidate_scores
             ]
@@ -309,7 +407,15 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             )
 
         ts_candidates = [
-            {"name": c_name, "avg_score": round(_avg(ts_candidate_scores.get(c_name, [])), 2)}
+            {
+                "name": c_name,
+                "avg_score": round(_avg(ts_candidate_scores.get(c_name, [])), 2),
+                "avg_duration_ms": (
+                    round(_avg(ts_candidate_durations[c_name]))
+                    if c_name in ts_candidate_durations
+                    else None
+                ),
+            }
             for c_name in all_candidate_names
             if c_name in ts_candidate_scores
         ]
@@ -324,7 +430,15 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
         )
 
     global_candidates = [
-        {"name": c_name, "avg_score": round(_avg(candidate_scores_global[c_name]), 2)}
+        {
+            "name": c_name,
+            "avg_score": round(_avg(candidate_scores_global[c_name]), 2),
+            "avg_duration_ms": (
+                round(_avg(candidate_durations_global[c_name]))
+                if c_name in candidate_durations_global
+                else None
+            ),
+        }
         for c_name in all_candidate_names
     ]
 

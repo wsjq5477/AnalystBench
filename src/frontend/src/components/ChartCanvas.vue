@@ -9,6 +9,7 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 import * as echarts from "echarts/core";
 import { CHART_THEMES, THEME_PALETTES } from "../theme";
+import { formatDurationMs } from "../timing-display";
 
 use([
   BarChart,
@@ -20,6 +21,20 @@ use([
 ]);
 
 const chartFont = '"Inter Variable", Inter, "Segoe UI", sans-serif';
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character],
+  );
+}
 
 export default {
   name: "ChartCanvas",
@@ -67,9 +82,9 @@ export default {
           ? { top: 2, right: 0, bottom: 2, left: 0 }
           : {
               top: isTrend ? 48 : 42,
-              right: 14,
+              right: isTrend ? 40 : 14,
               bottom: 24,
-              left: 38,
+              left: isTrend ? 54 : 38,
               containLabel: true,
             },
         tooltip: isSpark
@@ -86,6 +101,24 @@ export default {
                 fontWeight: 500,
               },
               padding: [10, 12],
+              formatter: (parameters) => {
+                const items = Array.isArray(parameters) ? parameters : [parameters];
+                if (!items.length) return "";
+                const title = items[0].axisValueLabel || items[0].name || "";
+                const rows = items.map((item) => {
+                  const point =
+                    item.data && typeof item.data === "object"
+                      ? item.data
+                      : { value: item.value, duration_ms: null };
+                  const hasScore = point.value !== null && point.value !== undefined;
+                  const numericScore = Number(point.value);
+                  const score = hasScore && Number.isFinite(numericScore)
+                    ? numericScore.toFixed(1)
+                    : "—";
+                  return `${item.marker || ""}${escapeHtml(item.seriesName)}：${score}<br><span style="opacity:.72">DURATION ${escapeHtml(formatDurationMs(point.duration_ms))}</span>`;
+                });
+                return `<strong>${escapeHtml(title)}</strong><br>${rows.join("<br>")}`;
+              },
             },
         legend: isSpark
           ? { show: false }
@@ -105,7 +138,7 @@ export default {
         xAxis: {
           type: "category",
           data: this.labels,
-          boundaryGap: this.kind === "bar",
+          boundaryGap: !isSpark,
           show: !isSpark,
           axisLine: { lineStyle: { color: chartTheme.line } },
           axisTick: { show: false },
@@ -141,7 +174,10 @@ export default {
           return {
             name: item.name,
             type: this.kind === "bar" ? "bar" : "line",
-            data: item.values,
+            data: item.values.map((value, valueIndex) => ({
+              value,
+              duration_ms: item.durations?.[valueIndex] ?? null,
+            })),
             smooth: this.kind !== "bar",
             showSymbol: !isSpark && this.kind === "trend",
             symbolSize: 6,
