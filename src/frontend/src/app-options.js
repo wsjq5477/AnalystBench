@@ -137,7 +137,7 @@ export default {
       scheduleRunsTitle: "",
       scheduleRuns: [],
 
-      resultSource: "tmp",
+      resultSource: "formal",
       allDirectResults: [],
       directResultList: [],
       selectedResultId: "",
@@ -158,8 +158,8 @@ export default {
       dashboardLoaded: false,
       selectedTestSet: "",
       dashboardComparisonDimension: "harness",
-      dashboardModelFilter: "",
-      dashboardHarnessFilter: "",
+      dashboardModelFilter: "Average",
+      dashboardHarnessFilter: "Average",
     };
   },
   computed: {
@@ -385,14 +385,16 @@ export default {
       )].sort((left, right) => left.localeCompare(right));
     },
     activeDashboardModelFilter() {
-      return this.dashboardModelOptions.includes(this.dashboardModelFilter)
+      return this.dashboardModelFilter === "Average" ||
+        this.dashboardModelOptions.includes(this.dashboardModelFilter)
         ? this.dashboardModelFilter
-        : this.dashboardModelOptions[0] || "";
+        : "Average";
     },
     activeDashboardHarnessFilter() {
-      return this.dashboardHarnessOptions.includes(this.dashboardHarnessFilter)
+      return this.dashboardHarnessFilter === "Average" ||
+        this.dashboardHarnessOptions.includes(this.dashboardHarnessFilter)
         ? this.dashboardHarnessFilter
-        : this.dashboardHarnessOptions[0] || "";
+        : "Average";
     },
     dashboardComparisonContext() {
       const filter =
@@ -406,11 +408,16 @@ export default {
       this.activeCandidates.forEach((candidate) => {
         const target = this.splitEvaluationTargetName(candidate.name);
         const isBaseline = target.model === "-";
+        const selectedFilter =
+          this.dashboardComparisonDimension === "harness"
+            ? this.activeDashboardModelFilter
+            : this.activeDashboardHarnessFilter;
         const matchesFilter =
           isBaseline ||
+          selectedFilter === "Average" ||
           (this.dashboardComparisonDimension === "harness"
-            ? target.model === this.activeDashboardModelFilter
-            : target.harness === this.activeDashboardHarnessFilter);
+            ? target.model === selectedFilter
+            : target.harness === selectedFilter);
         if (!matchesFilter) return;
         const label =
           this.dashboardComparisonDimension === "model" && !isBaseline
@@ -638,11 +645,17 @@ export default {
       }
     },
     syncDashboardComparisonFilters() {
-      if (!this.dashboardModelOptions.includes(this.dashboardModelFilter)) {
-        this.dashboardModelFilter = this.dashboardModelOptions[0] || "";
+      if (
+        this.dashboardModelFilter !== "Average" &&
+        !this.dashboardModelOptions.includes(this.dashboardModelFilter)
+      ) {
+        this.dashboardModelFilter = "Average";
       }
-      if (!this.dashboardHarnessOptions.includes(this.dashboardHarnessFilter)) {
-        this.dashboardHarnessFilter = this.dashboardHarnessOptions[0] || "";
+      if (
+        this.dashboardHarnessFilter !== "Average" &&
+        !this.dashboardHarnessOptions.includes(this.dashboardHarnessFilter)
+      ) {
+        this.dashboardHarnessFilter = "Average";
       }
     },
     async loadLocalCaseTree() {
@@ -1911,6 +1924,30 @@ export default {
         this.showToast("评测结果已删除");
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "删除评测结果失败");
+      } finally {
+        this.loading = false;
+      }
+    },
+    async toggleDirectResultVisibility(item) {
+      const includedInStatistics = item.included_in_statistics === false;
+      this.loading = true;
+      try {
+        await analystBenchApi.setDirectResultVisibility(
+          item.id,
+          includedInStatistics,
+        );
+        await this.refreshDirectResults();
+        this.dashboardLoaded = false;
+        await this.loadDashboardData();
+        this.showToast(
+          includedInStatistics
+            ? "该结果已显示并计入统计"
+            : "该结果已隐藏且不计入统计",
+        );
+      } catch (error) {
+        this.showToast(
+          error instanceof Error ? error.message : "更新结果显示状态失败",
+        );
       } finally {
         this.loading = false;
       }

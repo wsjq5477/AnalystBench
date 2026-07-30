@@ -1,12 +1,20 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from analystbench.api.routes.direct_results import (
     PromotePayload,
+    ResultVisibilityPayload,
     get_direct_result_stats,
+    list_direct_results,
     move_direct_result,
     promote_direct_result,
+    router,
+    set_direct_result_visibility,
 )
 from analystbench.config import Settings
 
@@ -157,6 +165,50 @@ def test_stats_exposes_average_generation_duration(tmp_path: Path) -> None:
     assert stats["test_sets"][0]["categories"][0]["candidates"][0][
         "avg_duration_ms"
     ] == 1200
+
+
+def test_hidden_formal_result_is_listed_but_excluded_from_stats(tmp_path: Path) -> None:
+    settings = Settings(
+        results_tmp_path=tmp_path / "results" / "tmp",
+        results_formal_path=tmp_path / "results",
+    )
+    base = settings.results_formal_path
+    visible_id = "kdiag/deadlock/case_a/runs/202607271000"
+    hidden_id = "kdiag/deadlock/case_a/runs/202607281000"
+    write_scored_result(base / visible_id, visible_id, [("agent-a", 80)])
+    write_scored_result(base / hidden_id, hidden_id, [("agent-a", 20)])
+
+    app = FastAPI()
+    app.state.settings = settings
+    app.include_router(router, prefix="/api/v1")
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/direct-results/{quote(hidden_id, safe='')}/visibility",
+            json={"included_in_statistics": False},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": hidden_id,
+        "included_in_statistics": False,
+    }
+    listed = list_direct_results(request_for(settings))
+    assert {item["id"]: item["included_in_statistics"] for item in listed} == {
+        visible_id: True,
+        hidden_id: False,
+    }
+    assert get_direct_result_stats(request_for(settings))["candidates"] == [
+        {"name": "agent-a", "avg_score": 80.0, "avg_duration_ms": None}
+    ]
+
+    set_direct_result_visibility(
+        hidden_id,
+        ResultVisibilityPayload(included_in_statistics=True),
+        request_for(settings),
+    )
+    assert get_direct_result_stats(request_for(settings))["candidates"] == [
+        {"name": "agent-a", "avg_score": 50.0, "avg_duration_ms": None}
+    ]
 
 
 def test_promote_tmp_result_uses_runs_directory(tmp_path: Path) -> None:

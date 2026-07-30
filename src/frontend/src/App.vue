@@ -55,12 +55,14 @@ export default appOptions;
           <label v-if="dashboardComparisonDimension === 'harness'" class="comparison-value-selector">
             <span>Model</span>
             <select v-model="dashboardModelFilter" aria-label="选择要对比的 Model">
+              <option value="Average">Average</option>
               <option v-for="model in dashboardModelOptions" :key="model" :value="model">{{ model }}</option>
             </select>
           </label>
           <label v-else class="comparison-value-selector">
             <span>Harness</span>
             <select v-model="dashboardHarnessFilter" aria-label="选择要对比的 Harness">
+              <option value="Average">Average</option>
               <option v-for="harness in dashboardHarnessOptions" :key="harness" :value="harness">{{ harness }}</option>
             </select>
           </label>
@@ -408,11 +410,20 @@ export default appOptions;
                     <span class="result-tree-subheading">{{ catKey }}</span>
                     <div v-for="(items, cdKey) in caseTree" :key="cdKey">
                       <span class="result-tree-leaf-label">{{ cdKey }}</span>
-                      <div v-for="item in items" :key="item.id" class="result-tree-leaf-row">
+                      <div v-for="item in items" :key="item.id" :class="['result-tree-leaf-row', { 'result-hidden': item.included_in_statistics === false }]">
                         <div :class="['result-tree-leaf', { selected: selectedResultId === item.id }]" @click="loadDirectResult(item)">
                           <span class="result-tree-leaf-name">{{ item.timestamp }}</span>
-                          <span class="result-tree-leaf-meta"><span :class="item.status === 'completed' ? 'tag-match' : 'tag-missing'">{{ item.status }}</span></span>
+                          <span class="result-tree-leaf-meta">
+                            <span v-if="item.included_in_statistics === false" class="tag-partial">已隐藏</span>
+                            <span :class="item.status === 'completed' ? 'tag-match' : 'tag-missing'">{{ item.status }}</span>
+                          </span>
                         </div>
+                        <button
+                          :class="['tree-visibility', { 'is-hide-action': item.included_in_statistics !== false }]"
+                          :title="item.included_in_statistics === false ? '显示并计入统计' : '不显示且不计入统计'"
+                          :aria-label="item.included_in_statistics === false ? '显示并计入统计' : '不显示且不计入统计'"
+                          @click.stop="toggleDirectResultVisibility(item)"
+                        ><IconView :size="15" /></button>
                         <button class="tree-move" title="Move" @click.stop="openMoveDialog(item, 'move')"><IconChevronRight :size="14" /></button>
                         <button class="tree-delete" title="删除评测结果" @click.stop="deleteDirectResult(item)"><IconTrash :size="14" /></button>
                       </div>

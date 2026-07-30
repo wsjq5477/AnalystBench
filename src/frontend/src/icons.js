@@ -48,6 +48,7 @@ export const IconMoon = createIcon("IconMoon", "el-icon-moon");
 export const IconSun = createIcon("IconSun", "el-icon-sunny");
 export const IconTerminal2 = createIcon("IconTerminal2", "el-icon-monitor");
 export const IconTrash = createIcon("IconTrash", "el-icon-delete");
+export const IconView = createIcon("IconView", "el-icon-view");
 export const IconClipboardData = createIcon("IconClipboardData", "el-icon-tickets");
 export const IconFlask = createIcon("IconFlask", "el-icon-data-analysis");
 
@@ -72,6 +73,7 @@ export const analystBenchIcons = {
   IconSun,
   IconTerminal2,
   IconTrash,
+  IconView,
   IconClipboardData,
   IconFlask,
 };

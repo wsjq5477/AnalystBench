@@ -87,6 +87,13 @@ export const analystBenchApi = {
       data,
     });
   },
+  setDirectResultVisibility(resultId, includedInStatistics) {
+    return request({
+      url: `/direct-results/${encodeURIComponent(resultId)}/visibility`,
+      method: "patch",
+      data: { included_in_statistics: includedInStatistics },
+    });
+  },
   getBenchmarkRuns() {
     return request({ url: "/benchmark-runs", method: "get" });
   },

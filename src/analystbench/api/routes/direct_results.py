@@ -70,6 +70,7 @@ def _extract_result_meta(data: dict[str, Any], rel_path: Path, source: str) -> d
         "case_key": data.get("case_key", case_dir),
         "status": data.get("status", ""),
         "source": source,
+        "included_in_statistics": data.get("included_in_statistics", True) is not False,
         "test_set": test_set,
         "category": category,
         "case_dir": case_dir,
@@ -187,6 +188,8 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             except (json.JSONDecodeError, OSError):
                 continue
             if data.get("mode") != "direct_file":
+                continue
+            if data.get("included_in_statistics", True) is False:
                 continue
 
             rel_path = json_file.relative_to(formal_dir)
@@ -557,6 +560,12 @@ class PromotePayload(BaseModel):
     case_dir: str
 
 
+class ResultVisibilityPayload(BaseModel):
+    """Whether a formal result is displayed in benchmark statistics."""
+
+    included_in_statistics: bool
+
+
 @router.post("/direct-results/{result_id:path}/promote")
 def promote_direct_result(
     result_id: str, payload: PromotePayload, request: Request
@@ -679,6 +688,60 @@ def move_direct_result(result_id: str, payload: PromotePayload, request: Request
         "old_id": result_id,
         "new_id": new_result_id,
         "dest_path": str(dest_dir),
+    }
+
+
+@router.patch("/direct-results/{result_id:path}/visibility")
+def set_direct_result_visibility(
+    result_id: str,
+    payload: ResultVisibilityPayload,
+    request: Request,
+) -> dict[str, Any]:
+    """Show or hide a formal result in benchmark statistics."""
+    _, formal_dir = results_dirs(request)
+    result_json: Path | None = None
+    direct_candidate = formal_dir / result_id / "result.json"
+    try:
+        direct_candidate.resolve().relative_to(formal_dir.resolve())
+    except ValueError:
+        pass
+    else:
+        if direct_candidate.is_file():
+            result_json = direct_candidate
+
+    if result_json is None:
+        if formal_dir.is_dir():
+            candidates = [
+                *formal_dir.rglob("result.json"),
+                *formal_dir.glob("*.json"),
+            ]
+            for candidate in candidates:
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if data.get("mode") == "direct_file" and data.get("id") == result_id:
+                    result_json = candidate
+                    break
+
+    if result_json is None:
+        raise AnalystBenchError("result_not_found", f"找不到正式评测结果 {result_id}。")
+
+    try:
+        data = json.loads(result_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        raise AnalystBenchError("result_file_corrupt", "评测结果文件无法解析。") from None
+
+    data["included_in_statistics"] = payload.included_in_statistics
+    pending_json = result_json.with_name(f".{result_json.name}.visibility.tmp")
+    pending_json.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    pending_json.replace(result_json)
+    return {
+        "id": result_id,
+        "included_in_statistics": payload.included_in_statistics,
     }
 
 
