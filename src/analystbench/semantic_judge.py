@@ -1,6 +1,7 @@
 """LLM-backed semantic alignment that cites the original report directly."""
 
 import json
+import logging
 import re
 import tempfile
 import time
@@ -17,6 +18,17 @@ from analystbench.semantic_alignment import (
     make_semantic_alignment_judge,
     validate_semantic_alignment,
 )
+
+logger = logging.getLogger(__name__)
+LOG_EXCERPT_CHARS = 2000
+
+
+def _head(value: object) -> str:
+    return str(value or "")[:LOG_EXCERPT_CHARS]
+
+
+def _tail(value: object) -> str:
+    return str(value or "")[-LOG_EXCERPT_CHARS:]
 
 
 class SemanticJudge:
@@ -62,6 +74,13 @@ class SemanticJudge:
                         self.configuration, workspace, current_prompt
                     )
                 except AgentRunnerError as exc:
+                    logger.warning(
+                        "semantic_judge_runner_failed code=%s stdout_tail=%r stderr_tail=%r",
+                        exc.code,
+                        _tail(exc.stdout),
+                        _tail(exc.stderr),
+                        extra={"attempt": attempt},
+                    )
                     if validation_error:
                         raise AgentRunnerError(
                             "semantic_judge_retry_failed",
@@ -78,6 +97,12 @@ class SemanticJudge:
                     break
                 except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                     validation_error = str(exc)
+                    logger.warning(
+                        "semantic_judge_validation_failed error=%s raw_response_head=%r",
+                        validation_error,
+                        _head(raw_response),
+                        extra={"attempt": attempt},
+                    )
                     if attempt == 2:
                         raise AgentRunnerError(
                             "semantic_judge_invalid",

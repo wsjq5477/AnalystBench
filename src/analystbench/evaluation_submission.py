@@ -83,6 +83,28 @@ def _atomic_text(path: Path, value: str) -> None:
     temporary.replace(path)
 
 
+def _error_output_tail(value: object, limit: int = 2000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text_value = value.decode("utf-8", errors="replace")
+    else:
+        text_value = str(value)
+    return text_value[-limit:]
+
+
+def _scoring_error_payload(exc: Exception) -> dict[str, str]:
+    payload = {"code": "scoring_failed", "message": str(exc)}
+    cause_code = getattr(exc, "code", None)
+    if cause_code:
+        payload["cause_code"] = str(cause_code)
+    for stream_name in ("stdout", "stderr"):
+        tail = _error_output_tail(getattr(exc, stream_name, None))
+        if tail:
+            payload[f"{stream_name}_tail"] = tail
+    return payload
+
+
 def _safe_relative_path(value: str) -> Path:
     candidate = Path(value)
     if candidate.is_absolute() or not candidate.parts or ".." in candidate.parts:
@@ -1939,7 +1961,7 @@ class EvaluationSubmissionService:
                 assert stored is not None
                 stored.scoring_status = "failed"
                 stored.status = "completed_with_errors"
-                stored.error_json = canonical_json({"code": "scoring_failed", "message": str(exc)})
+                stored.error_json = canonical_json(_scoring_error_payload(exc))
             raise
         finally:
             self._write_case_state(case_run_id)

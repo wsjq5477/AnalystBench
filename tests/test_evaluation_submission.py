@@ -11,11 +11,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from alembic import command
+from analystbench.agent_runner import AgentRunnerError
 from analystbench.api.app import create_app
 from analystbench.config import Settings
 from analystbench.db.models import EvaluationMethod
 from analystbench.db.session import create_database_engine, create_session_factory
-from analystbench.evaluation_submission import EvaluationSubmissionService
+from analystbench.evaluation_submission import (
+    EvaluationSubmissionService,
+    _scoring_error_payload,
+)
 from analystbench.services import transaction
 from analystbench.worker import LocalWorker
 
@@ -99,6 +103,83 @@ def create_case_directory(settings: Settings) -> Path:
         json.dumps(case_payload(), ensure_ascii=False), encoding="utf-8"
     )
     return case_directory
+
+
+def test_scoring_error_payload_keeps_bounded_runner_output() -> None:
+    stdout = "discarded-stdout-" + "x" * 2000
+    stderr = b"discarded-stderr-" + b"y" * 2000
+    payload = _scoring_error_payload(
+        AgentRunnerError("agent_exit_nonzero", "judge failed", stdout, stderr)
+    )
+
+    assert payload == {
+        "code": "scoring_failed",
+        "message": "judge failed",
+        "cause_code": "agent_exit_nonzero",
+        "stdout_tail": "x" * 2000,
+        "stderr_tail": "y" * 2000,
+    }
+
+
+def test_scoring_failure_persists_runner_output_tails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "log.txt").write_text("chmod hung", encoding="utf-8")
+
+    with TestClient(create_app(settings)) as client:
+        method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "scoring-error-script",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        ).json()
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
+        client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze")
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": [method["id"]],
+                "judge_runner": "lexical",
+            },
+        ).json()
+
+    def fail_scoring(*_args: object, **_kwargs: object) -> None:
+        raise AgentRunnerError(
+            "agent_exit_nonzero",
+            "judge failed",
+            "discarded-stdout-" + "x" * 2000,
+            "discarded-stderr-" + "y" * 2000,
+        )
+
+    worker = LocalWorker(settings)
+    try:
+        assert worker.run_once() is True
+        monkeypatch.setattr(
+            "analystbench.evaluation_submission.evaluate_direct", fail_scoring
+        )
+        assert worker.run_once() is True
+    finally:
+        worker.close()
+
+    with TestClient(create_app(settings)) as client:
+        case_run = client.get(
+            f"/api/v1/evaluation-submissions/{submission['id']}/case-runs"
+        ).json()[0]
+
+    assert case_run["scoring_status"] == "failed"
+    assert case_run["error"] == {
+        "code": "scoring_failed",
+        "message": "judge failed",
+        "cause_code": "agent_exit_nonzero",
+        "stdout_tail": "x" * 2000,
+        "stderr_tail": "y" * 2000,
+    }
 
 
 def test_worker_executes_method_runs_in_parallel_up_to_method_limit(

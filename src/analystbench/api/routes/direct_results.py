@@ -191,6 +191,8 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 continue
             if data.get("included_in_statistics", True) is False:
                 continue
+            if data.get("status") == "running":
+                continue
 
             rel_path = json_file.relative_to(formal_dir)
             if len(rel_path.parts) < 4:

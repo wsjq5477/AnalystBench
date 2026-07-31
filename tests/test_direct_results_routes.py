@@ -167,6 +167,27 @@ def test_stats_exposes_average_generation_duration(tmp_path: Path) -> None:
     ] == 1200
 
 
+def test_running_formal_result_is_excluded_from_stats(tmp_path: Path) -> None:
+    settings = Settings(
+        results_tmp_path=tmp_path / "results" / "tmp",
+        results_formal_path=tmp_path / "results",
+    )
+    base = settings.results_formal_path
+    completed_id = "kdiag/deadlock/case_a/runs/202607271000"
+    running_id = "kdiag/deadlock/case_a/runs/202607271100"
+    write_scored_result(base / completed_id, completed_id, [("agent-a", 80)])
+    write_scored_result(base / running_id, running_id, [("agent-a", 0)])
+    running_path = base / running_id / "result.json"
+    running = json.loads(running_path.read_text(encoding="utf-8"))
+    running["status"] = "running"
+    running["summary"] = {"reports": running.pop("reports")}
+    running_path.write_text(json.dumps(running), encoding="utf-8")
+
+    assert get_direct_result_stats(request_for(settings))["candidates"] == [
+        {"name": "agent-a", "avg_score": 80.0, "avg_duration_ms": None}
+    ]
+
+
 def test_hidden_formal_result_is_listed_but_excluded_from_stats(tmp_path: Path) -> None:
     settings = Settings(
         results_tmp_path=tmp_path / "results" / "tmp",

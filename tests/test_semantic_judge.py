@@ -1,9 +1,11 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from analystbench.agent_runner import AgentRunnerError
 from analystbench.config import Settings
 from analystbench.eval_spec import EvalSpecV1
 from analystbench.scoring import evaluate
@@ -139,6 +141,60 @@ def test_semantic_judge_reads_original_report_without_candidates(tmp_path: Path)
     assert judged["alignments"][2]["candidate_ref"] is None
     assert judged["supported_candidate_claim_ids"] == []
     assert "citation_mode" not in judge.audit
+
+
+def test_semantic_judge_logs_runner_failure_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class FailingRunner:
+        def execute(self, *_args: object) -> None:
+            raise AgentRunnerError(
+                "agent_exit_nonzero",
+                "judge failed",
+                "discarded-stdout-" + "x" * 2000,
+                "discarded-stderr-" + "y" * 2000,
+            )
+
+    monkeypatch.setattr(
+        "analystbench.semantic_judge.create_runner", lambda _runner_id: FailingRunner()
+    )
+    judge = _judge(tmp_path)
+    with caplog.at_level("WARNING", logger="analystbench.semantic_judge"):
+        with pytest.raises(AgentRunnerError):
+            judge.align(EvalSpecV1.model_validate(root_category_chain_spec()), [], _report())
+
+    record = caplog.records[-1]
+    assert record.attempt == 1
+    assert "code=agent_exit_nonzero" in record.getMessage()
+    assert "discarded-stdout" not in record.getMessage()
+    assert "discarded-stderr" not in record.getMessage()
+    assert "x" * 2000 in record.getMessage()
+    assert "y" * 2000 in record.getMessage()
+
+
+def test_semantic_judge_logs_each_validation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class InvalidRunner:
+        def execute(self, *_args: object) -> SimpleNamespace:
+            return SimpleNamespace(final_report="not-json")
+
+    monkeypatch.setattr(
+        "analystbench.semantic_judge.create_runner", lambda _runner_id: InvalidRunner()
+    )
+    judge = _judge(tmp_path)
+    with caplog.at_level("WARNING", logger="analystbench.semantic_judge"):
+        with pytest.raises(AgentRunnerError) as raised:
+            judge.align(EvalSpecV1.model_validate(root_category_chain_spec()), [], _report())
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("semantic_judge_validation_failed")
+    ]
+    assert raised.value.code == "semantic_judge_invalid"
+    assert [record.attempt for record in records] == [1, 2]
+    assert all("raw_response_head='not-json'" in record.getMessage() for record in records)
 
 
 def test_python_applies_fixed_score_to_semantic_alignments(tmp_path: Path) -> None:
