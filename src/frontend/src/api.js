@@ -315,6 +315,112 @@ export const analystBenchApi = {
       method: "get",
     });
   },
+  listSkills() {
+    return request({ url: "/skills", method: "get" });
+  },
+  createSkill(data) {
+    return request({ url: "/skills", method: "post", data });
+  },
+  listSkillVersions(skillId) {
+    return request({ url: `/skills/${skillId}/versions`, method: "get" });
+  },
+  listExecutionProfiles() {
+    return request({ url: "/execution-profiles", method: "get" });
+  },
+  createExecutionProfile(data) {
+    return request({ url: "/execution-profiles", method: "post", data });
+  },
+  validateExecutionProfile(profileId) {
+    return request({
+      url: `/execution-profiles/${profileId}:validate`,
+      method: "post",
+    });
+  },
+  freezeExecutionProfile(profileId) {
+    return request({
+      url: `/execution-profiles/${profileId}:freeze`,
+      method: "post",
+    });
+  },
+  listOptimizerPolicies() {
+    return request({ url: "/skill-optimization/policies", method: "get" });
+  },
+  createOptimizerPolicy(data) {
+    return request({
+      url: "/skill-optimization/policies",
+      method: "post",
+      data,
+    });
+  },
+  listVerifierBundles() {
+    return request({ url: "/skill-optimization/verifiers", method: "get" });
+  },
+  createVerifierBundle(data) {
+    return request({
+      url: "/skill-optimization/verifiers",
+      method: "post",
+      data,
+    });
+  },
+  listOptimizationSnapshots() {
+    return request({
+      url: "/skill-optimization/data-snapshots",
+      method: "get",
+    });
+  },
+  createOptimizationSnapshot(data) {
+    return request({
+      url: "/skill-optimization/data-snapshots",
+      method: "post",
+      data,
+    });
+  },
+  listOptimizationExperiments() {
+    return request({ url: "/skill-optimization/experiments", method: "get" });
+  },
+  createOptimizationExperiment(data) {
+    return request({
+      url: "/skill-optimization/experiments",
+      method: "post",
+      data,
+    });
+  },
+  getOptimizationExperimentDetail(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}/detail`,
+      method: "get",
+    });
+  },
+  getOptimizationEvents(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}/events`,
+      method: "get",
+    });
+  },
+  startOptimizationExperiment(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}:start`,
+      method: "post",
+    });
+  },
+  resumeOptimizationExperiment(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}:resume`,
+      method: "post",
+    });
+  },
+  cancelOptimizationExperiment(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}:cancel`,
+      method: "post",
+    });
+  },
+  getOptimizationCandidate(candidateId) {
+    return request({
+      url: `/skill-optimization/candidates/${candidateId}`,
+      method: "get",
+    });
+  },
   evaluateLocalCase(casePath, judge, files) {
     const data = new FormData();
     data.append("case_path", casePath);

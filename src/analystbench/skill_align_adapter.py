@@ -1,4 +1,4 @@
-"""Adapt Claude Skill semantic JSON to deterministic scoring."""
+"""Adapt claude Skill semantic JSON to deterministic scoring."""
 
 from collections.abc import Callable
 from typing import Any

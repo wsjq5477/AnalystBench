@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from analystbench.db.base import Base
@@ -440,7 +440,11 @@ class EvaluationHarness(TimestampedModel, Base):
 
     __tablename__ = "evaluation_harnesses"
     __table_args__ = (
-        UniqueConstraint("harness_key", "version_number", name="uq_evaluation_harnesses_key_version"),
+        UniqueConstraint(
+            "harness_key",
+            "version_number",
+            name="uq_evaluation_harnesses_key_version",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -508,6 +512,387 @@ class EvaluationTarget(TimestampedModel, Base):
     )
 
 
+class Skill(TimestampedModel, Base):
+    """One optimizable local Skill and its installation contract."""
+
+    __tablename__ = "skills"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    skill_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    source_path: Mapped[str] = mapped_column(String(2048))
+    invoke_as: Mapped[str] = mapped_column(String(128))
+    harness_key: Mapped[str] = mapped_column(String(100), index=True)
+    install_relative_path: Mapped[str] = mapped_column(String(1024))
+    publish_mode: Mapped[str] = mapped_column(String(32), default="managed")
+    editable_paths_json: Mapped[str] = mapped_column(Text, default="[]")
+    limits_json: Mapped[str] = mapped_column(Text, default="{}")
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+
+class SkillPackageVersion(Base):
+    """One immutable Skill package stored in an AnalystBench-owned Git repository."""
+
+    __tablename__ = "skill_package_versions"
+    __table_args__ = (
+        UniqueConstraint("skill_id", "version_number", name="uq_skill_versions_number"),
+        UniqueConstraint("skill_id", "package_hash", name="uq_skill_versions_hash"),
+        UniqueConstraint("skill_id", "git_commit", name="uq_skill_versions_git_commit"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    skill_id: Mapped[str] = mapped_column(
+        ForeignKey("skills.id", ondelete="RESTRICT"), index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer)
+    parent_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    package_hash: Mapped[str] = mapped_column(String(71), index=True)
+    git_commit: Mapped[str] = mapped_column(String(64))
+    git_tree: Mapped[str] = mapped_column(String(64))
+    git_object_format: Mapped[str] = mapped_column(String(16), default="sha1")
+    manifest_json: Mapped[str] = mapped_column(Text, default="{}")
+    source_type: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="candidate", index=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SkillTargetBinding(TimestampedModel, Base):
+    """The active Skill version for one EvaluationTarget."""
+
+    __tablename__ = "skill_target_bindings"
+    __table_args__ = (
+        UniqueConstraint("skill_id", "evaluation_target_id", name="uq_skill_target_binding"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    skill_id: Mapped[str] = mapped_column(
+        ForeignKey("skills.id", ondelete="RESTRICT"), index=True
+    )
+    evaluation_target_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_targets.id", ondelete="RESTRICT"), index=True
+    )
+    active_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    active_level: Mapped[str] = mapped_column(String(32), default="provisional")
+    lock_version: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class EvaluationVariant(TimestampedModel, Base):
+    """A frozen EvaluationTarget x SkillPackageVersion executable variant."""
+
+    __tablename__ = "evaluation_variants"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_target_id",
+            "skill_package_version_id",
+            name="uq_evaluation_variant_target_skill",
+        ),
+        UniqueConstraint(
+            "materialized_method_id", name="uq_evaluation_variant_materialized_method"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    evaluation_target_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_targets.id", ondelete="RESTRICT"), index=True
+    )
+    skill_package_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    materialized_method_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_methods.id", ondelete="RESTRICT"), index=True
+    )
+    install_relative_path: Mapped[str] = mapped_column(String(1024))
+    invoke_as: Mapped[str] = mapped_column(String(128))
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    status: Mapped[str] = mapped_column(String(32), default="frozen", index=True)
+
+
+class OptimizerPolicyVersion(Base):
+    __tablename__ = "optimizer_policy_versions"
+    __table_args__ = (
+        UniqueConstraint("policy_key", "version_number", name="uq_optimizer_policy_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    policy_key: Mapped[str] = mapped_column(String(128), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    execution_profile_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_profiles.id", ondelete="RESTRICT"), index=True
+    )
+    prompt_bundle_hash: Mapped[str] = mapped_column(String(71))
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class VerifierBundleVersion(Base):
+    __tablename__ = "verifier_bundle_versions"
+    __table_args__ = (
+        UniqueConstraint("bundle_key", "version_number", name="uq_verifier_bundle_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    bundle_key: Mapped[str] = mapped_column(String(128), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    static_policy_json: Mapped[str] = mapped_column(Text, default="{}")
+    gate_policy_json: Mapped[str] = mapped_column(Text, default="{}")
+    judge_config_json: Mapped[str] = mapped_column(Text, default="{}")
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OptimizationDataSnapshot(Base):
+    __tablename__ = "optimization_data_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    dataset_key: Mapped[str] = mapped_column(String(255), index=True)
+    mode: Mapped[str] = mapped_column(String(32), index=True)
+    train_cases_json: Mapped[str] = mapped_column(Text, default="[]")
+    validation_cases_json: Mapped[str] = mapped_column(Text, default="[]")
+    hidden_test_cases_json: Mapped[str] = mapped_column(Text, default="[]")
+    prospective_holdout_cases_json: Mapped[str] = mapped_column(Text, default="[]")
+    case_input_hashes_json: Mapped[str] = mapped_column(Text, default="{}")
+    eval_spec_hashes_json: Mapped[str] = mapped_column(Text, default="{}")
+    content_hash: Mapped[str] = mapped_column(String(71), unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OptimizationExperiment(TimestampedModel, Base):
+    __tablename__ = "optimization_experiments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    skill_id: Mapped[str] = mapped_column(
+        ForeignKey("skills.id", ondelete="RESTRICT"), index=True
+    )
+    base_skill_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    evaluation_target_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_targets.id", ondelete="RESTRICT"), index=True
+    )
+    data_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_data_snapshots.id", ondelete="RESTRICT"), index=True
+    )
+    optimizer_policy_version_id: Mapped[str] = mapped_column(
+        ForeignKey("optimizer_policy_versions.id", ondelete="RESTRICT"), index=True
+    )
+    verifier_bundle_version_id: Mapped[str] = mapped_column(
+        ForeignKey("verifier_bundle_versions.id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    current_epoch_number: Mapped[int] = mapped_column(Integer, default=0)
+    max_epochs: Mapped[int] = mapped_column(Integer, default=5)
+    stop_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    config_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class OptimizationEpoch(TimestampedModel, Base):
+    __tablename__ = "optimization_epochs"
+    __table_args__ = (
+        UniqueConstraint("experiment_id", "epoch_number", name="uq_optimization_epoch"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_experiments.id", ondelete="RESTRICT"), index=True
+    )
+    epoch_number: Mapped[int] = mapped_column(Integer)
+    parent_skill_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    evidence_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    best_candidate_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), nullable=True
+    )
+    decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class CandidateMutation(TimestampedModel, Base):
+    __tablename__ = "candidate_mutations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    epoch_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_epochs.id", ondelete="RESTRICT"), index=True
+    )
+    parent_skill_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    candidate_skill_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    candidate_type: Mapped[str] = mapped_column(String(32))
+    structured_patch_json: Mapped[str] = mapped_column(Text)
+    patch_hash: Mapped[str] = mapped_column(String(71), index=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    intended_failure_clusters_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="proposed", index=True)
+    rejection_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rejection_detail_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class OptimizationSignal(Base):
+    __tablename__ = "optimization_signals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_experiments.id", ondelete="RESTRICT"), index=True
+    )
+    epoch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("optimization_epochs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    case_path: Mapped[str] = mapped_column(String(1024), index=True)
+    evaluation_method_run_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_submission_method_runs.id", ondelete="RESTRICT"),
+        unique=True,
+    )
+    run_role: Mapped[str] = mapped_column(String(32))
+    case_family: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    signal_json: Mapped[str] = mapped_column(Text)
+    signal_hash: Mapped[str] = mapped_column(String(71), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OptimizationRunGroup(TimestampedModel, Base):
+    __tablename__ = "optimization_run_groups"
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_id",
+            "epoch_id",
+            "candidate_mutation_id",
+            "split_role",
+            "arm",
+            "repeat_index",
+            name="uq_optimization_run_group",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_experiments.id", ondelete="RESTRICT"), index=True
+    )
+    epoch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("optimization_epochs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    candidate_mutation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidate_mutations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    split_role: Mapped[str] = mapped_column(String(32))
+    arm: Mapped[str] = mapped_column(String(32))
+    skill_package_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    repeat_index: Mapped[int] = mapped_column(Integer)
+    evaluation_submission_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_submissions.id", ondelete="RESTRICT"), unique=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    run_config_hash: Mapped[str] = mapped_column(String(71))
+
+
+class CandidateComparison(Base):
+    __tablename__ = "candidate_comparisons"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_experiments.id", ondelete="RESTRICT"), index=True
+    )
+    epoch_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_epochs.id", ondelete="RESTRICT"), index=True
+    )
+    candidate_mutation_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate_mutations.id", ondelete="RESTRICT"), index=True
+    )
+    comparison_type: Mapped[str] = mapped_column(String(32))
+    metrics_json: Mapped[str] = mapped_column(Text)
+    gate_result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DecisionRecord(Base):
+    __tablename__ = "decision_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_experiments.id", ondelete="RESTRICT"), index=True
+    )
+    epoch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("optimization_epochs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    candidate_mutation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidate_mutations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    diagnosis_json: Mapped[str] = mapped_column(Text, default="{}")
+    revision_json: Mapped[str] = mapped_column(Text, default="{}")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    outcome_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OptimizationEvent(Base):
+    __tablename__ = "optimization_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        ForeignKey("optimization_experiments.id", ondelete="RESTRICT"), index=True
+    )
+    epoch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("optimization_epochs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    candidate_mutation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidate_mutations.id", ondelete="RESTRICT"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(100), index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class EvaluationSchedule(TimestampedModel, Base):
     """One persistent daily schedule that creates evaluation submissions."""
 
@@ -558,6 +943,12 @@ class EvaluationSubmission(TimestampedModel, Base):
     dataset_key: Mapped[str] = mapped_column(String(255), index=True)
     run_timestamp: Mapped[str] = mapped_column(String(14), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    purpose: Mapped[str] = mapped_column(
+        String(32), default="normal", server_default="normal", index=True
+    )
+    optimization_context_json: Mapped[str] = mapped_column(
+        Text, default="{}", server_default="{}"
+    )
     schedule_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("evaluation_schedule_runs.id", ondelete="RESTRICT"),
         nullable=True,

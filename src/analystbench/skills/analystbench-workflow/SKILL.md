@@ -1,6 +1,6 @@
 ---
 name: analystbench-workflow
-description: 在 Claude 中用一个入口完成 AnalystBench Case 导入发布，或使用本地 Case JSON/数据库 case_key 对多份 AI 原始报告评分。只在项目返回确认问题时向用户提问。
+description: 在 claude 中用一个入口完成 AnalystBench Case 导入发布，或使用本地 Case JSON/数据库 case_key 对多份 AI 原始报告评分。只在项目返回确认问题时向用户提问。
 ---
 
 # AnalystBench 一键工作流
@@ -45,7 +45,7 @@ description: 在 Claude 中用一个入口完成 AnalystBench Case 导入发布�
    .venv/bin/analystbench evaluate <case_key> <report1.md> [report2.txt ...]
    ```
 
-3. 默认使用 Claude 语义 Judge。用户明确要求 OpenCode 时追加 `--judge opencode`；不得把 `--judge lexical` 当正式评分。
+3. 默认使用 claude 语义 Judge。用户明确要求 OpenCode 时追加 `--judge opencode`；不得把 `--judge lexical` 当正式评分。
 4. 文件模式出现未决项时向用户指出具体字段，不得替用户修改；数据库模式不重新审核已发布 Case。
 5. 返回实际评分模式与 Case 来源、每份报告的总分、根因/分类/分析链综合判定、警告和对比结论，并链接 Markdown 报告路径。关键字分只采用 Python 结果；未命中时展示实际关键字和最接近报告行。不要粘贴完整审计 JSON。
 
@@ -53,4 +53,4 @@ description: 在 Claude 中用一个入口完成 AnalystBench Case 导入发布�
 
 - 不要求用户处理数据库 ID、Batch ID 或 Revision ID。
 - 不重新审核已发布 Case。
-- Claude/OpenCode 失败时原样说明错误；不得静默退回字符匹配。
+- claude/OpenCode 失败时原样说明错误；不得静默退回字符匹配。

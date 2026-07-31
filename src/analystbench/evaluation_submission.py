@@ -14,7 +14,7 @@ import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from sqlalchemy import delete as sql_delete
@@ -57,6 +57,14 @@ class EvaluationCommandError(Exception):
         self.code = code
         self.stdout = stdout
         self.stderr = stderr
+
+
+class EvaluationWorkspacePreparer(Protocol):
+    """Optional extension point called before an evaluation command starts."""
+
+    def prepare(
+        self, *, method_id: str, workspace: Path
+    ) -> dict[str, object] | None: ...
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -692,9 +700,15 @@ class EvaluationMethodService:
 
 
 class EvaluationSubmissionService:
-    def __init__(self, session_factory: sessionmaker[Session], settings: Settings) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        settings: Settings,
+        workspace_preparer: EvaluationWorkspacePreparer | None = None,
+    ) -> None:
         self.session_factory = session_factory
         self.settings = settings
+        self.workspace_preparer = workspace_preparer
         self.jobs = JobQueue(session_factory)
 
     def _next_timestamp(self, case_directories: list[Path]) -> str:
@@ -710,12 +724,14 @@ class EvaluationSubmissionService:
         self,
         dataset_key: str,
         method_ids: list[str] | None,
-        judge_runner: str = "claude-code",
+        judge_runner: str = "claude",
         *,
         target_ids: list[str] | None = None,
         target_selections: list[dict[str, str | None]] | None = None,
         case_paths: list[str] | None = None,
         schedule_run_id: str | None = None,
+        purpose: str = "normal",
+        optimization_context: dict[str, Any] | None = None,
     ) -> EvaluationSubmission:
         selection_modes = sum(
             bool(value) for value in (method_ids, target_ids, target_selections)
@@ -739,8 +755,10 @@ class EvaluationSubmissionService:
         assert method_ids
         if not method_ids:
             raise AnalystBenchError("evaluation_methods_missing", "至少选择一种测评方式。")
-        if judge_runner not in {"claude-code", "opencode", "lexical"}:
+        if judge_runner not in {"claude", "opencode", "lexical"}:
             raise AnalystBenchError("validation_failed", "不支持的评分 Judge。")
+        if purpose not in {"normal", "skill_optimization"}:
+            raise AnalystBenchError("validation_failed", "提交用途无效。")
         results_formal_path = self.settings.results_formal_path.resolve()
         dataset_directory = _safe_case_directory(results_formal_path, dataset_key)
         if not dataset_directory.is_dir():
@@ -879,6 +897,10 @@ class EvaluationSubmissionService:
                 dataset_key=dataset_key,
                 run_timestamp=timestamp,
                 status="queued",
+                purpose=purpose,
+                optimization_context_json=canonical_json(
+                    optimization_context or {}
+                ),
                 schedule_run_id=schedule_run_id,
                 manifest_json=canonical_json(manifest),
             )
@@ -1180,7 +1202,9 @@ class EvaluationSubmissionService:
                         else None
                     ),
                     "duration_sample_count": len(durations),
-                    "median_duration_ms": round(statistics.median(durations)) if durations else None,
+                    "median_duration_ms": (
+                        round(statistics.median(durations)) if durations else None
+                    ),
                     "p95_duration_ms": percentile_95(durations),
                     "cases": samples,
                 }
@@ -1224,7 +1248,9 @@ class EvaluationSubmissionService:
                                 "baseline": left_key,
                                 "candidate": right_key,
                                 "shared_scored_case_count": len(shared),
-                                "average_score_delta": sum(deltas) / len(deltas) if deltas else None,
+                                "average_score_delta": (
+                                    sum(deltas) / len(deltas) if deltas else None
+                                ),
                                 "baseline_only_case_count": len(left.keys() - right.keys()),
                                 "candidate_only_case_count": len(right.keys() - left.keys()),
                             }
@@ -1241,7 +1267,11 @@ class EvaluationSubmissionService:
         return {
             "submission_id": submission.id,
             "controlled": not uncontrolled,
-            "warnings": (["至少一个 Harness 工程在冻结时处于 dirty 状态。"] if uncontrolled else []),
+            "warnings": (
+                ["至少一个 Harness 工程在冻结时处于 dirty 状态。"]
+                if uncontrolled
+                else []
+            ),
             "targets": aggregates,
             "by_harness": by_harness,
             "by_model": by_model,
@@ -1526,9 +1556,21 @@ class EvaluationSubmissionService:
         stdout = ""
         stderr = ""
         command: list[str] = []
+        workspace_metadata: dict[str, object] | None = None
         monotonic_started: float | None = None
         timing_finished = False
         try:
+            if self.workspace_preparer is not None:
+                try:
+                    workspace_metadata = self.workspace_preparer.prepare(
+                        method_id=str(method_snapshot["id"]),
+                        workspace=workspace,
+                    )
+                except AnalystBenchError as exc:
+                    raise EvaluationCommandError(
+                        "workspace_prepare_failed",
+                        f"{exc.code}: {exc.message}",
+                    ) from exc
             command = self._build_command(method_snapshot, workspace, primary, logs_workspace)
             try:
                 process = subprocess.Popen(
@@ -1608,6 +1650,8 @@ class EvaluationSubmissionService:
                 "exit_code": process.returncode,
                 "duration_ms": duration_ms,
             }
+            if workspace_metadata is not None:
+                artifact["workspace_extension"] = workspace_metadata
             self._persist_method_success(method_run_id, artifact)
         except EvaluationCommandError as exc:
             stdout, stderr = exc.stdout, exc.stderr
@@ -1816,7 +1860,7 @@ class EvaluationSubmissionService:
             run_directory = Path(case_run.run_directory)
             case_path = case_run.case_path
             case_key = case_run.case_key
-            judge_runner = json.loads(submission.manifest_json).get("judge_runner", "claude-code")
+            judge_runner = json.loads(submission.manifest_json).get("judge_runner", "claude")
             all_method_rows = list(
                 session.execute(
                     select(EvaluationSubmissionMethodRun, EvaluationMethod)

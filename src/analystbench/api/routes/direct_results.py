@@ -823,9 +823,9 @@ async def evaluate_local_case(
     """
     if not reports:
         raise AnalystBenchError("report_invalid", "至少需要一份 AI 报告文件。")
-    if judge not in {"claude-code", "opencode", "lexical"}:
+    if judge not in {"claude", "opencode", "lexical"}:
         raise AnalystBenchError(
-            "validation_failed", "judge 必须是 claude-code、opencode 或 lexical。"
+            "validation_failed", "judge 必须是 claude、opencode 或 lexical。"
         )
 
     settings: Settings = request.app.state.settings

@@ -29,7 +29,7 @@ def test_analysis_chain_uses_combined_keyword_and_conclusion_verdict() -> None:
                 "positive_score": "10.00",
                 "penalties": "0.00",
                 "metrics": {"root_cause_exact": False},
-                "judge": {"kind": "semantic_llm", "runner": "claude-code"},
+                "judge": {"kind": "semantic_llm", "runner": "claude"},
                 "claim_results": [
                     {
                         "gold_claim_id": "chain-2",

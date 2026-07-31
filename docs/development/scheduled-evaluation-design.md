@@ -43,7 +43,7 @@
 | Case 模式 | `all_ready` 或 `selected` |
 | Case 列表 | `selected` 模式必填，保存完整 `test_set/category/case` 路径 |
 | 测评方式 | 一个或多个已冻结的 Evaluation Method ID |
-| Judge | `claude-code` 或 `opencode` |
+| Judge | `claude` 或 `opencode` |
 | 时区 | IANA 时区，默认 `Asia/Shanghai` |
 | 每日时间 | `HH:mm`，按计划时区解释 |
 | 启用状态 | 新建后默认启用 |

@@ -110,6 +110,14 @@ def create_profile(payload: ExecutionProfileCreate, request: Request) -> Executi
     )
 
 
+@router.get("/execution-profiles", response_model=list[ExecutionProfileResponse])
+def list_profiles(request: Request) -> list[ExecutionProfileResponse]:
+    return [
+        ExecutionProfileResponse.from_model(item)
+        for item in execution(request).list_profiles()
+    ]
+
+
 @router.post("/execution-profiles/{profile_id}:validate")
 def validate_profile(profile_id: str, request: Request) -> dict[str, Any]:
     result = execution(request).probe_profile(profile_id)

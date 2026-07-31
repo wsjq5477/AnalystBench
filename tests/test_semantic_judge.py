@@ -86,7 +86,7 @@ def _judge(tmp_path: Path) -> SemanticJudge:
         workspace_root_path=tmp_path / "workspaces",
     )
     return SemanticJudge(
-        settings, "claude-code", {"executable": sys.executable, "extra_args": [str(fixture)]}
+        settings, "claude", {"executable": sys.executable, "extra_args": [str(fixture)]}
     )
 
 

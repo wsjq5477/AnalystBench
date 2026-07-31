@@ -53,13 +53,13 @@ def test_fake_claude_runner_generates_a_frozen_candidate_report(tmp_path: Path) 
         candidate_id = client.post("/api/v1/candidates", json={"name": "fake-claude"}).json()["id"]
         candidate_version_id = client.post(
             f"/api/v1/candidates/{candidate_id}/versions",
-            json={"metadata": {"runner": "claude-code"}},
+            json={"metadata": {"runner": "claude"}},
         ).json()["id"]
         profile = client.post(
             "/api/v1/execution-profiles",
             json={
                 "name": "fake-profile",
-                "runner": "claude-code",
+                "runner": "claude",
                 "configuration": {
                     "executable": sys.executable,
                     "extra_args": [str(fake_cli)],

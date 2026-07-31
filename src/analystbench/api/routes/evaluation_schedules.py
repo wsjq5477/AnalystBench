@@ -22,7 +22,7 @@ class EvaluationScheduleWrite(BaseModel):
     method_ids: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
     target_selections: list[EvaluationTargetSelection] = Field(default_factory=list)
-    judge_runner: str = "claude-code"
+    judge_runner: str = "claude"
     timezone: str = "Asia/Shanghai"
     local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True

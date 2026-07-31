@@ -10,7 +10,7 @@
 
 ### Case
 
-1. 用户通过 Claude/OpenCode Skill，或按 `docs/scoring-input.md`，把人工标准答案转换成 Case JSON。
+1. 用户通过 claude/OpenCode Skill，或按 `docs/scoring-input.md`，把人工标准答案转换成 Case JSON。
 2. 用户执行 `analystbench case-import case.json`，或由前端调用 Case Draft API。
 3. 后端检查字段。只有确实有歧义或格式错误的字段才逐项询问，并在问题中展示 Claim ID、结论和字段含义。
 4. 字段全部有效后，用户只做一次整体确认。
@@ -34,7 +34,7 @@ Skill、CLI 和未来前端使用同一服务与 REST API，不在 Skill 中复�
 ## API 契约
 
 - `POST /api/v1/case-drafts`：载入 Case JSON 并预检。
-- `POST /api/v1/case-drafts:generate`：提交标准答案原文，选择 Claude Code 或 OpenCode 后台生成 Case Draft。
+- `POST /api/v1/case-drafts:generate`：提交标准答案原文，选择 claude 或 OpenCode 后台生成 Case Draft。
 - `GET /api/v1/case-drafts/{id}`：读取审核状态和待确认字段。
 - `POST /api/v1/case-drafts/{id}/answers`：提交字段答案或整体确认。
 - `POST /api/v1/case-drafts/{id}:publish`：发布已确认 Case。

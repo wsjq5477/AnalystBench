@@ -50,7 +50,10 @@
 - **批量 Benchmark 与版本对比**  
   使用同一数据集和评分标准，对比不同模型、Prompt、Agent 或 Skill 版本，定位提升 Case、退化 Case 和新增错误结论。
 
-- **Claude Code 与 OpenCode 直接执行**  
+- **Skill 自优化（实验功能）**
+  从用户配置的本地 Skill 目录导入不可变版本，在隔离工作区中运行基线与候选版本，使用重复 Benchmark、配对比较和 Gate 决定是否更新 Active 版本。版本保存在 AnalystBench 自己管理的内部 Git 中，不修改用户源目录或用户仓库。
+
+- **claude 与 OpenCode 直接执行**
   通过本地后台任务调用 `claude -p` 和 `opencode run` 生成 Candidate Report，同时继续支持导入已有报告。首版只评分最终报告，执行事件保留用于审计和后续 Trace Evaluation。
 
 - **领域 Benchmark Suite**  
@@ -223,7 +226,7 @@ Agent Report     → Candidate Claim Graph
 AnalystBench 第一阶段聚焦 **最终结果 Benchmark**：
 
 - 数据集与 Candidate 版本管理；
-- Claude Code 与 OpenCode CLI 的轻量执行集成；
+- claude 与 OpenCode CLI 的轻量执行集成；
 - 自然语言标准答案转 Eval Spec；
 - Candidate Claim 抽取；
 - Claim 和因果关系对齐；
@@ -237,9 +240,18 @@ AnalystBench 第一阶段聚焦 **最终结果 Benchmark**：
 - 标准化或评分 Agent Trace；
 - 接收 OTLP 数据；
 - 评价工具调用和执行过程；
-- 自动修改或发布 Skill。
+- 未经版本冻结、重复评测和 Gate 直接覆盖或发布用户源 Skill。
 
-这些能力将在结果评测稳定后作为后续阶段扩展。
+当前仓库已经提供实验性的 Skill 自优化闭环：本地 Skill 导入、内部 Git
+版本、结构化 Patch、隔离运行、每轮两个候选、Screening、三次重复验证、
+灰区 5/7 次增采样、Family/Dimension Evidence、配对 Gate、Early Stop、
+Run Group 恢复复用、Active 晋升与回滚，并提供专用前端。
+
+仓库内已有并发隔离的 `/skill` 命令契约 E2E。真实 claude E2E 会自动发现
+PATH 中的 `claude`，也可通过环境变量指定；这项环境验收和真实四 Case 先导实验不会
+被替身测试冒充。
+
+其余能力将在结果评测和 Skill 自优化纵切稳定后继续扩展。
 
 ---
 
@@ -247,7 +259,7 @@ AnalystBench 第一阶段聚焦 **最终结果 Benchmark**：
 
 ### Phase 1：Result Benchmark + Execution Integration Lite
 
-完成自然语言标准答案到可执行评分标准的闭环，支持已有 Agent 报告批量评分，并可通过 Claude Code/OpenCode CLI 后台生成 Candidate Report。
+完成自然语言标准答案到可执行评分标准的闭环，支持已有 Agent 报告批量评分，并可通过 claude/OpenCode CLI 后台生成 Candidate Report。
 
 ### Phase 2：Execution Integration
 
@@ -271,13 +283,13 @@ AnalystBench 第一阶段聚焦 **最终结果 Benchmark**：
 - [Eval Spec 与 AI 报告评分器设计](docs/scoring-engine-design.md)
 - [Benchmark Suite 设计](docs/benchmark-suites.md)
 - [开发设计文档](docs/development/README.md)
-- [Claude Code / OpenCode Agent Runner 设计](docs/development/agent-runner-design.md)
+- [claude / OpenCode Agent Runner 设计](docs/development/agent-runner-design.md)
 
 ---
 
 ## 项目状态
 
-AnalystBench 当前处于 MVP 开发阶段。已完成的能力和运行方式以开发设计文档与下方命令为准；Claude Code/OpenCode 的真实执行适配器将在后续阶段接入。
+AnalystBench 当前处于 MVP 开发阶段。已完成的能力和运行方式以开发设计文档与下方命令为准；claude/OpenCode 的真实执行适配器将在后续阶段接入。
 
 ## 快速开始
 
@@ -321,17 +333,47 @@ API 文档位于 `http://127.0.0.1:8000/docs`，就绪探针位于 `/api/v1/heal
 
 部署、备份、恢复与安全说明见[运维文档](docs/operations.md)。
 
+### Skill 自优化（实验功能）
+
+先在 `.env.local` 开启：
+
+```dotenv
+ANALYSTBENCH_SKILL_OPTIMIZATION_ENABLED=true
+ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=./data/skill-optimization
+```
+
+再启动后端与前端：
+
+```bash
+.venv/bin/analystbench serve
+cd src/frontend && npm install && npm run serve
+```
+
+打开 `http://127.0.0.1:5173/skill-optimization`，通过三步向导配置：
+
+1. 已冻结且命令中包含 `/skill-name` 的 claude Evaluation Target；
+2. 本地 Skill 和初始不可变版本；
+3. 已冻结的 claude/OpenCode Optimizer Execution Profile；
+4. Optimizer Policy、Verifier、Case Snapshot 和 Experiment；
+5. 启动 Experiment，由 Worker 自动生成候选、重复评测并执行 Gate。
+
+开发模式下 4 个 Case 会全部参与 Evidence 和 Screening。两个候选中选出一个
+进入三次完整验证时，每个 Epoch 最多产生 36 次 claude 报告生成；灰区会
+继续追加到 5/7 次。第一次建议设置 `max_epochs=1`。最短操作流程和结果判断见
+[快速上手：路径 C](docs/quickstart.md#skill-optimization-quickstart)。
+
 ---
 
 ## 文档
 
-- [快速上手](docs/quickstart.md) — 单次评分与数据库部署两条路径完整指南
+- [快速上手](docs/quickstart.md) — 单次评分、数据库部署与 Skill 自优化指南
 - [评分输入格式说明](docs/scoring-input.md) — Case JSON 字段、评分策略、AI 报告格式
-- [AnalystBench Skills 说明](docs/skills.md) — 4 个 Claude Skill 说明
+- [AnalystBench Skills 说明](docs/skills.md) — 4 个 claude Skill 说明
 - [命令行工作流](docs/cli-workflow.md) — 数据库模式完整 CLI 流程
 - [前端功能说明](docs/frontend-overview.md)
 - [自然语言标准答案转 Eval Spec 设计](docs/eval-spec-generator-design.md)
 - [Eval Spec 与 AI 报告评分器设计](docs/scoring-engine-design.md)
 - [Benchmark Suite 设计](docs/benchmark-suites.md)
+- [Skill 自优化系统方案设计](docs/development/AnalystBench-Skill自优化系统方案设计-Codex.md)
 - [开发设计文档](docs/development/README.md)
 - [Agent Runner 设计](docs/development/agent-runner-design.md)

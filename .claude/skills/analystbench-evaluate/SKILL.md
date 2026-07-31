@@ -1,6 +1,6 @@
 ---
 name: analystbench-evaluate
-description: 使用本地 Case JSON 或已发布的 Case，对一份或多份 AI 报告评分和对比。Python 匹配分析链日志证据，当前 Claude 只确认根因、分类和结论语义。
+description: 使用本地 Case JSON 或已发布的 Case，对一份或多份 AI 报告评分和对比。Python 匹配分析链日志证据，当前 claude 只确认根因、分类和结论语义。
 ---
 
 # AnalystBench 报告评分
@@ -21,9 +21,9 @@ DRAFT=./data/workspaces/alignment-draft-${case_key}-$(openssl rand -hex 4).json
   --output "$DRAFT"
 ```
 
-该命令不会调用大模型。`python_keyword_audits` 是 Python 对每条分析链日志证据的强匹配结果和证据半分，Claude 不读取、不判断、不修改它。
+该命令不会调用大模型。`python_keyword_audits` 是 Python 对每条分析链日志证据的强匹配结果和证据半分，claude 不读取、不判断、不修改它。
 
-### 第 2 步：Claude 只填写结论语义
+### 第 2 步：claude 只填写结论语义
 
 读取完整报告、`case.gold_claims` 与草稿，只填写：
 `reports.<报告文件名>.semantic_alignment.alignments`。
@@ -63,7 +63,7 @@ DRAFT=./data/workspaces/alignment-draft-${case_key}-$(openssl rand -hex 4).json
   <report1.md> [report2.md ...]
 ```
 
-Python 会校验 Case 和报告哈希，并按固定规则生成 Markdown 与 JSON 结果；此命令不调用 Claude 或 OpenCode。
+Python 会校验 Case 和报告哈希，并按固定规则生成 Markdown 与 JSON 结果；此命令不调用 claude 或 OpenCode。
 
 ### 第 4 步：清理草稿
 

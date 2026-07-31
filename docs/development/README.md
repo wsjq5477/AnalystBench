@@ -18,7 +18,7 @@
 | eval-spec-generator-design.md | 自然语言标准答案转 Eval Spec 功能设计 |
 | api-design.md | REST API 与错误模型草案 |
 | run-lifecycle.md | Benchmark Run 状态机、缓存和失败语义 |
-| agent-runner-design.md | Claude Code/OpenCode 执行、隔离和产物契约 |
+| agent-runner-design.md | claude/OpenCode 执行、隔离和产物契约 |
 | suite-extension.md | Benchmark Suite 扩展点 |
 | testing-strategy.md | 分层测试和固定样例策略 |
 | case-library-batch-evaluation-design.md | Case 一次审核发布与多报告批量评测契约 |

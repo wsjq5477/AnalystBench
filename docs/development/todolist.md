@@ -21,7 +21,7 @@
 
 ## P0.1 Agent Execution 范围修订
 
-- [x] 将 Claude Code/OpenCode CLI 直接执行纳入 MVP。
+- [x] 将 claude/OpenCode CLI 直接执行纳入 MVP。
 - [x] 设计 Candidate Generation Run 与 Benchmark Run 分离。
 - [x] 设计 Runner、临时工作区、权限、产物与失败模型。
 - [x] 更新领域模型、API、测试策略和阶段顺序。
@@ -54,7 +54,7 @@
 
 - [ ] AgentRunner 协议、结构化 argv 和 CLI probe。
 - [ ] 临时 Case 工作区、材料清单和权限策略。
-- [ ] Claude Code Runner：`claude -p` + JSON 输出。
+- [ ] claude Runner：`claude -p` + JSON 输出。
 - [ ] OpenCode Runner：`opencode run --format json`。
 - [ ] 持久化后台 Job、Worker 租约、取消、超时和失败分类。
 - [ ] Candidate Generation Run、Agent Case Run、原始事件和 Candidate Report 冻结。
@@ -113,7 +113,7 @@
 
 ## Implementation status
 
-- P3 Agent Execution Lite: completed and verified with a fake Claude-compatible CLI.
+- P3 Agent Execution Lite: completed and verified with a fake claude-compatible CLI.
 - P4 Eval Spec loop: completed and verified for generation, review-gated freezing, and forged-quote rejection.
 - P5 Explainable scoring: completed and verified for atomic report claims, one-to-one alignment, process scores, and root-cause contradiction penalties.
 - P6 Benchmark execution: completed and verified for durable queued execution, result persistence, run summaries, cancellation, retry, and export APIs.
@@ -132,12 +132,12 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] 一份 Case 对多份报告的自动导入、冻结和 Benchmark 编排。
 - [x] 前端可复用的 Evaluation Session API。
 - [x] 单命令 `analystbench score` 调试入口。
-- [x] Claude `/analystbench-score` 交互技能。
+- [x] claude `/analystbench-score` 交互技能。
 - [x] 端到端测试和中文快速上手。
 
 验收门禁：用户仅提供草稿文件；无问题时自动评分，有问题时只确认明确字段；不手工编辑 JSON 或处理内部 ID。
 
-实现状态：已完成。真实 Claude Skill 前向测试使用一份 Case 和一份报告，经“全部接受建议”后自动完成评测并返回结果。
+实现状态：已完成。真实 claude Skill 前向测试使用一份 Case 和一份报告，经“全部接受建议”后自动完成评测并返回结果。
 
 ## P11 Case 基准库与多报告批量评测
 
@@ -148,12 +148,12 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] 一份已发布 Case 对多份报告的后台批量评分与自动对比。
 - [x] `case-import`、`case-list`、`evaluate` CLI。
 - [x] 前端可复用的 Case Draft、Report Draft、Evaluation Batch API。
-- [x] 中文 Claude/OpenCode Skill 与 Quickstart 更新。
+- [x] 中文 claude/OpenCode Skill 与 Quickstart 更新。
 - [x] 端到端测试和迁移验证。
 
 验收门禁：标准答案只审核一次；报告评分不再重复确认 Case；用户只使用 `case_key` 和文件路径，不处理内部 ID。
 
-实现状态：已完成。新增 API 端到端测试覆盖一次整体确认、发布后复用、两份报告后台评分、提示引用警告和自动对比；真实 Claude Code 只读前向检查确认两个项目级 Skill 可用。
+实现状态：已完成。新增 API 端到端测试覆盖一次整体确认、发布后复用、两份报告后台评分、提示引用警告和自动对比；真实 claude 只读前向检查确认两个项目级 Skill 可用。
 
 ## P12 Case 测试集与分类存储
 
@@ -164,7 +164,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] 同一测试集发布新 Case 时生成包含全部最新 Case Revision 的版本。
 - [x] `case-import` 与 Case Draft API 接收测试集、分类和源文件名。
 - [x] `case-organize` 与 API 支持将已审核旧 Case 重新归档，无需复审评分项。
-- [x] 本地数据库迁移、Claude/Codex Skill、中文输入说明和端到端测试。
+- [x] 本地数据库迁移、claude/Codex Skill、中文输入说明和端到端测试。
 
 验收门禁：Case 文件名、测试集和分类均可追溯；同一测试集的多个 Case 进入同一版本快照；旧 Case 迁移不手改 JSON 或数据库。
 
@@ -185,7 +185,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 
 ## P14 语义 Judge 与评分项新命名
 
-- [x] 正式评分默认调用 Claude Code，支持切换 OpenCode。
+- [x] 正式评分默认调用 claude，支持切换 OpenCode。
 - [x] 大模型只判定 `match`、`partial_match`、`missing`、`contradiction`，Python 校验结构并执行固定计分。
 - [x] 禁止正式评分静默退回字符匹配；lexical 仅保留为显式开发调试模式。
 - [x] 根因使用 `root`，证据链使用 `chain-N`，通用评分项使用 `claim-N`，候选结论使用 `candidate-N`。
@@ -193,7 +193,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] CLI、Evaluation Batch API、后台 Worker、中文报告和 Skill 使用同一 Judge 配置。
 - [x] 新增语义 Judge 输出校验、重复 Candidate 对齐和固定计分回归测试。
 
-验收门禁：正式报告必须标注 Claude 或 OpenCode Judge；Judge 失败时整次评分失败且保留错误；数据库和结果只保留新 ID 格式。
+验收门禁：正式报告必须标注 claude 或 OpenCode Judge；Judge 失败时整次评分失败且保留错误；数据库和结果只保留新 ID 格式。
 
 实现状态：代码与自动化测试完成，旧数据库和结果在切换时一次性清理，不做旧结果兼容。
 
@@ -228,7 +228,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] 用户命令负责输出文本，系统把 stdout 冻结为 `<method_key>.md`，stderr/原始输出按 attempt 审计。
 - [x] Local Worker 串行执行满足默认并发 1，API 拒绝未声明的凭据字段。
 
-验收门禁：Fake Python/Fake Claude 可生成报告；`{tool_dir}` 能定位隔离工作区外的本地脚本；Shell 注入、路径逃逸、空输出和超限输出均返回稳定错误。
+验收门禁：Fake Python/Fake claude 可生成报告；`{tool_dir}` 能定位隔离工作区外的本地脚本；Shell 注入、路径逃逸、空输出和超限输出均返回稳定错误。
 
 ### P15.3 持久化提交批次与隔离执行
 
@@ -243,7 +243,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 ### P15.4 自动评分
 
 - [x] 只按 Manifest 中成功报告调用现有 `evaluate_direct` 程序化评分链路。
-- [x] Python 日志证据评分与 Claude 结论语义判断保持既有边界。
+- [x] Python 日志证据评分与 claude 结论语义判断保持既有边界。
 - [x] 至少一个报告成功时继续评分并生成 `result.json`、`result.md`。
 - [x] 所有方式失败时不启动评分；评分失败不修改已冻结报告。
 - [x] 评分临时产物沿用现有直接评分清理规则，运行错误写入审计产物。

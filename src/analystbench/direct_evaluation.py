@@ -223,9 +223,9 @@ def evaluate_direct(
     """Evaluate original report texts entirely in memory and return export-ready results."""
     if not reports:
         raise AnalystBenchError("report_invalid", "至少需要一份 AI 报告。")
-    if judge_runner not in {"claude-code", "opencode", "lexical"}:
+    if judge_runner not in {"claude", "opencode", "lexical"}:
         raise AnalystBenchError(
-            "validation_failed", "judge must be claude-code, opencode, or lexical"
+            "validation_failed", "judge must be claude, opencode, or lexical"
         )
     spec_payload = _direct_spec(case_payload, case_key)
     report_results = []
@@ -310,7 +310,7 @@ def evaluate_direct_with_alignment(
     alignment_json: dict[str, Any],
     source_path: str | None = None,
 ) -> dict[str, Any]:
-    """Score a Python-generated alignment draft after Claude fills semantic fields."""
+    """Score a Python-generated alignment draft after claude fills semantic fields."""
     if not reports:
         raise AnalystBenchError("report_invalid", "至少需要一份 AI 报告。")
     spec_payload = _direct_spec(case_payload, case_key)
@@ -369,7 +369,7 @@ def evaluate_direct_with_alignment(
         )
         result["judge"] = {
             "kind": "skill_semantic",
-            "runner": "claude-code",
+            "runner": "claude",
         }
         report_results.append(
             {

@@ -24,6 +24,11 @@ from analystbench.evaluation_submission import (
 )
 from analystbench.jobs import JobQueue
 from analystbench.logging import configure_logging
+from analystbench.skill_optimization import (
+    SkillRegistryService,
+    SkillWorkspacePreparer,
+)
+from analystbench.skill_optimization.experiment import OptimizationExperimentService
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +47,24 @@ class LocalWorker:
         self.case_library = CaseLibraryService(
             self.session_factory, self.content_store, self.settings
         )
-        self.evaluation_submissions = EvaluationSubmissionService(
+        self.skill_registry = SkillRegistryService(
             self.session_factory, self.settings
+        )
+        workspace_preparer = (
+            SkillWorkspacePreparer(self.session_factory, self.skill_registry)
+            if self.settings.skill_optimization_enabled
+            else None
+        )
+        self.evaluation_submissions = EvaluationSubmissionService(
+            self.session_factory,
+            self.settings,
+            workspace_preparer=workspace_preparer,
+        )
+        self.skill_optimization = OptimizationExperimentService(
+            self.session_factory,
+            self.settings,
+            self.skill_registry,
+            self.evaluation_submissions,
         )
         self.evaluation_schedules = EvaluationScheduleService(
             self.session_factory,
@@ -89,6 +110,7 @@ class LocalWorker:
             daemon=True,
         )
         lease_thread.start()
+        payload: dict[str, object] = {}
         try:
             payload = self.jobs.payload(job)
             if job.kind == "agent_case_run":
@@ -109,6 +131,8 @@ class LocalWorker:
                 self.evaluation_schedules.execute_trigger(
                     str(payload["evaluation_schedule_run_id"])
                 )
+            elif job.kind == "skill_optimization_advance":
+                self.skill_optimization.advance(str(payload["experiment_id"]))
             else:
                 raise RuntimeError(f"unsupported job kind '{job.kind}'")
         except AgentRunnerError as exc:
@@ -128,6 +152,16 @@ class LocalWorker:
             )
             logger.warning("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         except Exception as exc:
+            if job.kind == "skill_optimization_advance":
+                try:
+                    self.skill_optimization.fail(
+                        str(payload["experiment_id"]), exc
+                    )
+                except Exception:
+                    logger.exception(
+                        "skill_optimization_failure_persist_failed",
+                        extra={"job_id": job.id},
+                    )
             self.jobs.fail(
                 job.id,
                 str(exc),

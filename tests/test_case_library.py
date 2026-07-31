@@ -257,7 +257,7 @@ def test_frontend_raw_conversion_uses_background_runner(tmp_path: Path) -> None:
                     "系统因 suspend-to-mem 超时触发 panic。"
                     "根因是未执行 REPICK，线程可能跑错 CPU 核。"
                 ),
-                "runner": "claude-code",
+                "runner": "claude",
                 "runner_configuration": {
                     "executable": sys.executable,
                     "extra_args": [str(fake)],

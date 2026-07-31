@@ -1,6 +1,6 @@
 # AnalystBench Skills 说明
 
-`src/analystbench/skills` 下目前保留 4 个有效 Skill。它们是给 Claude Code、Codex 等 Agent 使用的操作说明包：负责识别用户意图、准备正确输入、调用 AnalystBench CLI，并处理必要的人工确认。
+`src/analystbench/skills` 下目前保留 4 个有效 Skill。它们是给 claude、Codex 等 Agent 使用的操作说明包：负责识别用户意图、准备正确输入、调用 AnalystBench CLI，并处理必要的人工确认。
 
 Skill 不是评分算法本身。真正的 JSON 校验、数据持久化、语义判定和确定性计分都由 AnalystBench 后端完成。
 
@@ -92,12 +92,12 @@ analystbench-evaluate ──→ 分数、通过状态、解释和多报告对比
 这个 Skill 使用已经发布的 Case 评测一份或多份报告：
 
 - 输入使用可读的 `case_key`，不让用户处理 Dataset、Revision、Run 等内部 ID；
-- 默认使用 Claude Code 做语义判定，也可按用户要求使用 OpenCode；
+- 默认使用 claude 做语义判定，也可按用户要求使用 OpenCode；
 - Python 后端校验 Judge 输出并执行固定计分公式；
 - 第一份报告作为基线，后续报告给出分差和提升、退化或不变结论；
 - 输出每份报告的总分、通过状态，以及根因、分类和分析链各分项。
 
-`--judge lexical` 只用于开发调试，不能作为正式评分结果。Claude Code 或 OpenCode 失败时，Skill 应原样报告错误，不能静默降级。
+`--judge lexical` 只用于开发调试，不能作为正式评分结果。claude 或 OpenCode 失败时，Skill 应原样报告错误，不能静默降级。
 
 ## 如何选择
 
@@ -116,9 +116,9 @@ analystbench-evaluate ──→ 分数、通过状态、解释和多报告对比
 仓库中目前保留两份相同的 Skill 文件：
 
 - `src/analystbench/skills`：随项目源码维护和打包的源目录；
-- `.claude/skills`：Claude Code 的项目级发现目录。
+- `.claude/skills`：claude 的项目级发现目录。
 
-仅把 Skill 放到 `src/analystbench/skills`，并不意味着 Claude Code 或 Codex 会自动发现它。运行环境仍需通过项目级目录、用户级 Skill 目录、安装脚本或符号链接暴露 Skill。每个可发现 Skill 的根目录至少要有一个合法的 `SKILL.md`。
+仅把 Skill 放到 `src/analystbench/skills`，并不意味着 claude 或 Codex 会自动发现它。运行环境仍需通过项目级目录、用户级 Skill 目录、安装脚本或符号链接暴露 Skill。每个可发现 Skill 的根目录至少要有一个合法的 `SKILL.md`。
 
 常见附属文件的作用：
 

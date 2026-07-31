@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 LOCAL_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 CASE_MODES = {"all_ready", "selected"}
-JUDGE_RUNNERS = {"claude-code", "opencode", "lexical"}
+JUDGE_RUNNERS = {"claude", "opencode", "lexical"}
 SUBMISSION_TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled"}
 RUN_TERMINAL = SUBMISSION_TERMINAL | {
     "skipped_no_cases",

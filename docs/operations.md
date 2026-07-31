@@ -33,7 +33,7 @@ analystbench service stop
 
 ## 安全与隐私
 
-执行配置与应用设置都不接收凭据。Claude Code 和 OpenCode 使用用户在本地 CLI 中完成的认证。Worker 以 argv 数组而非 Shell 执行命令，在每个 Case 的临时工作目录中运行；原始输出仅保留在本地 Content Store。API 响应只暴露哈希值和结构化元数据，不直接返回 Agent 原始输出。
+执行配置与应用设置都不接收凭据。claude 和 OpenCode 使用用户在本地 CLI 中完成的认证。Worker 以 argv 数组而非 Shell 执行命令，在每个 Case 的临时工作目录中运行；原始输出仅保留在本地 Content Store。API 响应只暴露哈希值和结构化元数据，不直接返回 Agent 原始输出。
 
 ## 失败恢复
 

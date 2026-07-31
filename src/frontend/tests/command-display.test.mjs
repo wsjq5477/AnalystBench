@@ -9,11 +9,11 @@ import {
 test("shows non-ASCII prompt arguments with explicit double-quote boundaries", () => {
   assert.equal(
     formatCommand([
-      "/home/jiqi/.vscode-server/extensions/anthropic.claude-code/resources/native-binary/claude",
+      "/home/jiqi/.vscode-server/extensions/anthropic.claude/resources/native-binary/claude",
       "-p",
       "帮我分析日志/home/jiqi/LLM/AnalystBench/data/test.md",
     ]),
-    '/home/jiqi/.vscode-server/extensions/anthropic.claude-code/resources/native-binary/claude -p "帮我分析日志/home/jiqi/LLM/AnalystBench/data/test.md"',
+    '/home/jiqi/.vscode-server/extensions/anthropic.claude/resources/native-binary/claude -p "帮我分析日志/home/jiqi/LLM/AnalystBench/data/test.md"',
   );
 });
 

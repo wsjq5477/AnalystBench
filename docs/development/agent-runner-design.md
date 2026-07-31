@@ -1,10 +1,10 @@
-# Agent Runner 设计：Claude Code 与 OpenCode
+# Agent Runner 设计：claude 与 OpenCode
 
 状态：Accepted（P0.1，2026-07-21）
 
 ## 目标与边界
 
-Agent Runner 在本地后台执行 Claude Code 或 OpenCode，为指定 Case 生成 Candidate Report。它不生成 Eval Spec、不充当 Judge，也不直接计分。
+Agent Runner 在本地后台执行 claude 或 OpenCode，为指定 Case 生成 Candidate Report。它不生成 Eval Spec、不充当 Judge，也不直接计分。
 
 第一版只评价最终报告。Runner 会保存结构化事件和执行元数据，但 Trace、工具调用质量、Token 效率和执行步骤不进入分数。
 
@@ -31,7 +31,7 @@ Agent 输出和 Judge 输出都可能波动。先冻结 Candidate Report，再�
 
 Runner 返回统一 AgentRunArtifact：runner_id/version、cli_version、model、agent、prompt_hash、workspace_hash、policy_hash、started/finished、exit_code、termination_reason、usage、final_report、raw_events_ref 和 stderr_ref。
 
-## Claude Code Runner
+## claude Runner
 
 基础形式：
 
@@ -39,9 +39,9 @@ Runner 返回统一 AgentRunArtifact：runner_id/version、cli_version、model�
 
 受控模式可增加 `--bare`、显式 settings、model 和 allowedTools。`--bare` 会跳过用户/项目自动发现的 hooks、skills、plugins、MCP 和 memory，因此更适合可复现 Benchmark，但认证必须由显式 Anthropic 凭据或 settings helper 提供。
 
-本地会话模式允许 Claude CLI 使用当前登录和本机配置，便于首次运行；Manifest 必须将其标记为 environment_controlled=false，并记录可安全采集的配置文件哈希和命令参数，不能读取认证内容。
+本地会话模式允许 claude CLI 使用当前登录和本机配置，便于首次运行；Manifest 必须将其标记为 environment_controlled=false，并记录可安全采集的配置文件哈希和命令参数，不能读取认证内容。
 
-官方参考：[Run Claude Code programmatically](https://code.claude.com/docs/en/headless) 和 [CLI reference](https://code.claude.com/docs/en/cli-usage)。
+官方参考：[Run claude programmatically](https://code.claude.com/docs/en/headless) 和 [CLI reference](https://code.claude.com/docs/en/cli-usage)。
 
 ## OpenCode Runner
 
@@ -59,7 +59,7 @@ OpenCode Profile 生成独立配置，将 edit、external_directory、web 和 ba
 
 版本化 Profile 至少包含：
 
-- runner：claude-code 或 opencode。
+- runner：claude 或 opencode。
 - executable：受信任可执行文件路径或名称。
 - model、agent、CLI flags 和 adapter version。
 - prompt template version 与 Case 材料布局版本。
@@ -106,8 +106,8 @@ Local Worker 通过数据库租约领取 Agent Case Run。取消先发送正常�
 
 ## 凭据边界
 
-AnalystBench 不创建、导入、展示或持久化 Claude/OpenCode 凭据。CLI 使用它自身的登录状态或允许的环境变量。Manifest 只记录变量名、认证模式和非敏感配置哈希。
+AnalystBench 不创建、导入、展示或持久化 claude/OpenCode 凭据。CLI 使用它自身的登录状态或允许的环境变量。Manifest 只记录变量名、认证模式和非敏感配置哈希。
 
 ## 可比较性
 
-Claude Code 与 OpenCode 可以作为不同 Candidate 直接比较，前提是 Case Revision、任务 Prompt、材料布局、工具/网络权限、超时和评分输入一致。Agent/模型/CLI 版本属于被比较变量，必须记录而不要求相同。
+claude 与 OpenCode 可以作为不同 Candidate 直接比较，前提是 Case Revision、任务 Prompt、材料布局、工具/网络权限、超时和评分输入一致。Agent/模型/CLI 版本属于被比较变量，必须记录而不要求相同。

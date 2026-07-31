@@ -22,7 +22,7 @@
 - Forbidden Claim、critical contradiction、分数封顶和直接失败。
 - Candidate 确定程度对分数的影响。
 - 缺报告、模型失败、缓存命中和重试。
-- Claude Code/OpenCode Fake Runner 的成功、认证错误、非零退出、无最终报告、Worker 中断和取消。
+- claude/OpenCode Fake Runner 的成功、认证错误、非零退出、无最终报告、Worker 中断和取消。
 - 可直接比较与非受控比较。
 
 每个 fixture 保存输入、结构化模型产物和预期中间/最终结果。变更预期值必须在评审中说明评分规则变化，禁止无说明批量更新快照。

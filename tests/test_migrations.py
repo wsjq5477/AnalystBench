@@ -81,3 +81,48 @@ def test_p16_upgrades_existing_p15_sqlite_database(tmp_path: Path) -> None:
         assert "target_ids_json" in schedule_columns
     finally:
         engine.dispose()
+
+
+def test_runner_name_is_normalized_during_upgrade(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'analystbench.db').as_posix()}"
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "0014_skill_optimization")
+
+    legacy_name = "-".join(("claude", "code"))
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO execution_profiles
+                    (
+                        id, name, version_number, runner,
+                        configuration_json, status, content_hash
+                    )
+                VALUES
+                    (
+                        'legacy-profile', 'legacy', 1, :runner,
+                        '{}', 'frozen', 'sha256:legacy'
+                    )
+                """
+            ),
+            {"runner": legacy_name},
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            runner = connection.scalar(
+                text(
+                    "SELECT runner FROM execution_profiles "
+                    "WHERE id = 'legacy-profile'"
+                )
+            )
+        assert runner == "claude"
+    finally:
+        engine.dispose()

@@ -12,6 +12,7 @@ export default appOptions;
         <button :class="['nav-item', { active: activeView === 'dashboard' }]" @click="navigate('dashboard')"><IconLayoutDashboard :size="19" />总览</button>
         <button :class="['nav-item', { active: activeView === 'dataset' }]" @click="navigate('dataset')"><IconDatabase :size="19" />测试集<IconChevronRight class="nav-arrow" :size="16" /></button>
         <button :class="['nav-item', { active: activeView === 'results' }]" @click="navigate('results')"><IconClipboardData :size="19" />评测结果<IconChevronRight class="nav-arrow" :size="16" /></button>
+        <button :class="['nav-item', { active: activeView === 'optimization' }]" @click="navigate('optimization')"><IconSparkles :size="19" />Skill 自优化<IconChevronRight class="nav-arrow" :size="16" /></button>
         <button :class="['nav-item muted', { active: activeView === 'settings' }]" @click="navigate('settings')"><IconSettings :size="19" />设置<IconChevronRight class="nav-arrow" :size="16" /></button>
       </nav>
       <div class="sidebar-foot"><span>© 2026 AnalystBench</span><span>v1.0.0</span><small :class="connection">{{ connection === 'connected' ? 'API 已连接' : connection === 'offline' ? 'API 未连接' : '正在检查 API' }}</small></div>
@@ -19,7 +20,7 @@ export default appOptions;
 
     <main class="content-area">
       <header class="app-header">
-        <div class="breadcrumb"><span>{{ activeView === 'dashboard' ? '总览' : activeView === 'dataset' ? '测试集' : activeView === 'results' ? '评测结果' : '设置' }}</span></div>
+        <div class="breadcrumb"><span>{{ activeView === 'dashboard' ? '总览' : activeView === 'dataset' ? '测试集' : activeView === 'results' ? '评测结果' : activeView === 'optimization' ? 'Skill 自优化' : '设置' }}</span></div>
         <div class="header-actions">
           <label class="date-input"><IconTerminal2 :size="15" /><input type="text" value="2025-06-22 ~ 2025-07-22" aria-label="时间范围" /></label>
           <button class="ghost-button"><IconFileExport :size="16" />导出报告</button>
@@ -542,6 +543,201 @@ export default appOptions;
         </template>
       </section>
 
+      <section v-if="activeView === 'optimization'" class="work-page optimization-page">
+        <div class="work-heading">
+          <div>
+            <p class="eyebrow">AUTONOMOUS SKILL IMPROVEMENT</p>
+            <h1>Skill 自优化</h1>
+            <p>用同一组 Benchmark 比较基线与候选；只有通过 Gate 的版本才会成为 Active。</p>
+          </div>
+          <div class="heading-actions">
+            <button class="ghost-button" @click="loadOptimizationWorkspace"><IconRefresh :size="16" />刷新</button>
+            <button class="primary-button" @click="openOptimizationDialog"><IconPlus :size="16" />新建优化实验</button>
+          </div>
+        </div>
+
+        <div class="optimization-overview">
+          <article class="surface optimization-stat"><span>实验总数</span><strong>{{ optimizationSummary.total }}</strong><small>不可变 Skill 版本</small></article>
+          <article class="surface optimization-stat"><span>运行中</span><strong>{{ optimizationSummary.running }}</strong><small>自动轮询进度</small></article>
+          <article class="surface optimization-stat"><span>已完成</span><strong>{{ optimizationSummary.completed }}</strong><small>含 Early Stop</small></article>
+          <article class="surface optimization-stat"><span>当前实验晋升</span><strong>{{ optimizationSummary.promoted }}</strong><small>Gate 通过后原子切换</small></article>
+        </div>
+
+        <div v-if="!optimizationExperiments.length && !optimizationLoading" class="empty-state surface optimization-empty">
+          <IconSparkles :size="32" />
+          <p>还没有 Skill 自优化实验</p>
+          <span>选择本地 Skill、claude Target 和 Benchmark Cases，系统会自动生成两个候选并筛选。</span>
+          <button class="primary-button" @click="openOptimizationDialog"><IconPlus :size="16" />创建第一个实验</button>
+        </div>
+
+        <div v-else class="optimization-layout">
+          <aside class="surface optimization-list-panel">
+            <div class="panel-heading"><h2>实验</h2><span>{{ optimizationExperiments.length }}</span></div>
+            <button
+              v-for="experiment in optimizationExperiments"
+              :key="experiment.id"
+              :class="['optimization-list-item', { active: selectedOptimizationExperimentId === experiment.id }]"
+              @click="selectOptimizationExperiment(experiment.id)"
+            >
+              <span class="optimization-list-main"><strong>{{ experiment.name }}</strong><small>Epoch {{ experiment.current_epoch_number }} / {{ experiment.max_epochs }}</small></span>
+              <span :class="optimizationStatusClass(experiment.status)">{{ optimizationStatusLabel(experiment.status) }}</span>
+            </button>
+          </aside>
+
+          <section class="optimization-detail">
+            <template v-if="selectedOptimizationDetail">
+              <section class="surface optimization-hero">
+                <div>
+                  <p class="eyebrow">EXPERIMENT</p>
+                  <h2>{{ selectedOptimizationDetail.experiment.name }}</h2>
+                  <div class="optimization-meta">
+                    <span :class="optimizationStatusClass(selectedOptimizationDetail.experiment.status)">{{ optimizationStatusLabel(selectedOptimizationDetail.experiment.status) }}</span>
+                    <code>{{ selectedOptimizationDetail.experiment.id }}</code>
+                    <span v-if="selectedOptimizationDetail.experiment.stop_reason">停止原因：{{ selectedOptimizationDetail.experiment.stop_reason }}</span>
+                  </div>
+                </div>
+                <div class="heading-actions">
+                  <button v-if="selectedOptimizationDetail.experiment.status === 'created'" class="primary-button" @click="startOptimizationExperiment(selectedOptimizationDetail.experiment)">启动</button>
+                  <button v-if="selectedOptimizationDetail.experiment.status === 'failed'" class="primary-button" @click="resumeOptimizationExperiment(selectedOptimizationDetail.experiment)">从断点恢复</button>
+                  <button v-if="selectedOptimizationDetail.experiment.status === 'running'" class="ghost-button danger-button" @click="cancelOptimizationExperiment(selectedOptimizationDetail.experiment)">取消</button>
+                </div>
+              </section>
+
+              <section v-for="epoch in selectedOptimizationDetail.epochs" :key="epoch.id" class="surface optimization-epoch">
+                <div class="optimization-epoch-head">
+                  <div><span class="epoch-number">E{{ epoch.number }}</span><div><h3>Epoch {{ epoch.number }}</h3><small>Parent {{ epoch.parent_skill_version_id }}</small></div></div>
+                  <div><span :class="optimizationStatusClass(epoch.status)">{{ optimizationStatusLabel(epoch.status) }}</span><small v-if="epoch.decision">决策：{{ epoch.decision }}</small></div>
+                </div>
+
+                <div class="optimization-flow" aria-label="优化阶段">
+                  <span :class="{ done: epoch.evidence?.case_count }">Evidence</span>
+                  <i></i>
+                  <span :class="{ done: epoch.candidates.length }">2 Candidates</span>
+                  <i></i>
+                  <span :class="{ done: epoch.candidates.some((item) => item.status === 'screening_selected' || item.status === 'accepted') }">Screening</span>
+                  <i></i>
+                  <span :class="{ done: epoch.decision }">Gate</span>
+                </div>
+
+                <div v-if="epoch.evidence?.case_count" class="optimization-evidence">
+                  <div class="panel-heading"><h3>Failure Family / Dimension Evidence</h3><span>{{ epoch.evidence.case_count }} Cases</span></div>
+                  <div class="evidence-grid">
+                    <table>
+                      <thead><tr><th>FAILURE FAMILY</th><th>MEDIAN</th><th>SAMPLES</th></tr></thead>
+                      <tbody><tr v-for="row in optimizationObjectRows(epoch.evidence.failure_families)" :key="row.key"><td>{{ row.key }}</td><td>{{ row.value.median_score ?? '—' }}</td><td>{{ row.value.sample_count }}</td></tr></tbody>
+                    </table>
+                    <table>
+                      <thead><tr><th>DIMENSION</th><th>MEDIAN</th><th>SAMPLES</th></tr></thead>
+                      <tbody><tr v-for="row in optimizationObjectRows(epoch.evidence.dimensions)" :key="row.key"><td>{{ row.key }}</td><td>{{ row.value.median_score ?? '—' }}</td><td>{{ row.value.sample_count }}</td></tr></tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="candidate-grid">
+                  <article v-for="(candidate, index) in epoch.candidates" :key="candidate.id" class="candidate-card">
+                    <div class="candidate-head">
+                      <span class="candidate-index">C{{ index + 1 }}</span>
+                      <div><strong>候选 {{ index + 1 }}</strong><small>{{ candidate.candidate_type }}</small></div>
+                      <span :class="optimizationStatusClass(candidate.status)">{{ optimizationStatusLabel(candidate.status) }}</span>
+                    </div>
+                    <p>{{ candidate.rationale || 'Optimizer 未提供说明。' }}</p>
+                    <div v-if="candidateComparison(candidate, 'screening')" class="candidate-metrics">
+                      <span>SCREENING DELTA <strong>{{ signedDelta(candidateComparison(candidate, 'screening').metrics.overall_delta) }}</strong></span>
+                      <span>FAMILY <strong>{{ optimizationObjectRows(candidateComparison(candidate, 'screening').metrics.family_deltas).length }}</strong></span>
+                    </div>
+                    <div v-if="candidateComparison(candidate, 'paired_repeated_validation')" class="candidate-metrics">
+                      <span>FULL DELTA <strong>{{ signedDelta(candidateComparison(candidate, 'paired_repeated_validation').metrics.overall_delta) }}</strong></span>
+                      <span>REPEATS <strong>{{ candidateComparison(candidate, 'paired_repeated_validation').metrics.repeat_count }}</strong></span>
+                    </div>
+                    <span v-if="candidate.rejection_code" class="candidate-rejection">{{ candidate.rejection_code }}</span>
+                    <button class="ghost-button" @click="openOptimizationCandidate(candidate)">查看 Patch 与 Diff</button>
+                  </article>
+                </div>
+
+                <div v-for="candidate in epoch.candidates" :key="`cmp-${candidate.id}`">
+                  <section v-if="candidateComparison(candidate, 'paired_repeated_validation')" class="comparison-breakdown">
+                    <div class="panel-heading"><h3>候选比较</h3><span :class="optimizationStatusClass(candidateComparison(candidate, 'paired_repeated_validation').gate.verdict)">{{ candidateComparison(candidate, 'paired_repeated_validation').gate.verdict }}</span></div>
+                    <div class="evidence-grid">
+                      <table>
+                        <thead><tr><th>CASE / FAMILY</th><th>BASELINE</th><th>CANDIDATE</th><th>DELTA</th></tr></thead>
+                        <tbody><tr v-for="pair in candidateComparison(candidate, 'paired_repeated_validation').metrics.pairs" :key="pair.case_path"><td>{{ pair.case_family }}<small>{{ pair.case_path }}</small></td><td>{{ pair.baseline_score }}</td><td>{{ pair.candidate_score }}</td><td :class="{ 'delta-positive': pair.delta > 0, 'delta-negative': pair.delta < 0 }">{{ signedDelta(pair.delta) }}</td></tr></tbody>
+                      </table>
+                      <table>
+                        <thead><tr><th>DIMENSION</th><th>DELTA</th></tr></thead>
+                        <tbody><tr v-for="row in optimizationObjectRows(candidateComparison(candidate, 'paired_repeated_validation').metrics.dimension_deltas)" :key="row.key"><td>{{ row.key }}</td><td :class="{ 'delta-positive': row.value > 0, 'delta-negative': row.value < 0 }">{{ signedDelta(row.value) }}</td></tr></tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </section>
+
+              <section v-if="optimizationCandidateDetail" class="surface optimization-diff">
+                <div class="panel-heading"><h2>候选 Patch 与 Diff</h2><button class="text-button" @click="optimizationCandidateDetail = null">关闭</button></div>
+                <p>{{ optimizationCandidateDetail.rationale }}</p>
+                <pre>{{ optimizationCandidateDetail.diff || '没有文本差异。' }}</pre>
+              </section>
+            </template>
+            <div v-else class="empty-state surface"><IconInfoCircle :size="30" /><p>选择左侧实验查看详情</p></div>
+          </section>
+        </div>
+
+        <div v-if="showOptimizationDialog" class="dialog-overlay" @click.self="showOptimizationDialog = false">
+          <section class="dialog-card dialog-card-wide surface optimization-dialog">
+            <div class="panel-heading"><h2>新建 Skill 自优化实验</h2><span>步骤 {{ optimizationDialogStep }} / 3</span></div>
+            <div class="dialog-stepper"><span :class="{ active: optimizationDialogStep >= 1 }">1 Skill</span><i></i><span :class="{ active: optimizationDialogStep >= 2 }">2 Benchmark</span><i></i><span :class="{ active: optimizationDialogStep >= 3 }">3 Gate</span></div>
+
+            <template v-if="optimizationDialogStep === 1">
+              <label>实验名称<input v-model.trim="optimizationForm.name" /></label>
+              <label>Skill 来源<select v-model="optimizationForm.skill_mode"><option value="new">注册本地 Skill</option><option value="existing">使用已有 Skill</option></select></label>
+              <template v-if="optimizationForm.skill_mode === 'new'">
+                <div class="form-two-columns"><label>Skill Key<input v-model.trim="optimizationForm.skill_key" placeholder="my-skill" /></label><label>调用名称<input v-model.trim="optimizationForm.invoke_as" placeholder="/my-skill" /></label></div>
+                <label>Harness Key<input v-model.trim="optimizationForm.harness_key" placeholder="claude-skill" /></label>
+                <label>本地 Skill 目录<input v-model.trim="optimizationForm.source_path" placeholder="/project/.claude/skills/my-skill" /></label>
+                <label>显示名称<input v-model.trim="optimizationForm.skill_name" placeholder="默认使用 Skill Key" /></label>
+              </template>
+              <label v-else>已有 Skill<select v-model="optimizationForm.skill_id"><option value="">请选择</option><option v-for="skill in skills" :key="skill.id" :value="skill.id">{{ skill.name }} · {{ skill.invoke_as }}</option></select></label>
+            </template>
+
+            <template v-else-if="optimizationDialogStep === 2">
+              <label>claude Evaluation Target<select v-model="optimizationForm.evaluation_target_id" @change="syncOptimizationHarnessKey"><option value="">请选择已冻结 Target</option><option v-for="target in frozenOptimizationTargets" :key="target.id" :value="target.id">{{ target.display_name || target.key }} · {{ target.command_template }}</option></select></label>
+              <p class="form-note">Target 命令必须明确包含 {{ optimizationForm.invoke_as || '/skill-name' }}；系统会把冻结版本复制到每个独立工作区。</p>
+              <div class="optimization-case-picker">
+                <label v-for="item in optimizationCaseOptions" :key="item.path" :class="{ disabled: !item.ready }">
+                  <input type="checkbox" :checked="optimizationForm.case_paths.includes(item.path)" :disabled="!item.ready" @change="toggleOptimizationCase(item.path)" />
+                  <span>{{ item.label }}</span><small>{{ item.ready ? '日志已就绪' : '缺少日志' }}</small>
+                </label>
+              </div>
+              <p class="form-note">已选择 {{ optimizationForm.case_paths.length }} 个 Case；基线和候选默认各运行 3 次，灰区自动追加到 5/7 次。</p>
+            </template>
+
+            <template v-else>
+              <div class="form-two-columns">
+                <label>Optimizer<select v-model="optimizationForm.optimizer_runner"><option value="claude">claude</option><option value="opencode">OpenCode</option></select></label>
+                <label>可执行文件<input v-model.trim="optimizationForm.optimizer_executable" /></label>
+              </div>
+              <label>优化指令<textarea v-model.trim="optimizationForm.optimizer_instruction" rows="4"></textarea></label>
+              <div class="form-two-columns">
+                <label>评分 Judge<select v-model="optimizationForm.judge_runner"><option value="claude">claude</option><option value="opencode">OpenCode</option><option value="lexical">Lexical（调试）</option></select></label>
+                <label>最大 Epoch<input v-model.number="optimizationForm.max_epochs" type="number" min="1" max="5" /></label>
+              </div>
+              <div class="form-three-columns">
+                <label>最小分数提升<input v-model.number="optimizationForm.min_overall_delta" type="number" step="0.1" /></label>
+                <label>最大耗时增长<input v-model.number="optimizationForm.max_latency_growth" type="number" step="0.05" /></label>
+                <label>最大 Token 增长<input v-model.number="optimizationForm.max_token_growth" type="number" step="0.05" /></label>
+              </div>
+              <div class="api-notice"><IconInfoCircle :size="16" />每轮生成两个候选，Screening 只保留一个；连续两轮无候选或无提升会 Early Stop。</div>
+            </template>
+
+            <div class="dialog-actions">
+              <button class="ghost-button" @click="showOptimizationDialog = false">取消</button>
+              <button v-if="optimizationDialogStep > 1" class="ghost-button" @click="optimizationDialogStep -= 1">上一步</button>
+              <button v-if="optimizationDialogStep < 3" class="primary-button" @click="optimizationDialogStep += 1">下一步</button>
+              <button v-else class="primary-button" :disabled="optimizationSaving" @click="createOptimizationExperiment"><IconLoader2 v-if="optimizationSaving" class="spin" :size="15" />{{ optimizationSaving ? '正在创建…' : '创建并启动' }}</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
       <!-- Settings view -->
       <section v-if="activeView === 'settings'" class="work-page settings-page">
         <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径、Harness 和模型；测评时直接选择需要运行的组合。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods(); loadEvaluationCatalog()"><IconRefresh :size="16" />刷新</button></div>
@@ -669,7 +865,7 @@ export default appOptions;
           </div>
           <label>打分 Judge
             <select v-model="submissionForm.judge_runner">
-              <option value="claude-code">claude-code（推荐）</option>
+              <option value="claude">claude（推荐）</option>
               <option value="opencode">opencode</option>
             </select>
           </label>
@@ -693,7 +889,7 @@ export default appOptions;
         </p>
         <label>Key
           <span>同时作为列表名称和报告文件名；支持大小写字母、数字、点、括号、-、_</span>
-          <input v-model="methodForm.key" :disabled="Boolean(editingMethodId)" placeholder="codeAgent(glm5.1)-native" />
+          <input v-model="methodForm.key" :disabled="Boolean(editingMethodId)" placeholder="claude(glm5.1)-native" />
         </label>
         <label>工具目录（可选）
           <input v-model="methodForm.tool_dir" placeholder="/home/user/evaluation-tools" />
@@ -717,8 +913,8 @@ export default appOptions;
       <section class="surface dialog-card dialog-card-wide">
         <div class="panel-heading"><h2>{{ editingHarnessId ? '修改 Harness' : '新建 Harness' }}</h2></div>
         <p class="form-note">命令含 <code>{model}</code> 时需要模型，不含则作为无模型基线；命令不经过 Shell。</p>
-        <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="codeagent-native" /></label>
-        <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='codeagent -p "分析 {input}" --model {model}'></textarea></label>
+        <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="claude-native" /></label>
+        <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='claude -p "分析 {input}" --model {model}'></textarea></label>
         <div class="form-grid"><label>超时时间（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>并发数<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>
       </section>
@@ -798,7 +994,7 @@ export default appOptions;
         <div class="form-grid schedule-time-grid">
           <label>打分 Judge
             <select v-model="scheduleForm.judge_runner">
-              <option value="claude-code">claude-code（推荐）</option>
+              <option value="claude">claude（推荐）</option>
               <option value="opencode">opencode</option>
             </select>
           </label>
@@ -920,7 +1116,7 @@ export default appOptions;
         <label>评分引擎
           <select v-model="evaluateForm.judge">
             <option value="lexical">词法评分（lexical，最快）</option>
-            <option value="claude-code">语义评分（claude-code，需 LLM）</option>
+            <option value="claude">语义评分（claude，需 LLM）</option>
             <option value="opencode">语义评分（opencode，需 LLM）</option>
           </select>
         </label>

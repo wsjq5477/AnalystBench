@@ -1,4 +1,4 @@
-"""Controlled non-interactive Claude Code and OpenCode subprocess runners."""
+"""Controlled non-interactive claude and OpenCode subprocess runners."""
 
 import json
 import subprocess
@@ -67,8 +67,8 @@ class CommandAgentRunner:
         requested_executable = str(configuration.get("executable") or self.default_executable)
         executable = resolve_executable(requested_executable) or requested_executable
         extra_args = [str(argument) for argument in configuration.get("extra_args", [])]
-        if self.runner_id == "claude-code":
-            # In print mode Claude accepts the prompt on stdin, which avoids the
+        if self.runner_id == "claude":
+            # In print mode claude accepts the prompt on stdin, which avoids the
             # operating system command-line length limit.
             command = [executable, *extra_args, "-p", "--output-format", "json"]
             if configuration.get("environment_mode") == "bare":
@@ -87,7 +87,7 @@ class CommandAgentRunner:
 
     @property
     def default_executable(self) -> str:
-        return "claude" if self.runner_id == "claude-code" else "opencode"
+        return "claude" if self.runner_id == "claude" else "opencode"
 
     def execute(
         self, configuration: dict[str, Any], workspace: Path, prompt: str
@@ -99,7 +99,7 @@ class CommandAgentRunner:
             process = subprocess.run(
                 command,
                 cwd=workspace,
-                input=prompt if self.runner_id == "claude-code" else None,
+                input=prompt if self.runner_id == "claude" else None,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -176,6 +176,6 @@ class CommandAgentRunner:
 
 
 def create_runner(runner_id: str) -> CommandAgentRunner:
-    if runner_id not in {"claude-code", "opencode"}:
+    if runner_id not in {"claude", "opencode"}:
         raise AgentRunnerError("invalid_profile", f"unsupported runner '{runner_id}'")
     return CommandAgentRunner(runner_id)

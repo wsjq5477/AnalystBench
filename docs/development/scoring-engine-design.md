@@ -7,7 +7,7 @@
 ```text
 Case JSON + 完整 AI 报告
 → Python 强匹配分析链日志关键字，生成对齐草稿
-→ Claude/OpenCode 对完整报告与 Gold Claim 做语义判定
+→ claude/OpenCode 对完整报告与 Gold Claim 做语义判定
 → Python 校验哈希，按固定公式计分
 ```
 

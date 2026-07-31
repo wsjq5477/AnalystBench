@@ -230,7 +230,7 @@ def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
         harness = client.post(
             "/api/v1/evaluation-harnesses",
             json={
-                "key": "codeagent-skill",
+                "key": "claude-skill",
                 "model_policy": "required",
                 "tool_dir": str(tool_directory),
                 "command_template": (
@@ -296,8 +296,8 @@ def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
     )
     assert comparison["by_harness"] == [
         {
-            "key": "codeagent-skill@v1",
-            "target_keys": ["codeagent-skill@deepseek-v4", "codeagent-skill@glm-5.1"],
+            "key": "claude-skill@v1",
+            "target_keys": ["claude-skill@deepseek-v4", "claude-skill@glm-5.1"],
         }
     ]
 
@@ -693,7 +693,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         harness = client.post(
             "/api/v1/evaluation-harnesses",
             json={
-                "key": "codeagent-native",
+                "key": "claude-native",
                 "command_template": (
                     f"{sys.executable} {report_script} --model {{model}} {{input}}"
                 ),
@@ -729,7 +729,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         submission_id = submission.json()["id"]
         assert len(submission.json()["target_ids"]) == 1
         frozen_target = submission.json()["targets"][0]
-        assert frozen_target["key"] == "codeagent-native@glm5.1"
+        assert frozen_target["key"] == "claude-native@glm5.1"
         assert frozen_target["materialized_method_id"]
         generated_targets = client.get("/api/v1/evaluation-targets").json()
         assert generated_targets[0]["id"] == frozen_target["id"]
@@ -747,7 +747,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         (case_directory / "runs" / timestamp / "result.json").read_text(encoding="utf-8")
     )
     generation = result["generation"]
-    assert generation["targets"][0]["target_key"] == "codeagent-native@glm5.1"
+    assert generation["targets"][0]["target_key"] == "claude-native@glm5.1"
     assert generation["targets"][0]["model"]["argument"] == "glm5.1"
 
     with TestClient(create_app(settings)) as client:
@@ -763,7 +763,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
             f"/api/v1/evaluation-submissions/{submission_id}/target-comparison"
         )
         assert comparison.status_code == 200
-        assert comparison.json()["targets"][0]["target"]["key"] == "codeagent-native@glm5.1"
+        assert comparison.json()["targets"][0]["target"]["key"] == "claude-native@glm5.1"
         assert comparison.json()["targets"][0]["generation_success_rate"] == 1.0
         assert comparison.json()["by_harness"] == []
         assert comparison.json()["by_model"] == []
@@ -1036,7 +1036,7 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
         response = client.post(
             "/api/v1/evaluation-methods",
             json={
-                "key": "codeAgent(glm5.1)-native",
+                "key": "claude(glm5.1)-native",
                 "command_template": f'{sys.executable} -c "print(1)"',
             },
         )
@@ -1058,8 +1058,8 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
         remaining = client.get("/api/v1/evaluation-methods").json()
 
     assert response.status_code == 201
-    assert response.json()["key"] == "codeAgent(glm5.1)-native"
-    assert response.json()["name"] == "codeAgent(glm5.1)-native"
+    assert response.json()["key"] == "claude(glm5.1)-native"
+    assert response.json()["name"] == "claude(glm5.1)-native"
     assert trailing_parenthesis.status_code == 201
     assert trailing_parenthesis.json()["key"] == "agent(deepseek)"
     assert trailing_parenthesis.json()["name"] == "agent(deepseek)"
@@ -1077,7 +1077,7 @@ def test_claude_command_resolves_vscode_extension_binary(
         tmp_path
         / ".vscode-server"
         / "extensions"
-        / "anthropic.claude-code-2.1.220-linux-x64"
+        / "anthropic.claude-2.1.220-linux-x64"
         / "resources"
         / "native-binary"
         / "claude"
@@ -1094,7 +1094,7 @@ def test_claude_command_resolves_vscode_extension_binary(
             "/api/v1/evaluation-methods",
             json={
                 "key": "claude",
-                "name": "Claude Native",
+                "name": "claude Native",
                 "command_template": 'claude -p "分析日志 {input}"',
             },
         ).json()
@@ -1251,7 +1251,7 @@ def test_two_cases_and_two_methods_are_scored_in_one_submission(tmp_path: Path) 
 
     with TestClient(create_app(settings)) as client:
         method_ids = []
-        for key, name in (("script", "Script"), ("claude", "Claude")):
+        for key, name in (("script", "Script"), ("claude", "claude")):
             created = client.post(
                 "/api/v1/evaluation-methods",
                 json={

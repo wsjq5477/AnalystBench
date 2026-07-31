@@ -36,7 +36,7 @@
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| POST | /execution-profiles | 创建 Claude Code/OpenCode Profile 草稿 |
+| POST | /execution-profiles | 创建 claude/OpenCode Profile 草稿 |
 | POST | /execution-profiles/{id}:validate | 检测 CLI、版本与非敏感配置 |
 | POST | /execution-profiles/{id}:freeze | 冻结 Profile 版本 |
 | POST | /candidate-generation-runs | 创建后台批量生成任务 |

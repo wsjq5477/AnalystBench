@@ -20,7 +20,7 @@ from analystbench.semantic_alignment import (
 
 
 class SemanticJudge:
-    """Call Claude Code or OpenCode once per report and verify original-text quotes."""
+    """Call claude or OpenCode once per report and verify original-text quotes."""
 
     def __init__(
         self,
@@ -28,7 +28,7 @@ class SemanticJudge:
         runner_id: str,
         configuration: dict[str, Any] | None = None,
     ) -> None:
-        if runner_id not in {"claude-code", "opencode"}:
+        if runner_id not in {"claude", "opencode"}:
             raise AgentRunnerError("invalid_profile", f"unsupported semantic judge '{runner_id}'")
         self.settings = settings
         self.runner_id = runner_id

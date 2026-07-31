@@ -1,4 +1,4 @@
-"""Application service for persistent Claude Code/OpenCode candidate generation."""
+"""Application service for persistent claude/OpenCode candidate generation."""
 
 import json
 import tempfile
@@ -46,8 +46,8 @@ class AgentExecutionService:
 
     @staticmethod
     def _validate_configuration(runner: str, configuration: dict[str, Any]) -> None:
-        if runner not in {"claude-code", "opencode"}:
-            raise AnalystBenchError("validation_failed", "runner must be claude-code or opencode")
+        if runner not in {"claude", "opencode"}:
+            raise AnalystBenchError("validation_failed", "runner must be claude or opencode")
         forbidden = {
             key
             for key in configuration
@@ -107,6 +107,20 @@ class AgentExecutionService:
                 raise NotFoundError("execution_profile", profile_id)
             session.expunge(profile)
             return profile
+
+    def list_profiles(self) -> list[ExecutionProfile]:
+        with transaction(self.session_factory) as session:
+            items = list(
+                session.scalars(
+                    select(ExecutionProfile).order_by(
+                        ExecutionProfile.created_at.desc(),
+                        ExecutionProfile.id,
+                    )
+                )
+            )
+            for item in items:
+                session.expunge(item)
+            return items
 
     def probe_profile(self, profile_id: str) -> ProbeResult:
         profile = self.get_profile(profile_id)

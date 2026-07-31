@@ -258,7 +258,7 @@ class CaseLibraryService:
         reference_answer: str,
         problem_statement: str = "",
         case_key: str | None = None,
-        runner_id: str = "claude-code",
+        runner_id: str = "claude",
         runner_configuration: dict[str, Any] | None = None,
         source_filename: str | None = None,
         test_set: str | None = None,
@@ -298,7 +298,7 @@ class CaseLibraryService:
         return item
 
     def execute_generation(self, draft_id: str) -> None:
-        """Run one queued Claude/OpenCode conversion job."""
+        """Run one queued claude/OpenCode conversion job."""
         if self.settings is None:
             raise AnalystBenchError("configuration_error", "generation settings are unavailable")
         item = self.get_draft(draft_id)
@@ -1334,9 +1334,9 @@ class EvaluationBatchService:
         judge_runner: str = "lexical",
         judge_configuration: dict[str, Any] | None = None,
     ) -> EvaluationBatch:
-        if judge_runner not in {"claude-code", "opencode", "lexical"}:
+        if judge_runner not in {"claude", "opencode", "lexical"}:
             raise AnalystBenchError(
-                "validation_failed", "judge_runner must be claude-code, opencode, or lexical"
+                "validation_failed", "judge_runner must be claude, opencode, or lexical"
             )
         case = self.cases.get_published(case_key)
         case_resources = json.loads(case.resources_json)

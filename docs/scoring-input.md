@@ -8,7 +8,7 @@ Case 只需审核并发布一次。之后用稳定的 `case_key` 对任意数量
 
 正式评分直接读取完整 AI 报告原文，不把报告切分成句子、Candidate Claim 或 Report JSON。
 
-本地 Case JSON 的 Claude Skill 工作流是：先运行 `prepare-alignment` 生成对齐草稿；Python 在草稿中预先写入每条分析链的 `python_keyword_audits`；Claude 只补充每个 Gold Claim 的语义判定和 `conclusion_similarity`；最后运行 `score-with-alignment` 校验哈希后计分。
+本地 Case JSON 的 claude Skill 工作流是：先运行 `prepare-alignment` 生成对齐草稿；Python 在草稿中预先写入每条分析链的 `python_keyword_audits`；claude 只补充每个 Gold Claim 的语义判定和 `conclusion_similarity`；最后运行 `score-with-alignment` 校验哈希后计分。
 
 日志 `evidence_keyword` 的强匹配完全由 Python 处理，不能由大模型改写或判定；模型只判断根因、分类和分析链结论的语义。
 
@@ -77,7 +77,7 @@ Case 只需审核并发布一次。之后用稳定的 `case_key` 对任意数量
 4. 分析链共 60 分，按分析链条数均分。每条的一半由 `evidence_keyword` 强匹配决定（命中即满、未命中即零）；另一半由语义 Judge 对 `conclusion` 给出的 0～1 相似度决定。
 5. 未完全命中根因时，最终分为 `分类得分 + 所有分析链得分 - forbidden_claims 扣分`，最多 80 分；没有幻觉扣分。
 
-关键字部分始终由 Python 对完整报告原文确定性计算，Claude/OpenCode 不参与。评分报告会显示实际使用的关键字；未命中时还会显示最接近的报告行，但最近行只用于解释，不参与计分。
+关键字部分始终由 Python 对完整报告原文确定性计算，claude/OpenCode 不参与。评分报告会显示实际使用的关键字；未命中时还会显示最接近的报告行，但最近行只用于解释，不参与计分。
 
 ### 其他评分字段
 
@@ -166,7 +166,7 @@ Case 只需审核并发布一次。之后用稳定的 `case_key` 对任意数量
 
 ## 二、AI 分析报告
 
-正式评分默认直接接收 UTF-8 原始报告文件，不需要转换成 JSON。Claude/OpenCode 读取完整报告原文，Python 在同一原文中做日志关键字强匹配。
+正式评分默认直接接收 UTF-8 原始报告文件，不需要转换成 JSON。claude/OpenCode 读取完整报告原文，Python 在同一原文中做日志关键字强匹配。
 
 Report JSON 只是可选的元数据封装，适合旧接口或需要附加模型、Prompt、耗时等信息时使用：
 

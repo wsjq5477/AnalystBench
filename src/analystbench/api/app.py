@@ -26,6 +26,10 @@ from analystbench.api.routes.evaluation_targets import router as evaluation_targ
 from analystbench.api.routes.execution import router as execution_router
 from analystbench.api.routes.health import router as health_router
 from analystbench.api.routes.settings import router as settings_router
+from analystbench.api.routes.skill_optimization import (
+    router as skill_optimization_router,
+)
+from analystbench.api.routes.skills import router as skills_router
 from analystbench.benchmark import BenchmarkService
 from analystbench.case_library import (
     CaseLibraryService,
@@ -51,6 +55,11 @@ from analystbench.evaluation_target import (
 )
 from analystbench.logging import configure_logging
 from analystbench.services import CatalogService
+from analystbench.skill_optimization import (
+    SkillRegistryService,
+    SkillWorkspacePreparer,
+)
+from analystbench.skill_optimization.experiment import OptimizationExperimentService
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +96,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.evaluation_target_service = EvaluationTargetService(
             app.state.session_factory, active_settings
         )
-        app.state.evaluation_submission_service = EvaluationSubmissionService(
+        app.state.skill_registry_service = SkillRegistryService(
             app.state.session_factory, active_settings
+        )
+        workspace_preparer = (
+            SkillWorkspacePreparer(
+                app.state.session_factory, app.state.skill_registry_service
+            )
+            if active_settings.skill_optimization_enabled
+            else None
+        )
+        app.state.evaluation_submission_service = EvaluationSubmissionService(
+            app.state.session_factory,
+            active_settings,
+            workspace_preparer=workspace_preparer,
+        )
+        app.state.skill_optimization_service = OptimizationExperimentService(
+            app.state.session_factory,
+            active_settings,
+            app.state.skill_registry_service,
+            app.state.evaluation_submission_service,
         )
         app.state.evaluation_schedule_service = EvaluationScheduleService(
             app.state.session_factory,
@@ -157,6 +184,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(direct_results_router, prefix="/api/v1")
     app.include_router(cases_local_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
+    app.include_router(skills_router, prefix="/api/v1")
+    app.include_router(skill_optimization_router, prefix="/api/v1")
     return app
 
 

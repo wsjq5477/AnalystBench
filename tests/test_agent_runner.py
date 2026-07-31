@@ -9,7 +9,7 @@ def test_build_command_resolves_executable_from_path(monkeypatch) -> None:
         "analystbench.executable_resolver.shutil.which", lambda value: resolved
     )
 
-    command = CommandAgentRunner("claude-code").build_command({}, Path("workspace"), "prompt")
+    command = CommandAgentRunner("claude").build_command({}, Path("workspace"), "prompt")
 
     assert command[0] == resolved
     assert command[1:4] == ["-p", "--output-format", "json"]

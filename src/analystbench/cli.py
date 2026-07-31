@@ -726,7 +726,7 @@ def evaluate_reports(
         typer.Argument(help="一份或多份 AI 报告原文路径"),
     ],
     judge: str = typer.Option(
-        "claude-code", "--judge", help="语义 Judge：claude-code、opencode 或 lexical"
+        "claude", "--judge", help="语义 Judge：claude、opencode 或 lexical"
     ),
 ) -> None:
     """用本地 Case JSON 或数据库 Case 分别评分多份报告，并自动对比。"""
@@ -791,14 +791,14 @@ def score_with_alignment(
     ],
     alignment_path: Annotated[
         Path,
-        typer.Argument(help="Claude Skill 语义对齐 JSON 路径"),
+        typer.Argument(help="claude Skill 语义对齐 JSON 路径"),
     ],
     report_paths: Annotated[
         list[Path],
         typer.Argument(help="一份或多份 AI 报告原文路径"),
     ],
 ) -> None:
-    """使用已有的 Claude Skill 语义对齐 JSON 评分报告（不调用大模型，只做 Python 确定性计分）。"""
+    """使用已有的 claude Skill 语义对齐 JSON 评分报告（不调用大模型，只做 Python 确定性计分）。"""
     if not report_paths:
         raise typer.BadParameter("至少需要一份 AI 报告文件")
     if not case_path.is_file():

@@ -9,8 +9,8 @@ P15 的 Evaluation Method 把报告生成工程、模型选择、命令模板、
 
 ```text
 script-only
-codeAgent(glm5.1)-skill
-codeAgent(glm5.1)-native
+claude(glm5.1)-skill
+claude(glm5.1)-native
 hmdiagAgent(deepseek-v4-flash)
 ```
 
@@ -31,10 +31,10 @@ hmdiagAgent(deepseek-v4-flash)
 - 支持模型切换的 Harness 在命令行接收模型参数，例如：
 
   ```text
-  codeagent -p "分析一个日志：{input}" --model glm5.1
+  claude -p "分析一个日志：{input}" --model glm5.1
   ```
 
-- `codeagent-native`、`codeagent-skill` 和 `hmdiag-agent` 是独立 Harness；可以使用
+- `claude-native`、`claude-skill` 和 `hmdiag-agent` 是独立 Harness；可以使用
   family 标签表达同属一个工程族，但 family 不作为运行身份。
 - `script-only` 是不使用模型的正式基线，不创建虚假的 `none` 模型。
 - 提交页面默认选择每个 Harness 下全部已启用且可用的模型组合。
@@ -95,13 +95,13 @@ Harness 继续采用同 Key 单调递增版本。冻结版本至少包含：
 ```json
 {
   "id": "uuid",
-  "key": "codeagent-native",
-  "name": "CodeAgent Native",
-  "family": "codeagent",
+  "key": "claude-native",
+  "name": "claude Native",
+  "family": "claude",
   "version": 1,
   "model_policy": "required",
-  "tool_dir": "/opt/codeagent-native",
-  "command_template": "codeagent -p \"分析一个日志：{input}\" --model {model}",
+  "tool_dir": "/opt/claude-native",
+  "command_template": "claude -p \"分析一个日志：{input}\" --model {model}",
   "timeout_seconds": 1800,
   "max_output_bytes": 10485760,
   "concurrency_limit": 2,
@@ -162,7 +162,7 @@ Evaluation Target 同时是兼容绑定和可运行组合：
 ```json
 {
   "id": "uuid",
-  "target_key": "codeagent-native@glm-5.1",
+  "target_key": "claude-native@glm-5.1",
   "harness_version_id": "uuid",
   "model_version_id": "uuid",
   "model_argument": "glm5.1",
@@ -193,8 +193,8 @@ Evaluation Target 同时是兼容绑定和可运行组合：
 | Target Key | Harness | Model |
 |---|---|---|
 | `script-only` | `script-only` | `null` |
-| `codeagent-skill@glm-5.1` | `codeagent-skill` | `glm-5.1` |
-| `codeagent-native@glm-5.1` | `codeagent-native` | `glm-5.1` |
+| `claude-skill@glm-5.1` | `claude-skill` | `glm-5.1` |
+| `claude-native@glm-5.1` | `claude-native` | `glm-5.1` |
 | `hmdiag-agent@deepseek-v4-flash` | `hmdiag-agent` | `deepseek-v4-flash` |
 
 ### Target Run
@@ -220,14 +220,14 @@ Harness 命令继续使用现有 `shlex.split(..., posix=True)` 和 `shell=False
 模板：
 
 ```text
-codeagent -p "分析一个日志：{input}" --model {model}
+claude -p "分析一个日志：{input}" --model {model}
 ```
 
 解析后的实际 argv：
 
 ```json
 [
-  "codeagent",
+  "claude",
   "-p",
   "分析一个日志：/workspace/logs/log.txt",
   "--model",
@@ -258,11 +258,11 @@ probe 不执行真实 Case、不调用模型，也不读取 Harness 的本地 en
 ```text
 [x] script-only
 
-[x] codeagent-native
+[x] claude-native
     [x] GLM 5.1
     [x] GLM 5.2
 
-[x] codeagent-skill
+[x] claude-skill
     [x] GLM 5.1
     [x] GLM 5.2
 
@@ -322,10 +322,10 @@ Model、Target、Case 日志或评分契约必须创建新 Submission。
   "generation": {
     "targets": [
       {
-        "target_key": "codeagent-native@glm-5.1",
-        "display_name": "CodeAgent Native · GLM 5.1",
+        "target_key": "claude-native@glm-5.1",
+        "display_name": "claude Native · GLM 5.1",
         "harness": {
-          "key": "codeagent-native",
+          "key": "claude-native",
           "version": 1,
           "content_hash": "sha256:..."
         },
@@ -489,8 +489,8 @@ Target 只作为后端不可变快照用于历史追溯、执行和对比。
 本次四个直接文件结果可以通过显式映射补充索引：
 
 ```text
-codeAgent(glm5.1)-native       -> codeagent-native@glm-5.1
-codeAgent(glm5.1)-skill        -> codeagent-skill@glm-5.1
+claude(glm5.1)-native       -> claude-native@glm-5.1
+claude(glm5.1)-skill        -> claude-skill@glm-5.1
 hmdiagAgent(deepseek-v4-flash) -> hmdiag-agent@deepseek-v4-flash
 script-only                    -> script-only
 ```
@@ -509,7 +509,7 @@ script-only                    -> script-only
 
 ## 验收条件
 
-- 可以分别创建 `codeagent-native`、`codeagent-skill`、`hmdiag-agent` 和
+- 可以分别创建 `claude-native`、`claude-skill`、`hmdiag-agent` 和
   `script-only` Harness。
 - 可以创建 GLM 5.1、GLM 5.2、DeepSeek V4 等 Model，测评时直接选择 Harness ×
   Model。
@@ -529,7 +529,7 @@ script-only                    -> script-only
 - Harness、Model 独立管理，通过 Evaluation Target 表达兼容绑定和运行组合。
 - 用户不手工管理 Target；提交和计划保存时由后端自动创建或复用冻结 Target。
 - 支持模型的 Harness 使用 `{model}`；无模型基线禁止使用 `{model}`。
-- `codeagent-native` 与 `codeagent-skill` 是独立 Harness。
+- `claude-native` 与 `claude-skill` 是独立 Harness。
 - 提交默认选择每个 Harness 下全部可用 Model。
 - 结果按 Harness 和 Model 两个维度比较质量与实际生成耗时。
 - 定时计划固定精确 Target，不自动跟随新增组合。

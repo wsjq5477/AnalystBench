@@ -69,7 +69,7 @@ class EvaluationSubmissionCreate(BaseModel):
     method_ids: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
     target_selections: list[EvaluationTargetSelection] = Field(default_factory=list)
-    judge_runner: str = "claude-code"
+    judge_runner: str = "claude"
 
 
 class EvaluationSubmissionResponse(BaseModel):

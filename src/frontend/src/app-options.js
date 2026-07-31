@@ -14,6 +14,7 @@ const VIEW_PATHS = {
   dashboard: "/dashboard",
   dataset: "/datasets",
   results: "/results",
+  optimization: "/skill-optimization",
   settings: "/settings",
 };
 
@@ -73,6 +74,7 @@ export default {
       evaluationMethods: [],
       evaluationHarnesses: [],
       evaluationModels: [],
+      evaluationTargets: [],
       evaluationSubmissions: [],
       evaluationSchedules: [],
       selectedSubmissionId: "",
@@ -84,7 +86,7 @@ export default {
         case_paths: [],
         method_ids: [],
         target_selection_keys: [],
-        judge_runner: "claude-code",
+        judge_runner: "claude",
       },
       submissionRunning: false,
       methodTimingNow: Date.now(),
@@ -128,7 +130,7 @@ export default {
         case_paths: [],
         method_ids: [],
         target_selection_keys: [],
-        judge_runner: "claude-code",
+        judge_runner: "claude",
         timezone: "Asia/Shanghai",
         local_time: "23:00",
         enabled: true,
@@ -160,6 +162,38 @@ export default {
       dashboardComparisonDimension: "harness",
       dashboardModelFilter: "Average",
       dashboardHarnessFilter: "Average",
+
+      skills: [],
+      optimizationExperiments: [],
+      selectedOptimizationExperimentId: "",
+      selectedOptimizationDetail: null,
+      selectedOptimizationEvents: [],
+      optimizationLoading: false,
+      showOptimizationDialog: false,
+      optimizationSaving: false,
+      optimizationDialogStep: 1,
+      optimizationCandidateDetail: null,
+      optimizationForm: {
+        name: "",
+        skill_mode: "new",
+        skill_id: "",
+        skill_key: "",
+        skill_name: "",
+        source_path: "",
+        invoke_as: "/my-skill",
+        harness_key: "claude-skill",
+        evaluation_target_id: "",
+        case_paths: [],
+        optimizer_runner: "claude",
+        optimizer_executable: "claude",
+        optimizer_instruction:
+          "根据失败证据对当前 Skill 做小步、通用、可迁移的优化。不要写入具体 Case 答案。",
+        judge_runner: "claude",
+        min_overall_delta: 1,
+        max_latency_growth: 0.2,
+        max_token_growth: 0.2,
+        max_epochs: 1,
+      },
     };
   },
   computed: {
@@ -532,6 +566,43 @@ export default {
         ),
       }));
     },
+    optimizationCaseOptions() {
+      return this.localCaseTree.flatMap((testSet) =>
+        (testSet.children || []).flatMap((category) =>
+          (category.children || []).map((caseItem) => ({
+            path: `${testSet.key}/${category.key}/${caseItem.key}`,
+            label: `${testSet.name} / ${category.name} / ${
+              caseItem.case_data?.case_key || caseItem.name
+            }`,
+            ready: Boolean(caseItem.case_data?.submission_ready),
+          })),
+        ),
+      );
+    },
+    frozenOptimizationTargets() {
+      return this.evaluationTargets.filter(
+        (item) => item.status === "frozen" && item.materialized_method_id,
+      );
+    },
+    selectedOptimizationExperiment() {
+      return this.optimizationExperiments.find(
+        (item) => item.id === this.selectedOptimizationExperimentId,
+      );
+    },
+    optimizationSummary() {
+      return {
+        total: this.optimizationExperiments.length,
+        running: this.optimizationExperiments.filter(
+          (item) => item.status === "running",
+        ).length,
+        completed: this.optimizationExperiments.filter(
+          (item) => item.status === "completed",
+        ).length,
+        promoted: this.selectedOptimizationEvents.filter(
+          (item) => item.type === "skill_version_promoted",
+        ).length,
+      };
+    },
   },
   watch: {
     selectedTestSet() {
@@ -581,11 +652,22 @@ export default {
       );
       if (hasRunningMethod) this.methodTimingNow = Date.now();
     }, 1000);
+    this._optimizationPollTimer = window.setInterval(() => {
+      if (
+        this.activeView === "optimization" &&
+        this.selectedOptimizationExperiment?.status === "running"
+      ) {
+        this.refreshSelectedOptimization();
+      }
+    }, 2500);
     if (this.activeView === "dashboard") this.loadDashboardData();
     if (this.activeView === "results") {
       this.refreshDirectResults();
       this.loadEvaluationSubmissions();
       this.loadEvaluationSchedules();
+    }
+    if (this.activeView === "optimization") {
+      this.loadOptimizationWorkspace();
     }
     if (this.activeView === "settings") {
       this.loadAppSettings();
@@ -597,6 +679,10 @@ export default {
     if (this._methodTimingTimer) {
       window.clearInterval(this._methodTimingTimer);
       this._methodTimingTimer = null;
+    }
+    if (this._optimizationPollTimer) {
+      window.clearInterval(this._optimizationPollTimer);
+      this._optimizationPollTimer = null;
     }
     if (!this._themeMediaQuery || !this._themeMediaListener) return;
     if (this._themeMediaQuery.removeEventListener) {
@@ -639,6 +725,9 @@ export default {
         this.loadAppSettings();
         this.loadEvaluationMethods();
         this.loadEvaluationCatalog();
+      }
+      if (view === "optimization") {
+        this.loadOptimizationWorkspace();
       }
       if (view === "dashboard" && !this.dashboardLoaded) {
         this.loadDashboardData();
@@ -1417,7 +1506,7 @@ export default {
                 ? [this.frozenEvaluationMethods[0].id]
                 : [],
             target_selection_keys: [...this.allEvaluationSelectionKeys],
-            judge_runner: "claude-code",
+            judge_runner: "claude",
             timezone: "Asia/Shanghai",
             local_time: "23:00",
             enabled: true,
@@ -1622,7 +1711,7 @@ export default {
             ? [frozenMethods[0].id]
             : [],
         target_selection_keys: [...this.allEvaluationSelectionKeys],
-        judge_runner: "claude-code",
+        judge_runner: "claude",
       };
       this.selectAllReadySubmissionCases();
       this.submissionStep = 1;
@@ -1951,6 +2040,307 @@ export default {
       } finally {
         this.loading = false;
       }
+    },
+    async loadOptimizationWorkspace() {
+      this.optimizationLoading = true;
+      try {
+        const [skills, targets, experiments] = await Promise.all([
+          analystBenchApi.listSkills(),
+          analystBenchApi.listEvaluationTargets(),
+          analystBenchApi.listOptimizationExperiments(),
+          this.loadLocalCaseTree(),
+        ]);
+        this.skills = skills;
+        this.evaluationTargets = targets;
+        this.optimizationExperiments = experiments;
+        this.connection = "connected";
+        if (
+          !this.selectedOptimizationExperimentId ||
+          !experiments.some(
+            (item) => item.id === this.selectedOptimizationExperimentId,
+          )
+        ) {
+          this.selectedOptimizationExperimentId = experiments[0]?.id || "";
+        }
+        if (this.selectedOptimizationExperimentId) {
+          await this.refreshSelectedOptimization();
+        } else {
+          this.selectedOptimizationDetail = null;
+          this.selectedOptimizationEvents = [];
+        }
+      } catch (error) {
+        this.connection = "offline";
+        this.showToast(
+          error instanceof Error ? error.message : "读取 Skill 自优化数据失败",
+        );
+      } finally {
+        this.optimizationLoading = false;
+      }
+    },
+    async selectOptimizationExperiment(experimentId) {
+      this.selectedOptimizationExperimentId = experimentId;
+      this.optimizationCandidateDetail = null;
+      await this.refreshSelectedOptimization();
+    },
+    async refreshSelectedOptimization() {
+      if (!this.selectedOptimizationExperimentId) return;
+      try {
+        const [detail, events, experiments] = await Promise.all([
+          analystBenchApi.getOptimizationExperimentDetail(
+            this.selectedOptimizationExperimentId,
+          ),
+          analystBenchApi.getOptimizationEvents(
+            this.selectedOptimizationExperimentId,
+          ),
+          analystBenchApi.listOptimizationExperiments(),
+        ]);
+        this.selectedOptimizationDetail = detail;
+        this.selectedOptimizationEvents = events;
+        this.optimizationExperiments = experiments;
+      } catch (error) {
+        this.showToast(
+          error instanceof Error ? error.message : "刷新优化实验失败",
+        );
+      }
+    },
+    openOptimizationDialog() {
+      const readyCases = this.optimizationCaseOptions
+        .filter((item) => item.ready)
+        .map((item) => item.path);
+      const defaultTarget = this.frozenOptimizationTargets[0];
+      this.optimizationDialogStep = 1;
+      this.optimizationForm = {
+        name: `Skill 优化 ${new Date().toLocaleDateString()}`,
+        skill_mode: "new",
+        skill_id: "",
+        skill_key: "",
+        skill_name: "",
+        source_path: "",
+        invoke_as: "/my-skill",
+        harness_key: defaultTarget?.harness?.key || "claude-skill",
+        evaluation_target_id: defaultTarget?.id || "",
+        case_paths: readyCases,
+        optimizer_runner: "claude",
+        optimizer_executable: "claude",
+        optimizer_instruction:
+          "根据失败证据对当前 Skill 做小步、通用、可迁移的优化。不要写入具体 Case 答案。",
+        judge_runner: "claude",
+        min_overall_delta: 1,
+        max_latency_growth: 0.2,
+        max_token_growth: 0.2,
+        max_epochs: 1,
+      };
+      this.showOptimizationDialog = true;
+    },
+    toggleOptimizationCase(casePath) {
+      const selected = new Set(this.optimizationForm.case_paths);
+      if (selected.has(casePath)) selected.delete(casePath);
+      else selected.add(casePath);
+      this.optimizationForm.case_paths = [...selected];
+    },
+    syncOptimizationHarnessKey() {
+      const target = this.frozenOptimizationTargets.find(
+        (item) => item.id === this.optimizationForm.evaluation_target_id,
+      );
+      if (target?.harness?.key && this.optimizationForm.skill_mode === "new") {
+        this.optimizationForm.harness_key = target.harness.key;
+      }
+    },
+    async createOptimizationExperiment() {
+      const form = this.optimizationForm;
+      if (!form.name || !form.evaluation_target_id || !form.case_paths.length) {
+        this.showToast("请填写实验名称，并选择 Target 和至少一个可用 Case");
+        return;
+      }
+      if (
+        form.skill_mode === "new" &&
+        (!form.skill_key ||
+          !form.source_path ||
+          !form.invoke_as ||
+          !form.harness_key)
+      ) {
+        this.showToast("请填写 Skill Key、目录、调用名称和 Harness Key");
+        return;
+      }
+      const datasets = new Set(form.case_paths.map((item) => item.split("/")[0]));
+      if (datasets.size !== 1) {
+        this.showToast("一次实验的 Case 必须属于同一个测试集");
+        return;
+      }
+      this.optimizationSaving = true;
+      try {
+        let skillId = form.skill_id;
+        let baseVersionId = "";
+        let skillKey = form.skill_key;
+        if (form.skill_mode === "new") {
+          const created = await analystBenchApi.createSkill({
+            key: form.skill_key,
+            name: form.skill_name || form.skill_key,
+            source_path: form.source_path,
+            invoke_as: form.invoke_as,
+            harness_key: form.harness_key,
+            install_relative_path: `.claude/skills/${form.skill_key}`,
+            editable_paths: [
+              "SKILL.md",
+              "references/*.md",
+              "references/**/*.md",
+            ],
+            import_initial_version: true,
+          });
+          skillId = created.skill.id;
+          baseVersionId = created.initial_version.id;
+          skillKey = created.skill.key;
+        } else {
+          const skill = this.skills.find((item) => item.id === skillId);
+          const versions = await analystBenchApi.listSkillVersions(skillId);
+          if (!skill || !versions.length) {
+            throw new Error("所选 Skill 没有可用版本");
+          }
+          baseVersionId = [...versions].sort(
+            (left, right) => right.version - left.version,
+          )[0].id;
+          skillKey = skill.key;
+        }
+        const profile = await analystBenchApi.createExecutionProfile({
+          name: `${skillKey}-optimizer`,
+          runner: form.optimizer_runner,
+          configuration: {
+            executable: form.optimizer_executable,
+            timeout_seconds: 1800,
+            max_output_bytes: 10485760,
+            environment_mode: "local",
+            allowed_tools: ["Read", "Grep", "Glob"],
+          },
+        });
+        const probe = await analystBenchApi.validateExecutionProfile(profile.id);
+        if (!probe.available) {
+          throw new Error(probe.error || "Optimizer CLI 不可用");
+        }
+        await analystBenchApi.freezeExecutionProfile(profile.id);
+        const suffix = Date.now();
+        const policy = await analystBenchApi.createOptimizerPolicy({
+          key: `${skillKey}-optimizer-${suffix}`,
+          execution_profile_id: profile.id,
+          prompt_bundle: { instruction: form.optimizer_instruction },
+          config: {},
+        });
+        const verifier = await analystBenchApi.createVerifierBundle({
+          key: `${skillKey}-gate-${suffix}`,
+          static_policy: {},
+          gate_policy: {
+            min_overall_delta: Number(form.min_overall_delta),
+            max_latency_growth: Number(form.max_latency_growth),
+            max_token_growth: Number(form.max_token_growth),
+            minimum_independent_validation_cases: 8,
+          },
+          judge_config: { runner: form.judge_runner },
+        });
+        const snapshot = await analystBenchApi.createOptimizationSnapshot({
+          dataset_key: [...datasets][0],
+          mode: "development_regression",
+          validation_case_paths: form.case_paths,
+        });
+        const experiment = await analystBenchApi.createOptimizationExperiment({
+          name: form.name,
+          skill_id: skillId,
+          base_skill_version_id: baseVersionId,
+          evaluation_target_id: form.evaluation_target_id,
+          data_snapshot_id: snapshot.id,
+          optimizer_policy_version_id: policy.id,
+          verifier_bundle_version_id: verifier.id,
+          max_epochs: Number(form.max_epochs),
+        });
+        await analystBenchApi.startOptimizationExperiment(experiment.id);
+        this.showOptimizationDialog = false;
+        this.selectedOptimizationExperimentId = experiment.id;
+        await this.loadOptimizationWorkspace();
+        this.showToast("优化实验已启动");
+      } catch (error) {
+        this.showToast(
+          error instanceof Error ? error.message : "创建优化实验失败",
+        );
+      } finally {
+        this.optimizationSaving = false;
+      }
+    },
+    async startOptimizationExperiment(experiment) {
+      try {
+        await analystBenchApi.startOptimizationExperiment(experiment.id);
+        await this.loadOptimizationWorkspace();
+        this.showToast("实验已启动");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "启动实验失败");
+      }
+    },
+    async resumeOptimizationExperiment(experiment) {
+      try {
+        await analystBenchApi.resumeOptimizationExperiment(experiment.id);
+        await this.loadOptimizationWorkspace();
+        this.showToast("实验已从已有 Run Group 恢复");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "恢复实验失败");
+      }
+    },
+    async cancelOptimizationExperiment(experiment) {
+      if (!window.confirm(`取消实验“${experiment.name}”吗？`)) return;
+      try {
+        await analystBenchApi.cancelOptimizationExperiment(experiment.id);
+        await this.loadOptimizationWorkspace();
+        this.showToast("实验已取消");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "取消实验失败");
+      }
+    },
+    async openOptimizationCandidate(candidate) {
+      try {
+        this.optimizationCandidateDetail =
+          await analystBenchApi.getOptimizationCandidate(candidate.id);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "读取候选 Diff 失败");
+      }
+    },
+    optimizationStatusClass(status) {
+      if (
+        ["completed", "accepted", "screening_selected", "pass"].includes(status)
+      ) {
+        return "tag-match";
+      }
+      if (["failed", "cancelled", "rejected", "reject"].includes(status)) {
+        return "tag-missing";
+      }
+      return "tag-partial";
+    },
+    optimizationStatusLabel(status) {
+      return {
+        created: "待启动",
+        running: "运行中",
+        completed: "已完成",
+        failed: "失败",
+        cancelled: "已取消",
+        collecting_evidence: "采集证据",
+        generating_candidates: "生成候选",
+        screening: "筛选候选",
+        full_validating: "完整验证",
+        accepted: "已接受",
+        rejected: "已拒绝",
+        screening_selected: "筛选胜出",
+        validating: "验证中",
+        needs_more_runs: "灰区增采样",
+      }[status] || status;
+    },
+    signedDelta(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)}`;
+    },
+    optimizationObjectRows(value) {
+      return Object.entries(value || {}).map(([key, item]) => ({
+        key,
+        value: item,
+      }));
+    },
+    candidateComparison(candidate, type) {
+      return (candidate.comparisons || []).find((item) => item.type === type);
     },
     async loadDashboardData() {
       this.loading = true;

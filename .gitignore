@@ -42,7 +42,7 @@ build/
 # Logs
 *.log
 
-# Claude Code local config
+# claude local config
 .claude/settings.local.json
 .claude/plan.md
 .claude/plans/

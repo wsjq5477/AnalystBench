@@ -118,7 +118,7 @@ Case 日志直接以文件形式存放在 `logs/`。不把正文或内容哈希�
 }
 ```
 
-Claude 示例：
+claude 示例：
 
 ```text
 claude -p "分析 {input_dir} 中的全部日志，主日志是 {input}"
@@ -129,7 +129,7 @@ claude -p "分析 {input_dir} 中的全部日志，主日志是 {input}"
 - `{input}`：当前方式隔离工作区中的主日志绝对路径。
 - `{input_dir}`：当前方式隔离工作区中的 `logs/` 绝对路径。
 - `{workspace}`：当前方式的隔离工作区绝对路径。
-- `{tool_dir}`：该测评方式配置并冻结的工具目录绝对路径，用于引用 Python 脚本等本地工具；Claude 等只依赖 PATH 的方式可以不配置。
+- `{tool_dir}`：该测评方式配置并冻结的工具目录绝对路径，用于引用 Python 脚本等本地工具；claude 等只依赖 PATH 的方式可以不配置。
 
 报告生成阶段禁止提供 `{case}`、`{run_dir}` 和 `{project_root}`，避免生成器接触标准答案、历史结果、其他方式报告或项目内的评测产物。`tool_dir` 不得位于结果根目录或工作区根目录内。
 
@@ -149,7 +149,7 @@ claude -p "分析 {input_dir} 中的全部日志，主日志是 {input}"
 
 ## 隔离工作区
 
-仅把日志移入 `logs/` 不能防止 Claude 通过父目录发现历史答案，因此报告生成必须使用独立工作区：
+仅把日志移入 `logs/` 不能防止 claude 通过父目录发现历史答案，因此报告生成必须使用独立工作区：
 
 ```text
 data/workspaces/evaluation/
@@ -176,7 +176,7 @@ data/workspaces/evaluation/
 
 不同方式必须使用不同工作区，即使并行执行也不能看到彼此的中间或最终输出。
 
-MVP 的本地权限限制面向受信任命令，不构成恶意程序的强安全沙箱。Claude/OpenCode Profile 仍应使用限制性工具权限和可复现模式；容器或 VM 隔离属于后续增强。
+MVP 的本地权限限制面向受信任命令，不构成恶意程序的强安全沙箱。claude/OpenCode Profile 仍应使用限制性工具权限和可复现模式；容器或 VM 隔离属于后续增强。
 
 ## 提交流程
 
@@ -231,7 +231,7 @@ queued/running -> cancelling -> cancelled
 
 - 使用现有数据库 Job、租约和 Local Worker，不使用 API 进程内后台线程。
 - 命令探测与实际执行必须共用同一套可执行文件解析；`claude` 不在 PATH 时，允许通过
-  `ANALYSTBENCH_CLAUDE_EXECUTABLE` 指定，或自动使用 WSL 中最新的 VS Code Claude Code
+  `ANALYSTBENCH_CLAUDE_EXECUTABLE` 指定，或自动使用 WSL 中最新的 VS Code claude
   扩展原生二进制。
 - 每个 Case × 测评方式对应一个独立 Job；并发同时受 Worker 全局限制和方式版本 `concurrency_limit` 限制。
 - 全部方式运行终结后，为该 Case 入队一个评分 Job。
@@ -260,7 +260,7 @@ queued/running -> cancelling -> cancelled
 评分器固定按项目的 `analystbench-evaluate` Skill 契约程序化编排，而不是启动一个嵌套 Slash Skill：
 
 1. Python 对 `case.json` 和 `run.json` 中明确列出的成功报告执行 `prepare-alignment`。
-2. Claude 只填写根因、分类和分析链结论的语义关系，不读取或修改 Python 日志关键字审计。
+2. claude 只填写根因、分类和分析链结论的语义关系，不读取或修改 Python 日志关键字审计。
 3. Python 执行 `score-with-alignment`，校验 Case/报告哈希并确定性计分。
 4. 写入 `result.json` 和 `result.md`，清理临时 alignment draft。
 
@@ -343,11 +343,11 @@ runs/20260728120030/claude.md
 
 - 测试集的每个可提交 Case 都同时具有 `case.json`、`logs/` 和唯一主日志。
 - 选择两个方式和两个 Case 时生成四个独立方式运行，输出文件名稳定且互不覆盖。
-- Fake Python 与 Fake Claude 只能看到各自隔离工作区中的日志，不能看到 `case.json`、`runs/`、历史报告或其他方式输出。
+- Fake Python 与 Fake claude 只能看到各自隔离工作区中的日志，不能看到 `case.json`、`runs/`、历史报告或其他方式输出。
 - 子进程命令始终 `shell=False`；危险模板、路径逃逸、符号链接逃逸和保留文件名在提交前被拒绝。
 - API 或 Worker 重启后，过期租约能够恢复，已完成报告不重写。
 - 一个方式失败时，其他成功报告仍被评分，Case 和批次显示 `completed_with_errors`。
-- 评分只接收 Manifest 中的报告列表，并保持 Python 日志证据评分与 Claude 结论语义判断的既有边界。
+- 评分只接收 Manifest 中的报告列表，并保持 Python 日志证据评分与 claude 结论语义判断的既有边界。
 - `result.json`、`result.md`、报告、运行输入副本、配置版本和失败审计足以解释一次提交。
 
 ## 已确认决策

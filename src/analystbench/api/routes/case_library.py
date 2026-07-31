@@ -30,7 +30,7 @@ class CaseDraftGenerate(BaseModel):
     reference_answer: str = Field(min_length=1)
     problem_statement: str = ""
     case_key: str | None = None
-    runner: str = "claude-code"
+    runner: str = "claude"
     runner_configuration: dict[str, Any] = Field(default_factory=dict)
     source_filename: str | None = None
     test_set: str | None = Field(default=None, min_length=1, max_length=255)
@@ -94,7 +94,7 @@ class EvaluationBatchCreate(BaseModel):
     reports: list[dict[str, Any]] = Field(default_factory=list)
     raw_reports: list[RawEvaluationReport] = Field(default_factory=list)
     report_draft_ids: list[str] = Field(default_factory=list)
-    judge_runner: str = "claude-code"
+    judge_runner: str = "claude"
     judge_configuration: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

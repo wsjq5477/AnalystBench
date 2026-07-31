@@ -27,7 +27,7 @@
     Ports / Adapters
         |-- Repository Adapters
         |-- LLM Adapters
-        |-- Claude Code Runner
+        |-- claude Runner
         |-- OpenCode Runner
         |-- Suite Registry
         `-- Local Worker
@@ -45,7 +45,7 @@
 
 ## 进程模型
 
-MVP 包含两个进程角色：API/CLI 进程和 Local Worker。API 创建后台任务并立即返回任务标识；Worker 从数据库领取持久化 Job，执行 Claude Code/OpenCode 子进程、模型调用与评分。开发模式可在单进程中显式运行 Worker，但不使用易丢失的内存队列作为正式运行方式。API 或 Worker 重启后，未完成任务必须可以继续领取或重试。
+MVP 包含两个进程角色：API/CLI 进程和 Local Worker。API 创建后台任务并立即返回任务标识；Worker 从数据库领取持久化 Job，执行 claude/OpenCode 子进程、模型调用与评分。开发模式可在单进程中显式运行 Worker，但不使用易丢失的内存队列作为正式运行方式。API 或 Worker 重启后，未完成任务必须可以继续领取或重试。
 
 Agent CLI 是 Worker 启动的受控子进程。每次执行使用独立工作目录、显式 Prompt/权限/超时和捕获的标准输出/错误输出；Runner 不通过 Shell 字符串拼接命令，参数必须以 argv 数组传递。
 

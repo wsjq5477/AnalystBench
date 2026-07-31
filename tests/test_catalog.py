@@ -58,11 +58,11 @@ def test_catalog_api_creates_immutable_versions_and_reports(tmp_path: Path) -> N
         assert dataset_version.status_code == 201
         dataset_version_id = dataset_version.json()["id"]
 
-        candidate = client.post("/api/v1/candidates", json={"name": "claude-code"})
+        candidate = client.post("/api/v1/candidates", json={"name": "claude"})
         assert candidate.status_code == 201
         candidate_version = client.post(
             f"/api/v1/candidates/{candidate.json()['id']}/versions",
-            json={"metadata": {"runner": "claude-code", "model": "claude"}},
+            json={"metadata": {"runner": "claude", "model": "claude"}},
         )
         assert candidate_version.status_code == 201
         candidate_version_id = candidate_version.json()["id"]
