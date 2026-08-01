@@ -178,10 +178,8 @@ export default {
         skill_mode: "new",
         skill_id: "",
         skill_key: "",
-        skill_name: "",
         source_path: "",
-        invoke_as: "/my-skill",
-        harness_key: "claude-skill",
+        harness_key: "",
         evaluation_target_id: "",
         case_paths: [],
         optimizer_runner: "claude",
@@ -583,6 +581,29 @@ export default {
       return this.evaluationTargets.filter(
         (item) => item.status === "frozen" && item.materialized_method_id,
       );
+    },
+    compatibleOptimizationTargets() {
+      let harnessKey = this.optimizationForm.harness_key;
+      if (this.optimizationForm.skill_mode === "existing") {
+        harnessKey = this.skills.find(
+          (item) => item.id === this.optimizationForm.skill_id,
+        )?.harness_key;
+      }
+      if (!harnessKey) return this.frozenOptimizationTargets;
+      return this.frozenOptimizationTargets.filter(
+        (item) => item.harness?.key === harnessKey,
+      );
+    },
+    optimizationInvokeAs() {
+      if (this.optimizationForm.skill_mode === "existing") {
+        return (
+          this.skills.find(
+            (item) => item.id === this.optimizationForm.skill_id,
+          )?.invoke_as || "/skill-name"
+        );
+      }
+      const skillKey = this.optimizationForm.skill_key.trim();
+      return skillKey ? `/${skillKey}` : "/skill-name";
     },
     selectedOptimizationExperiment() {
       return this.optimizationExperiments.find(
@@ -2049,6 +2070,7 @@ export default {
           analystBenchApi.listEvaluationTargets(),
           analystBenchApi.listOptimizationExperiments(),
           this.loadLocalCaseTree(),
+          this.loadEvaluationCatalog(),
         ]);
         this.skills = skills;
         this.evaluationTargets = targets;
@@ -2114,10 +2136,9 @@ export default {
         skill_mode: "new",
         skill_id: "",
         skill_key: "",
-        skill_name: "",
         source_path: "",
-        invoke_as: "/my-skill",
-        harness_key: defaultTarget?.harness?.key || "claude-skill",
+        harness_key:
+          defaultTarget?.harness?.key || this.frozenEvaluationHarnesses[0]?.key || "",
         evaluation_target_id: defaultTarget?.id || "",
         case_paths: readyCases,
         optimizer_runner: "claude",
@@ -2146,6 +2167,15 @@ export default {
         this.optimizationForm.harness_key = target.harness.key;
       }
     },
+    syncOptimizationTarget() {
+      const currentTarget = this.compatibleOptimizationTargets.find(
+        (item) => item.id === this.optimizationForm.evaluation_target_id,
+      );
+      if (!currentTarget) {
+        this.optimizationForm.evaluation_target_id =
+          this.compatibleOptimizationTargets[0]?.id || "";
+      }
+    },
     async createOptimizationExperiment() {
       const form = this.optimizationForm;
       if (!form.name || !form.evaluation_target_id || !form.case_paths.length) {
@@ -2156,10 +2186,9 @@ export default {
         form.skill_mode === "new" &&
         (!form.skill_key ||
           !form.source_path ||
-          !form.invoke_as ||
           !form.harness_key)
       ) {
-        this.showToast("请填写 Skill Key、目录、调用名称和 Harness Key");
+        this.showToast("请填写 Skill Key 和目录，并选择 Harness Key");
         return;
       }
       const datasets = new Set(form.case_paths.map((item) => item.split("/")[0]));
@@ -2175,9 +2204,9 @@ export default {
         if (form.skill_mode === "new") {
           const created = await analystBenchApi.createSkill({
             key: form.skill_key,
-            name: form.skill_name || form.skill_key,
+            name: form.skill_key,
             source_path: form.source_path,
-            invoke_as: form.invoke_as,
+            invoke_as: `/${form.skill_key}`,
             harness_key: form.harness_key,
             install_relative_path: `.claude/skills/${form.skill_key}`,
             editable_paths: [

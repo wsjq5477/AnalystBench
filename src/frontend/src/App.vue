@@ -681,26 +681,26 @@ export default appOptions;
           </section>
         </div>
 
-        <div v-if="showOptimizationDialog" class="dialog-overlay" @click.self="showOptimizationDialog = false">
+        <div v-if="showOptimizationDialog" class="dialog-overlay">
           <section class="dialog-card dialog-card-wide surface optimization-dialog">
             <div class="panel-heading"><h2>新建 Skill 自优化实验</h2><span>步骤 {{ optimizationDialogStep }} / 3</span></div>
             <div class="dialog-stepper"><span :class="{ active: optimizationDialogStep >= 1 }">1 Skill</span><i></i><span :class="{ active: optimizationDialogStep >= 2 }">2 Benchmark</span><i></i><span :class="{ active: optimizationDialogStep >= 3 }">3 Gate</span></div>
 
             <template v-if="optimizationDialogStep === 1">
               <label>实验名称<input v-model.trim="optimizationForm.name" /></label>
-              <label>Skill 来源<select v-model="optimizationForm.skill_mode"><option value="new">注册本地 Skill</option><option value="existing">使用已有 Skill</option></select></label>
+              <label>Skill 来源<select v-model="optimizationForm.skill_mode" @change="syncOptimizationTarget"><option value="new">注册本地 Skill</option><option value="existing">使用已有 Skill</option></select></label>
               <template v-if="optimizationForm.skill_mode === 'new'">
-                <div class="form-two-columns"><label>Skill Key<input v-model.trim="optimizationForm.skill_key" placeholder="my-skill" /></label><label>调用名称<input v-model.trim="optimizationForm.invoke_as" placeholder="/my-skill" /></label></div>
-                <label>Harness Key<input v-model.trim="optimizationForm.harness_key" placeholder="claude-skill" /></label>
+                <label>Skill Key<input v-model.trim="optimizationForm.skill_key" placeholder="my-skill" /></label>
+                <p class="form-note">调用名称自动使用 {{ optimizationInvokeAs }}。</p>
+                <label>Harness Key<select v-model="optimizationForm.harness_key" @change="syncOptimizationTarget"><option value="">请选择已冻结 Harness</option><option v-for="harness in frozenEvaluationHarnesses" :key="harness.id" :value="harness.key">{{ harness.key }}</option></select></label>
                 <label>本地 Skill 目录<input v-model.trim="optimizationForm.source_path" placeholder="/project/.claude/skills/my-skill" /></label>
-                <label>显示名称<input v-model.trim="optimizationForm.skill_name" placeholder="默认使用 Skill Key" /></label>
               </template>
-              <label v-else>已有 Skill<select v-model="optimizationForm.skill_id"><option value="">请选择</option><option v-for="skill in skills" :key="skill.id" :value="skill.id">{{ skill.name }} · {{ skill.invoke_as }}</option></select></label>
+              <label v-else>已有 Skill<select v-model="optimizationForm.skill_id" @change="syncOptimizationTarget"><option value="">请选择</option><option v-for="skill in skills" :key="skill.id" :value="skill.id">{{ skill.key }} · {{ skill.harness_key }}</option></select></label>
             </template>
 
             <template v-else-if="optimizationDialogStep === 2">
-              <label>claude Evaluation Target<select v-model="optimizationForm.evaluation_target_id" @change="syncOptimizationHarnessKey"><option value="">请选择已冻结 Target</option><option v-for="target in frozenOptimizationTargets" :key="target.id" :value="target.id">{{ target.display_name || target.key }} · {{ target.command_template }}</option></select></label>
-              <p class="form-note">Target 命令必须明确包含 {{ optimizationForm.invoke_as || '/skill-name' }}；系统会把冻结版本复制到每个独立工作区。</p>
+              <label>claude Evaluation Target<select v-model="optimizationForm.evaluation_target_id" @change="syncOptimizationHarnessKey"><option value="">请选择已冻结 Target</option><option v-for="target in compatibleOptimizationTargets" :key="target.id" :value="target.id">{{ target.display_name || target.key }} · {{ target.command_template }}</option></select></label>
+              <p class="form-note">Target 命令必须明确包含 {{ optimizationInvokeAs }}；系统会把冻结版本复制到每个独立工作区。</p>
               <div class="optimization-case-picker">
                 <label v-for="item in optimizationCaseOptions" :key="item.path" :class="{ disabled: !item.ready }">
                   <input type="checkbox" :checked="optimizationForm.case_paths.includes(item.path)" :disabled="!item.ready" @change="toggleOptimizationCase(item.path)" />
