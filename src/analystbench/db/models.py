@@ -454,6 +454,7 @@ class EvaluationHarness(TimestampedModel, Base):
     version_number: Mapped[int] = mapped_column(Integer)
     model_policy: Mapped[str] = mapped_column(String(16))
     tool_dir: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    skill_base_dir: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     command_template: Mapped[str] = mapped_column(Text)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     max_output_bytes: Mapped[int] = mapped_column(Integer, default=10 * 1024 * 1024)

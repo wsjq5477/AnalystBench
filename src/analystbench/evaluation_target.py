@@ -166,6 +166,22 @@ class EvaluationHarnessService:
                 )
         return str(resolved)
 
+    def _validate_skill_base_dir(self, skill_base_dir: str | None) -> str | None:
+        if not skill_base_dir:
+            return None
+        resolved = Path(skill_base_dir).expanduser().resolve()
+        for protected in (
+            self.settings.results_formal_path.resolve(),
+            self.settings.results_tmp_path.resolve(),
+            self.settings.workspace_root_path.resolve(),
+        ):
+            if resolved == protected or protected in resolved.parents:
+                raise AnalystBenchError(
+                    "evaluation_target_invalid",
+                    "Skill 本地配置目录不能位于结果目录或运行工作区内。",
+                )
+        return str(resolved)
+
     def create(
         self,
         *,
@@ -175,6 +191,7 @@ class EvaluationHarnessService:
         model_policy: str,
         command_template: str,
         tool_dir: str | None = None,
+        skill_base_dir: str | None = None,
         timeout_seconds: int = 1800,
         max_output_bytes: int = 10 * 1024 * 1024,
         concurrency_limit: int = 1,
@@ -185,6 +202,7 @@ class EvaluationHarnessService:
             raise AnalystBenchError("evaluation_target_invalid", "Harness 名称不能为空。")
         normalized_family = family.strip() if family else None
         normalized_tool_dir = self._validate_tool_dir(tool_dir)
+        normalized_skill_base_dir = self._validate_skill_base_dir(skill_base_dir)
         _validate_command(
             command_template=command_template,
             tool_dir=normalized_tool_dir,
@@ -209,6 +227,7 @@ class EvaluationHarnessService:
                 "version_number": version,
                 "model_policy": model_policy,
                 "tool_dir": normalized_tool_dir,
+                "skill_base_dir": normalized_skill_base_dir,
                 "command_template": command_template,
                 "timeout_seconds": timeout_seconds,
                 "max_output_bytes": max_output_bytes,
@@ -222,6 +241,7 @@ class EvaluationHarnessService:
                 version_number=version,
                 model_policy=model_policy,
                 tool_dir=normalized_tool_dir,
+                skill_base_dir=normalized_skill_base_dir,
                 command_template=command_template,
                 timeout_seconds=timeout_seconds,
                 max_output_bytes=max_output_bytes,
@@ -258,6 +278,7 @@ class EvaluationHarnessService:
     def probe(self, harness_id: str) -> EvaluationHarness:
         item = self.get(harness_id)
         tool_dir = self._validate_tool_dir(item.tool_dir)
+        skill_base_dir = self._validate_skill_base_dir(item.skill_base_dir)
         argv = _validate_command(
             command_template=item.command_template,
             tool_dir=tool_dir,
@@ -268,18 +289,24 @@ class EvaluationHarnessService:
         )
         executable = resolve_executable(argv[0])
         tool_dir_ok = tool_dir is None or Path(tool_dir).is_dir()
+        skill_base_dir_ok = (
+            skill_base_dir is None or Path(skill_base_dir).is_dir()
+        )
         reason = (
             "executable_not_found"
             if executable is None
             else "tool_dir_not_found"
             if not tool_dir_ok
+            else "skill_base_dir_not_found"
+            if not skill_base_dir_ok
             else None
         )
         probe = {
-            "available": bool(executable and tool_dir_ok),
+            "available": bool(executable and tool_dir_ok and skill_base_dir_ok),
             "requested_executable": argv[0],
             "executable": executable,
             "tool_dir_ok": tool_dir_ok,
+            "skill_base_dir_ok": skill_base_dir_ok,
             "reason": reason,
             "source_revision": _source_revision(tool_dir),
             "checked_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -320,6 +347,9 @@ class EvaluationHarnessService:
             model_policy=model_policy,
             command_template=command_template,
             tool_dir=changes.get("tool_dir", current.tool_dir),
+            skill_base_dir=changes.get(
+                "skill_base_dir", current.skill_base_dir
+            ),
             timeout_seconds=changes.get("timeout_seconds", current.timeout_seconds),
             max_output_bytes=changes.get("max_output_bytes", current.max_output_bytes),
             concurrency_limit=changes.get("concurrency_limit", current.concurrency_limit),
@@ -343,6 +373,7 @@ class EvaluationHarnessService:
             "version": item.version_number,
             "model_policy": item.model_policy,
             "tool_dir": item.tool_dir,
+            "skill_base_dir": item.skill_base_dir,
             "command_template": item.command_template,
             "timeout_seconds": item.timeout_seconds,
             "max_output_bytes": item.max_output_bytes,

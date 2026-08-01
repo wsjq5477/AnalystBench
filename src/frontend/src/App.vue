@@ -692,8 +692,8 @@ export default appOptions;
               <template v-if="optimizationForm.skill_mode === 'new'">
                 <label>Skill Key<input v-model.trim="optimizationForm.skill_key" placeholder="my-skill" /></label>
                 <p class="form-note">调用名称自动使用 {{ optimizationInvokeAs }}。</p>
-                <label>Harness Key<select v-model="optimizationForm.harness_key" @change="syncOptimizationTarget"><option value="">请选择已冻结 Harness</option><option v-for="harness in frozenEvaluationHarnesses" :key="harness.id" :value="harness.key">{{ harness.key }}</option></select></label>
-                <label>本地 Skill 目录<input v-model.trim="optimizationForm.source_path" placeholder="/project/.claude/skills/my-skill" /></label>
+                <label>Harness Key<select v-model="optimizationForm.harness_key" @change="syncOptimizationTarget"><option value="">请选择已配置 Skill 目录的 Harness</option><option v-for="harness in skillOptimizationHarnesses" :key="harness.id" :value="harness.key">{{ harness.key }}</option></select></label>
+                <p class="form-note">本地 Skill 目录自动使用 {{ optimizationSourcePath || 'Harness 配置目录/skills/Skill Key' }}。</p>
               </template>
               <label v-else>已有 Skill<select v-model="optimizationForm.skill_id" @change="syncOptimizationTarget"><option value="">请选择</option><option v-for="skill in skills" :key="skill.id" :value="skill.id">{{ skill.key }} · {{ skill.harness_key }}</option></select></label>
             </template>
@@ -768,7 +768,7 @@ export default appOptions;
           <p class="form-note">定义 Harness 命令与共享并发；命令包含 <code>{model}</code> 时自动启用模型选择。</p>
           <div v-if="visibleEvaluationHarnesses.length" class="method-list">
             <div v-for="harness in visibleEvaluationHarnesses" :key="harness.id" class="method-row">
-              <div><strong>{{ harness.key }} <small>v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code></div>
+              <div><strong>{{ harness.key }} <small>v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code><span>Skill 配置目录：{{ harness.skill_base_dir || '未配置' }}</span></div>
               <span :class="harness.status === 'frozen' ? 'tag-match' : harness.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ harness.status }}</span>
               <span :class="harness.probe?.available ? 'tag-match' : harness.probe?.checked_at ? 'tag-missing' : 'tag-partial'">{{ harness.probe?.available ? '命令可用' : harness.probe?.checked_at ? '命令不可用' : '未检测' }}</span>
               <button v-if="harness.status === 'draft'" class="ghost-button" :disabled="harnessActionId === harness.id" @click="probeEvaluationHarness(harness)">{{ harnessActionId === harness.id && harnessAction === 'probe' ? '检测中…' : '检测' }}</button>
@@ -914,6 +914,7 @@ export default appOptions;
         <div class="panel-heading"><h2>{{ editingHarnessId ? '修改 Harness' : '新建 Harness' }}</h2></div>
         <p class="form-note">命令含 <code>{model}</code> 时需要模型，不含则作为无模型基线；命令不经过 Shell。</p>
         <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="claude-native" /></label>
+        <label>Skill 本地配置目录<input v-model.trim="harnessForm.skill_base_dir" placeholder="~/.claude" /><span>Skill 来源自动使用该目录下的 <code>skills/{skill-key}</code></span></label>
         <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='claude -p "分析 {input}" --model {model}'></textarea></label>
         <div class="form-grid"><label>超时时间（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>并发数<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>

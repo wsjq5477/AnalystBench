@@ -112,6 +112,7 @@ export default {
       editingHarnessId: "",
       harnessForm: {
         key: "",
+        skill_base_dir: "",
         command_template: "",
         timeout_seconds: 1800,
         concurrency_limit: 1,
@@ -178,7 +179,6 @@ export default {
         skill_mode: "new",
         skill_id: "",
         skill_key: "",
-        source_path: "",
         harness_key: "",
         evaluation_target_id: "",
         case_paths: [],
@@ -582,13 +582,27 @@ export default {
         (item) => item.status === "frozen" && item.materialized_method_id,
       );
     },
+    skillOptimizationHarnesses() {
+      const seenKeys = new Set();
+      return this.frozenEvaluationHarnesses.filter((item) => {
+        if (!item.skill_base_dir || seenKeys.has(item.key)) return false;
+        seenKeys.add(item.key);
+        return true;
+      });
+    },
     compatibleOptimizationTargets() {
-      let harnessKey = this.optimizationForm.harness_key;
-      if (this.optimizationForm.skill_mode === "existing") {
-        harnessKey = this.skills.find(
-          (item) => item.id === this.optimizationForm.skill_id,
-        )?.harness_key;
+      if (this.optimizationForm.skill_mode === "new") {
+        const harness = this.skillOptimizationHarnesses.find(
+          (item) => item.key === this.optimizationForm.harness_key,
+        );
+        if (!harness) return [];
+        return this.frozenOptimizationTargets.filter(
+          (item) => item.harness?.id === harness.id,
+        );
       }
+      const harnessKey = this.skills.find(
+        (item) => item.id === this.optimizationForm.skill_id,
+      )?.harness_key;
       if (!harnessKey) return this.frozenOptimizationTargets;
       return this.frozenOptimizationTargets.filter(
         (item) => item.harness?.key === harnessKey,
@@ -604,6 +618,15 @@ export default {
       }
       const skillKey = this.optimizationForm.skill_key.trim();
       return skillKey ? `/${skillKey}` : "/skill-name";
+    },
+    optimizationSourcePath() {
+      if (this.optimizationForm.skill_mode !== "new") return "";
+      const harness = this.skillOptimizationHarnesses.find(
+        (item) => item.key === this.optimizationForm.harness_key,
+      );
+      const skillKey = this.optimizationForm.skill_key.trim();
+      if (!harness?.skill_base_dir || !skillKey) return "";
+      return `${harness.skill_base_dir.replace(/[\\/]+$/, "")}/skills/${skillKey}`;
     },
     selectedOptimizationExperiment() {
       return this.optimizationExperiments.find(
@@ -1200,12 +1223,14 @@ export default {
       this.harnessForm = harness
         ? {
             key: harness.key,
+            skill_base_dir: harness.skill_base_dir || "",
             command_template: harness.command_template,
             timeout_seconds: harness.timeout_seconds,
             concurrency_limit: harness.concurrency_limit,
           }
         : {
             key: "",
+            skill_base_dir: "",
             command_template: "",
             timeout_seconds: 1800,
             concurrency_limit: 1,
@@ -1214,13 +1239,18 @@ export default {
     },
     async saveEvaluationHarness() {
       const form = this.harnessForm;
-      if (!form.key.trim() || !form.command_template.trim()) {
-        this.showToast("请填写 Harness Key 和命令模板");
+      if (
+        !form.key.trim() ||
+        !form.skill_base_dir.trim() ||
+        !form.command_template.trim()
+      ) {
+        this.showToast("请填写 Harness Key、Skill 本地配置目录和命令模板");
         return;
       }
       this.harnessSaving = true;
       try {
         const payload = {
+          skill_base_dir: form.skill_base_dir.trim(),
           command_template: form.command_template.trim(),
           timeout_seconds: form.timeout_seconds,
           concurrency_limit: form.concurrency_limit,
@@ -1290,6 +1320,12 @@ export default {
       const probe = harness.probe || {};
       if (probe.reason === "tool_dir_not_found" || probe.tool_dir_ok === false) {
         return `Harness 检测失败：工具目录不存在（${harness.tool_dir || "未配置"}）`;
+      }
+      if (
+        probe.reason === "skill_base_dir_not_found" ||
+        probe.skill_base_dir_ok === false
+      ) {
+        return `Harness 检测失败：Skill 本地配置目录不存在（${harness.skill_base_dir || "未配置"}）`;
       }
       const executable =
         probe.requested_executable || probe.executable || "命令中的可执行文件";
@@ -2129,16 +2165,17 @@ export default {
       const readyCases = this.optimizationCaseOptions
         .filter((item) => item.ready)
         .map((item) => item.path);
-      const defaultTarget = this.frozenOptimizationTargets[0];
+      const defaultHarness = this.skillOptimizationHarnesses[0];
+      const defaultTarget = this.frozenOptimizationTargets.find(
+        (item) => item.harness?.id === defaultHarness?.id,
+      );
       this.optimizationDialogStep = 1;
       this.optimizationForm = {
         name: `Skill 优化 ${new Date().toLocaleDateString()}`,
         skill_mode: "new",
         skill_id: "",
         skill_key: "",
-        source_path: "",
-        harness_key:
-          defaultTarget?.harness?.key || this.frozenEvaluationHarnesses[0]?.key || "",
+        harness_key: defaultHarness?.key || "",
         evaluation_target_id: defaultTarget?.id || "",
         case_paths: readyCases,
         optimizer_runner: "claude",
@@ -2185,10 +2222,10 @@ export default {
       if (
         form.skill_mode === "new" &&
         (!form.skill_key ||
-          !form.source_path ||
-          !form.harness_key)
+          !form.harness_key ||
+          !this.optimizationSourcePath)
       ) {
-        this.showToast("请填写 Skill Key 和目录，并选择 Harness Key");
+        this.showToast("请填写 Skill Key，并选择已配置 Skill 目录的 Harness Key");
         return;
       }
       const datasets = new Set(form.case_paths.map((item) => item.split("/")[0]));
@@ -2205,7 +2242,7 @@ export default {
           const created = await analystBenchApi.createSkill({
             key: form.skill_key,
             name: form.skill_key,
-            source_path: form.source_path,
+            source_path: this.optimizationSourcePath,
             invoke_as: `/${form.skill_key}`,
             harness_key: form.harness_key,
             install_relative_path: `.claude/skills/${form.skill_key}`,

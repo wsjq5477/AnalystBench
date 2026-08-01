@@ -75,6 +75,10 @@ def test_p16_upgrades_existing_p15_sqlite_database(tmp_path: Path) -> None:
             "evaluation_models",
             "evaluation_targets",
         } <= set(inspector.get_table_names())
+        assert "skill_base_dir" in {
+            column["name"]
+            for column in inspector.get_columns("evaluation_harnesses")
+        }
         schedule_columns = {
             column["name"] for column in inspector.get_columns("evaluation_schedules")
         }

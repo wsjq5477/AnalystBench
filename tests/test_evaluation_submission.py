@@ -617,6 +617,40 @@ def test_revising_harness_infers_model_policy_from_changed_command(
     assert revised.json()["model_policy"] == "required"
 
 
+def test_harness_versions_skill_base_directory_and_checks_it_during_probe(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    skill_base_dir = tmp_path / ".claude"
+    skill_base_dir.mkdir()
+    with TestClient(create_app(settings)) as client:
+        harness = client.post(
+            "/api/v1/evaluation-harnesses",
+            json={
+                "key": "claude",
+                "skill_base_dir": str(skill_base_dir),
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        ).json()
+        probed = client.post(
+            f"/api/v1/evaluation-harnesses/{harness['id']}:probe"
+        ).json()
+        frozen = client.post(
+            f"/api/v1/evaluation-harnesses/{harness['id']}:freeze"
+        ).json()
+        revised = client.post(
+            f"/api/v1/evaluation-harnesses/{frozen['id']}:revise",
+            json={"command_template": f'{sys.executable} -c "print(2)"'},
+        ).json()
+
+    assert harness["skill_base_dir"] == str(skill_base_dir.resolve())
+    assert probed["probe"]["skill_base_dir_ok"] is True
+    assert probed["probe"]["available"] is True
+    assert revised["version"] == 2
+    assert revised["skill_base_dir"] == str(skill_base_dir.resolve())
+    assert revised["content_hash"] != frozen["content_hash"]
+
+
 def test_target_freeze_reuses_and_refreshes_existing_materialized_method(
     tmp_path: Path,
 ) -> None:
