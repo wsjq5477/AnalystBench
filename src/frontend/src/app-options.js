@@ -487,6 +487,58 @@ export default {
         color: this.resultColors[index % this.resultColors.length],
       }));
     },
+    performanceScatterSeries() {
+      const groups = new Map();
+      this.activeCandidates.forEach((candidate) => {
+        const target = this.splitEvaluationTargetName(candidate.name);
+        if (target.model === "-") return;
+        const duration = Number(candidate.avg_duration_ms);
+        const score = Number(candidate.avg_score);
+        if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(score)) {
+          return;
+        }
+        const fullLabel = `${target.harness} × ${target.model}`;
+        if (!groups.has(target.harness)) {
+          groups.set(target.harness, {
+            name: target.harness,
+            values: [],
+          });
+        }
+        groups.get(target.harness).values.push({
+          value: [duration, score],
+          targetLabel: target.model,
+          fullLabel,
+          harness: target.harness,
+          model: target.model,
+          duration_ms: duration,
+          score,
+        });
+      });
+      return [...groups.values()].sort((left, right) =>
+        left.name.localeCompare(right.name),
+      );
+    },
+    performanceScatterBaseline() {
+      const baseline = this.activeCandidates.find((candidate) => {
+        const target = this.splitEvaluationTargetName(candidate.name);
+        return (
+          target.model === "-" &&
+          target.harness.toLowerCase() === "script" &&
+          Number.isFinite(Number(candidate.avg_score))
+        );
+      });
+      if (!baseline) return null;
+      return {
+        label: this.splitEvaluationTargetName(baseline.name).harness,
+        value: Number(baseline.avg_score),
+      };
+    },
+    performanceScatterPointCount() {
+      return this.performanceScatterSeries.reduce(
+        (count, series) => count + series.values.length,
+        0,
+      );
+    },
     activeDailyScores() {
       if (!this.dashboardStats) return [];
       if (this.selectedTestSet) {

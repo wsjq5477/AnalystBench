@@ -1,71 +1,86 @@
-# Design QA — Case 详情卡片一致性
+# Design QA — Score vs. Duration scatter plot
 
 ## Comparison target
 
-- Source visual truth: `/mnt/c/Users/jiqi/AppData/Local/Temp/codex-clipboard-f1cafd52-ed84-4636-819d-d2a4dbcd3287.png`
-- Source pixels: 1346 × 695, RGB PNG.
-- Intended implementation: `http://127.0.0.1:5173/datasets`
-- Implementation screenshot: unavailable.
-- Intended viewport/state: desktop、暗色主题、测试集 Case 详情已选中。
-- Density normalization: source为单张桌面截图；因实现截图不可用，未执行像素密度归一化。
+- Source visual truth: `/mnt/c/Users/jiqi/AppData/Local/Temp/codex-clipboard-cf34ca92-5f31-4814-b4b0-b7fdca02f7c5.png`.
+- Source pixels: 1447 × 745 PNG.
+- Intended implementation: `http://localhost:5173/dashboard`.
+- Implementation screenshot: unavailable because the Codex in-app browser rejected the WSL workspace mapping with `sandboxCwd is not a local file URI: file:///home/jiqi/LLM/AnalystBench`.
+- Intended viewport/state: desktop dashboard, dark theme, `demo-benchmark`, Harness/Model filters at `Average`.
+- CSS viewport and device density: unavailable; no browser-rendered capture was produced.
+- Density normalization: not performed because the implementation screenshot is unavailable.
 
 ## Findings
 
+- [P1] Browser-rendered visual comparison is blocked.
+  - Location: dashboard `Score vs. Duration` panel.
+  - Evidence: the source reference opened successfully, and the WSL frontend/API both respond successfully, but the required browser connection fails before a screenshot can be captured.
+  - Impact: label overlap, exact quadrant coverage, pale-green contrast, Script-line placement, hover state, and light-theme rendering cannot be accepted visually.
+  - Fix: repeat this QA pass when the Codex in-app browser can map the WSL workspace, capture the dashboard at the intended viewport, and compare it with the source in one combined image input.
+
+## Comparison history
+
 ### Iteration 1
 
-- [P1] Case 详情内部使用了三套视觉层级。
-  - Location: 基础信息、原始日志、Case JSON。
-  - Evidence: 源截图中基础信息格、日志卡和 JSON 区域的标题字号、内边距、背景、边框与圆角明显不同；“原始日志”标题尤其显著偏大。
-  - Impact: 同级内容看起来像来自不同页面，削弱 Case 详情的信息层级。
-  - Fix: 三块内容统一为 `.case-detail-card`，共用 12px 圆角、主题边框和背景；标题统一为 52px 高的 `.case-detail-section-head`，正文统一采用 16px 内边距。
+- Earlier implementation represented Script as a tenth scatter point.
+- User correction: Script must not be a point; its score must appear as a horizontal dashed reference line.
+- Fix applied: Harness × Model combinations remain as nine points; Script is resolved explicitly by name and rendered as a `markLine` at its average score.
+- Post-fix non-visual evidence: `demo-benchmark` returns nine timed Harness × Model combinations and `script` score `48.5`; frontend tests and production build pass.
 
-- [P2] 文件选择控件与页面主题不一致。
-  - Location: 原始日志上传区。
-  - Evidence: 源截图显示浏览器原生灰色文件按钮，与右侧 AnalystBench 按钮风格不一致。
-  - Impact: 上传区在统一卡片内仍显得突兀。
-  - Fix: 使用现有主题变量统一文件框、选择按钮、hover、边框和圆角。
+### Iteration 2
 
-### Post-fix evidence
+- Code-level review found that full `Harness × Model` point labels would be denser than the reference, which groups colors by provider and labels points by model.
+- Fix applied: legend colors group by Harness, point labels show Model only, and the full combination remains available in the tooltip. The horizontal axis title was corrected to `AVERAGE DURATION (LOG SCALE)` without a misleading direction arrow.
+- Post-fix non-visual evidence: hot-update compilation and production build pass.
 
-- Vue 开发服务器热更新编译成功。
-- 生产构建成功，Sites 测试 4/4 通过。
-- 无浏览器渲染截图：浏览器连接在 WSL 工作区因 `sandboxCwd is not a local file URI` 被阻断。
+### Iteration 3
+
+- User feedback: the two overview charts had unequal widths at full-screen size.
+- Fix applied: the dashboard chart grid now uses two equal `minmax(0, 1fr)` columns while retaining the existing single-column layout below 1100px.
+- Post-fix non-visual evidence: frontend regression test checks both equal desktop columns and the responsive single-column override.
+
+### Iteration 4
+
+- User feedback: the reference chart includes a dotted line connecting the efficient points along the upper-left frontier.
+- Fix applied: the chart now computes the duration-minimizing, score-maximizing Pareto frontier and renders it as a dotted line below the scatter markers; dominated combinations are excluded from the line.
+- Post-fix non-visual evidence: a deterministic unit test verifies that only progressively higher-scoring points remain when sorted by duration.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: 代码已统一详情卡标题为 14px/630，标签为 11px，内容沿用项目字体变量；缺少浏览器截图，无法确认实际字体光栅化和换行。
-- Spacing and layout rhythm: 代码已统一 14px 卡片间距、52px 标题栏、16px 正文边距、12px 圆角，并增加 2 列和 1 列响应式布局；缺少渲染证据。
-- Colors and visual tokens: 新样式全部使用现有 `var(--...)` 主题变量，未新增硬编码颜色；缺少暗色/亮色截图验证。
-- Image quality and asset fidelity: 本目标没有照片、插图、Logo 或其他新增图片资产。
-- Copy and content: 保留现有功能和文案，仅增加“基础信息”“Case JSON”“只读”层级标签。
+- Fonts and typography: uses the existing Inter chart font, 10–12px chart hierarchy, and existing theme text colors; browser rasterization, truncation, and overlap remain unverified.
+- Spacing and layout rhythm: both overview charts use equal-width columns and stack below 1100px; exact rendered padding and label clearance remain unverified.
+- Colors and visual tokens: Harness groups use the existing theme palettes; the upper-left quadrant uses pale green (`rgba(187, 247, 208, .11)` in dark and `.44` in light); rendered contrast remains unverified.
+- Image quality and asset fidelity: no raster or custom image assets are introduced; the visualization uses ECharts canvas rendering and existing application typography.
+- Copy and content: `Score vs. Duration`, nine-combination count, log-duration axis, average-score axis, `FAST + HIGH SCORE`, and Script score label are implemented.
 
 ## Full-view and focused comparison
 
-- Source screenshot已打开并检查。
-- Implementation full-view screenshot无法获取，因此不能完成同视口合成对比。
-- 原始日志标题、元数据格和 JSON 卡片本应作为 focused regions 复核，但同样受浏览器连接阻断。
+- Source full view: opened and inspected.
+- Implementation full view: unavailable; therefore no same-viewport combined comparison exists.
+- Focused chart comparison: unavailable for the same blocker. The required focused checks are point-label collisions, the exact upper-left quarter fill, Script dashed-line label, and tooltip content.
 
 ## Primary interactions and console
 
-- 页面、API 健康接口和 Vue 热更新均可访问。
-- 生产构建与 Sites 路由测试通过。
-- 未能通过浏览器点击 Case、切换主题、上传日志或检查浏览器控制台。
+- WSL frontend is listening on `0.0.0.0:5173`; WSL API is listening on `0.0.0.0:8000`.
+- Frontend proxy request to `/api/v1/health/ready` returns `{"status":"ok","database":"ready"}`.
+- The in-app browser could not be initialized, so hover behavior, theme switching, filter independence, and browser console errors were not inspected.
 
-## Open Questions
+## Implementation checklist
 
-- 暗色和亮色主题下的最终视觉仍需一次浏览器截图确认。
+- [x] Replace the issue-type bar chart with a duration × score scatter plot.
+- [x] Use all nine Harness × Model combinations independently of Harness/Model comparison filters.
+- [x] Keep the selected test-set filter applicable.
+- [x] Group colors by Harness and label points by Model.
+- [x] Render Script as a horizontal dashed score baseline rather than a point.
+- [x] Shade the upper-left quarter with very pale green.
+- [x] Connect non-dominated score-duration points with a dotted Pareto line.
+- [x] Add duration/score tooltip details and responsive chart sizing.
+- [x] Pass all frontend tests and the WSL production build.
+- [ ] Capture dark/light browser screenshots and complete the combined visual comparison.
+- [ ] Verify hover, theme switching, filter independence, and browser console state.
 
-## Implementation Checklist
+## Follow-up polish
 
-- [x] 统一三块详情卡结构。
-- [x] 统一标题栏、间距、边框、圆角和背景。
-- [x] 统一文件选择控件。
-- [x] 增加桌面、平板和移动端网格适配。
-- [ ] 获取同视口浏览器截图并完成合成视觉对照。
-- [ ] 点击验证日志上传、主题切换和滚动状态。
-
-## Follow-up Polish
-
-- 浏览器连接恢复后，复核窄屏下长 Case Key 的省略和 JSON 滚动条密度。
+- After browser capture is available, adjust label positions only if the nine model labels visibly collide at the real dashboard width.
 
 final result: blocked

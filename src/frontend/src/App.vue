@@ -82,7 +82,7 @@ export default appOptions;
         </section>
 
         <div class="chart-grid">
-          <section class="surface chart-panel"><div class="panel-heading"><h2>Score by Issue Type <span class="chart-dimension">({{ dashboardComparisonContext }} · Hover for Duration)</span></h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />Live Run Data</span></div><ChartCanvas kind="bar" :theme="theme" :labels="categoryBarLabels" :series="categoryBarSeries" :height="276" /></section>
+          <section class="surface chart-panel performance-scatter-panel"><div class="panel-heading"><h2>Score vs. Duration <span class="chart-dimension">(All Harness × Model · Script Score Baseline)</span></h2><span v-if="dashboardLoaded" class="api-badge"><IconCircleCheck :size="14" />{{ performanceScatterPointCount }} Combinations</span></div><ChartCanvas kind="scatter" :theme="theme" :labels="[]" :series="performanceScatterSeries" :reference-line="performanceScatterBaseline" :height="310" /></section>
           <section class="surface chart-panel"><div class="panel-heading"><h2>Score Over Time <span class="chart-dimension">({{ dashboardComparisonContext }} · Hover for Duration)</span></h2></div><ChartCanvas kind="trend" :theme="theme" :labels="dailyScoreLabels" :series="dailyScoreSeries" :height="276" /></section>
         </div>
 

@@ -30,5 +30,6 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - 总览统计展示平均运行时间：综合得分卡片直接显示，图表在悬停提示中显示，完整组合排行榜提供独立运行时间列。
 - 总览内的运行耗时标签统一使用英文 `DURATION`；综合得分卡片使用 `AVG DURATION`。
 - 耗时数值统一使用英文单位格式，例如 `2 min 22 sec`；时间折线图需为首尾数据点保留明显的左右留白。
+- 总览第一张图使用全量 Harness × Model 的“平均耗时 × 平均得分”散点图，不跟随 Harness/Model 对比筛选；script 不作为散点，改用其得分对应的水平虚线作为基准。横轴耗时、纵轴得分，左上象限用非常浅的绿色标记“高分且快速”的优选区域，并用点状 Pareto 线从左到右连接耗时增加时不断刷新最高得分的非支配点；全屏时该图与 `Score Over Time` 等宽。
 - 总览及结果详情中的评分区描述统一使用英文：`Overall Score`、`Score by Issue Type`、`Score Over Time`、`Higher Is Better`。
 - 总览“按问题种类对比”使用纵向排行榜：按 SCORE 降序，前三名显示奖牌；将 `harness@model` 拆为 HARNESS 与 MODEL，无模型项显示 `-`；兼容旧结果 `harness(model)-suffix`，括号内作为 MODEL，括号外前后部分拼成 HARNESS；SCORE 位于身份列之后并使用主文字色，右侧各问题种类分数使用弱化文字色。

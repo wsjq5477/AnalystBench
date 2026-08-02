@@ -560,7 +560,8 @@ body {
 
 .dashboard-page { margin-top: 24px; }
 .work-page { margin-top: 32px; }
-.chart-grid { gap: 20px; margin-top: 20px; }
+.chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 20px; }
+.performance-scatter-panel { min-width: 0; }
 .matrix-panel { margin-top: 20px; }
 .overview-grid { gap: 20px; }
 .score-panel,
