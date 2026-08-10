@@ -1,8 +1,10 @@
-# AnalystBench 开发设计文档
+# AnalystBench Agent 开发文档
 
 状态：Accepted（P0.1 Agent Execution 范围修订，2026-07-21）
 
-本目录把产品概念转成可以实现、测试和验收的工程契约。当前覆盖无前端的 Phase 1 MVP。P0 基线和 P0.1 Agent Execution 策略已经确认，可作为实现依据。
+本目录供 Codex、claude 等 Agent 工具和项目开发者使用，把产品概念转成可以实现、测试和验收的工程契约，不作为用户操作指南。用户安装、使用与运维文档见 [docs 文档导航](../README.md)。
+
+Benchmark 调研资料统一放在 [`../benchmark/`](../benchmark/README.md)，Skill 自优化调研资料统一放在 [`../skillopt/`](../skillopt/README.md)。
 
 ## 文档地图
 
@@ -26,6 +28,7 @@
 | evaluation-submission-design.md | 从测试集原始日志提交多个报告生成器并自动评分的目录、隔离、状态与 API 契约 |
 | scheduled-evaluation-design.md | AnalystBench 内置每日定时测评、补跑、重叠、Worker 触发和执行历史契约 |
 | harness-model-evaluation-design.md | Harness、Model、兼容运行组合、矩阵提交和双维度质量/耗时比较契约 |
+| AnalystBench-Skill自优化系统方案设计-Codex.md | Skill 自优化的数据模型、执行闭环、Gate、版本治理与实现约束 |
 | frontend-overview.md | 第一阶段前端功能说明 |
 | release-checklist.md | MVP 发布检查清单 |
 | todolist.md | 阶段任务、依赖和验收门禁 |

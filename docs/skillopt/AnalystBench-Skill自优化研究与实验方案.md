@@ -7,7 +7,7 @@
 > 适用系统：AnalystBench、内核日志分析 Agent、claude Skill Harness
 > 文献口径：截至 2026-07-31，以引用论文的最新公开版本为准
 
-配套工程规格：[AnalystBench Skill 自优化系统方案设计](./AnalystBench-Skill自优化系统方案设计-Codex.md)。
+配套工程规格：[AnalystBench Skill 自优化系统方案设计](../development/AnalystBench-Skill自优化系统方案设计-Codex.md)。
 
 ---
 

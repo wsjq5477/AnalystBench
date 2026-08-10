@@ -275,18 +275,6 @@ PATH 中的 `claude`，也可通过环境变量指定；这项环境验收和真
 
 ---
 
-## 文档
-
-- [AnalystBench Skills 说明](docs/skills.md)
-- [前端功能说明](docs/frontend-overview.md)
-- [自然语言标准答案转 Eval Spec 设计](docs/eval-spec-generator-design.md)
-- [Eval Spec 与 AI 报告评分器设计](docs/scoring-engine-design.md)
-- [Benchmark Suite 设计](docs/benchmark-suites.md)
-- [开发设计文档](docs/development/README.md)
-- [claude / OpenCode Agent Runner 设计](docs/development/agent-runner-design.md)
-
----
-
 ## 项目状态
 
 AnalystBench 当前处于 MVP 开发阶段。已完成的能力和运行方式以开发设计文档与下方命令为准；claude/OpenCode 的真实执行适配器将在后续阶段接入。
@@ -364,16 +352,18 @@ cd src/frontend && npm install && npm run serve
 
 ---
 
-## 文档
+## 用户文档
 
+- [文档导航](docs/README.md) — 用户文档与内部资料的目录边界
 - [快速上手](docs/quickstart.md) — 单次评分、数据库部署与 Skill 自优化指南
 - [评分输入格式说明](docs/scoring-input.md) — Case JSON 字段、评分策略、AI 报告格式
 - [AnalystBench Skills 说明](docs/skills.md) — 4 个 claude Skill 说明
 - [命令行工作流](docs/cli-workflow.md) — 数据库模式完整 CLI 流程
-- [前端功能说明](docs/frontend-overview.md)
-- [自然语言标准答案转 Eval Spec 设计](docs/eval-spec-generator-design.md)
-- [Eval Spec 与 AI 报告评分器设计](docs/scoring-engine-design.md)
+- [运维与恢复](docs/operations.md) — 本地部署、服务管理、备份和恢复
 - [Benchmark Suite 设计](docs/benchmark-suites.md)
-- [Skill 自优化系统方案设计](docs/development/AnalystBench-Skill自优化系统方案设计-Codex.md)
-- [开发设计文档](docs/development/README.md)
-- [Agent Runner 设计](docs/development/agent-runner-design.md)
+
+## 开发与调研资料
+
+- [Agent 开发文档](docs/development/README.md)
+- [Benchmark 调研](docs/benchmark/README.md)
+- [Skill 自优化调研](docs/skillopt/README.md)

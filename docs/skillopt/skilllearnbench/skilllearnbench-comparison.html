@@ -1,0 +1,504 @@
+<style>
+  /* ── Token system: a research-memo palette ───────────────────────
+     warm near-black ground, paper-white text, ochre "markup" accent,
+     sage "adopted/exists" secondary, warm muted greys.
+     Light-first (default = light, no stamp); dark overrides below.            */
+  :root {
+    --ground:        #ece6dc;
+    --ground-raised: #f4efe6;
+    --ink:           #1a1714;
+    --ink-soft:      #54493f;
+    --ink-faint:     #8a7d6f;
+    --rule:          #d8cfc0;
+    --accent:        #9c6a2a;   /* ochre — markup, the thesis, things to act on */
+    --accent-soft:   #d9b888;
+    --sage:          #5e7551;   /* "already stronger / keep" secondary */
+    --sage-soft:     #c3d2b6;
+    --code-bg:       #e3dccf;
+    --code-ink:      #2c2418;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:        #161310;
+      --ground-raised: #211c17;
+      --ink:           #ece6dc;
+      --ink-soft:      #b8ac9c;
+      --ink-faint:     #807464;
+      --rule:          #322a22;
+      --accent:        #d9a558;
+      --accent-soft:   #6e5024;
+      --sage:          #9bb285;
+      --sage-soft:     #3a4a30;
+      --code-bg:       #241e18;
+      --code-ink:      #e8e0d2;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:        #161310;
+    --ground-raised: #211c17;
+    --ink:           #ece6dc;
+    --ink-soft:      #b8ac9c;
+    --ink-faint:     #807464;
+    --rule:          #322a22;
+    --accent:        #d9a558;
+    --accent-soft:   #6e5024;
+    --sage:          #9bb285;
+    --sage-soft:     #3a4a30;
+    --code-bg:       #241e18;
+    --code-ink:      #e8e0d2;
+  }
+
+  html { background: var(--ground); }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ── Layout shell ─────────────────────────────────────────────── */
+  .shell {
+    max-width: 72ch;
+    margin: 0 auto;
+    padding: 4.5rem 1.75rem 6rem;
+  }
+  @media (max-width: 640px) {
+    .shell { padding: 2.5rem 1.25rem 4rem; }
+  }
+
+  /* ── Masthead: quiet, report-like, no hero ───────────────────── */
+  .masthead {
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 2rem;
+    margin-bottom: 2.75rem;
+  }
+  .masthead .eyebrow {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 1.25rem;
+  }
+  .masthead h1 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(1.55rem, 4.2vw, 2.15rem);
+    line-height: 1.15;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+    margin: 0 0 1.5rem;
+    color: var(--ink);
+  }
+  .masthead .lede {
+    font-family: var(--mono);
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    margin: 0 0 1.75rem;
+    max-width: 62ch;
+  }
+  .masthead .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink-faint);
+    letter-spacing: 0.01em;
+  }
+  .masthead .meta b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ── Type scale ───────────────────────────────────────────────── */
+  h2 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 1.4rem;
+    line-height: 1.25;
+    letter-spacing: -0.012em;
+    margin: 3.25rem 0 1rem;
+    color: var(--ink);
+    text-wrap: balance;
+    scroll-margin-top: 1rem;
+  }
+  h2:first-of-type { margin-top: 0; }
+  h2 .n {
+    font-family: var(--mono);
+    font-weight: 400;
+    font-size: 0.7em;
+    color: var(--accent);
+    margin-right: 0.6rem;
+    letter-spacing: 0;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 1.02rem;
+    letter-spacing: -0.005em;
+    margin: 2rem 0 0.65rem;
+    color: var(--ink);
+  }
+  p { margin: 0 0 1.1rem; }
+  ul, ol { margin: 0 0 1.1rem; padding-left: 1.4rem; }
+  li { margin-bottom: 0.4rem; }
+  li::marker { color: var(--ink-faint); }
+  strong { color: var(--ink); font-weight: 600; }
+  em { color: var(--ink-soft); }
+
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  /* ── Inline code & blocks ─────────────────────────────────────── */
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 0.12em 0.4em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 1rem 1.15rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0 0 1.3rem;
+    font-size: 0.86rem;
+    line-height: 1.55;
+    border: 1px solid var(--rule);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* ── Tables ───────────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; margin: 0 0 1.4rem; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.86rem;
+    line-height: 1.5;
+    min-width: 520px;
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  th {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1.5px solid var(--ink-soft);
+  }
+  td code { font-size: 0.82em; }
+
+  /* ── Callouts: pull-quotes, takeaways ────────────────────────── */
+  .pull {
+    border-left: 2px solid var(--accent);
+    padding: 0.35rem 0 0.35rem 1.1rem;
+    margin: 1.5rem 0;
+    color: var(--ink-soft);
+    font-style: italic;
+  }
+  .pull strong { font-style: normal; }
+
+  .keep {
+    border-left: 2px solid var(--sage);
+    background: var(--sage-soft);
+    background: color-mix(in srgb, var(--sage) 9%, transparent);
+  }
+
+  /* ── Priority chips in the matrix table ───────────────────────── */
+  .pri {
+    display: inline-block;
+    font-family: var(--sans);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.12rem 0.45rem;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .pri-p1 { background: var(--accent); color: var(--ground); }
+  .pri-p2 { background: var(--accent-soft); color: var(--ink); }
+  .pri-p3 { background: var(--rule); color: var(--ink-soft); }
+
+  /* ── Conclusion block ─────────────────────────────────────────── */
+  .conclusion {
+    background: var(--ground-raised);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.5rem 1.6rem;
+    margin: 2.75rem 0 0.5rem;
+  }
+  .conclusion .label {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.6rem;
+  }
+  .conclusion p { margin: 0; color: var(--ink-soft); font-size: 14.5px; }
+  .conclusion strong { color: var(--ink); }
+
+  .divider { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+
+  .footer-note {
+    margin-top: 3rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.8rem;
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+
+  /* ── Focus & reduced motion ───────────────────────────────────── */
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">内部调研 · Internal Research Memo</p>
+    <h1>SkillLearnBench 调研：<br>AnalystBench 可借鉴之处</h1>
+    <p class="lede">
+      对比 SkillLearnBench（COLM 2026，CMU）与 AnalystBench（自研，MVP）的全量源码与文档，
+      锁定两者在 Skill 质量评测、生成方法学与运行隔离上的交集——即 AnalystBench 最值得借鉴的地方。
+    </p>
+    <div class="meta">
+      <span><b>日期</b> 2026-08-10</span>
+      <span><b>对比对象</b> SkillLearnBench ↔ AnalystBench</span>
+      <span><b>材料</b> 本地仓库全量快照</span>
+    </div>
+  </header>
+
+  <div class="conclusion">
+    <p class="label">一句话结论</p>
+    <p>
+      二者在「Skill」一词上指向不同抽象，但在 <strong>Skill 质量评测</strong> 与 <strong>Skill 生成/迭代方法学</strong>
+      两个维度上高度互补。SkillLearnBench 提供轻量、可移植的 key-point coverage、teacher-feedback 多轮、
+      Docker 沙箱统一 runner 范式；AnalystBench 在统计门禁与版本治理上更深入。
+      <strong>交集即最值得借鉴之处。</strong>
+    </p>
+  </div>
+
+  <h2 id="s1"><span class="n">01</span>两者到底在评测什么</h2>
+  <p>先对齐抽象层级，避免拿不同维度的东西硬比。</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>维度</th><th>SkillLearnBench</th><th>AnalystBench</th></tr></thead>
+    <tbody>
+      <tr><td>被测对象</td><td><strong>Skill 生成方法</strong>（one-shot / self-feedback / teacher-feedback / skill-creator）× 多模型</td><td><strong>分析报告</strong>本身，及产出报告的 Harness × Model × Skill 版本组合</td></tr>
+      <tr><td>Skill 的角色</td><td>被评测的「产物」——方法生成的 SKILL.md 质量直接影响下游任务通过率</td><td>被测的一个维度——Skill 是喂给 claude/OpenCode 的操作说明包，影响报告质量</td></tr>
+      <tr><td>「标准答案」形态</td><td>任务有确定 verifier（pytest + reward.txt 二值）</td><td>自然语言标准答案 → 编译为 Eval Spec（Claim Graph + 因果边）</td></tr>
+      <tr><td>评分是否确定性</td><td>任务成功=是（二值 reward）；Skill/Trajectory 质量=否（GPT-5-mini judge + key-point 对齐）</td><td>是（LLM 只判 match/partial/missing/contradiction，计分由确定性引擎）</td></tr>
+      <tr><td>任务领域</td><td>20 个真实任务，跨 6 类</td><td>首个官方套件 KDiag（内核/OS 分析），Core 领域无关</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="pull">
+    <strong>关键差异：</strong>SkillLearnBench 的 Skill 承载<strong>领域 know-how</strong>，AnalystBench 的 Skill 承载<strong>工具流程</strong>。二者都符合 Claude <code>SKILL.md</code> 格式，但语义层不同——这决定了借鉴时哪些可平移、哪些需转译。
+  </p>
+
+  <h2 id="s2"><span class="n">02</span>SkillLearnBench 的核心做法</h2>
+
+  <h3>2.1 三层评测维度（最值得借鉴的整体框架）</h3>
+  <p>评测明确拆成三个正交维度，每个维度有独立指标和独立实现：</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>维度</th><th>指标</th><th>度量什么</th><th>实现</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Task Success</strong></td><td>Pass rate</td><td>每个 trial 的二值 verifier 结果</td><td><code>core/eval_runner.py</code> + 任务 <code>tests/test.sh</code></td></tr>
+      <tr><td><strong>Skill Quality</strong></td><td>Coverage / Executability / Safety</td><td>Skill 文档是否覆盖 oracle 关键点、是否可执行、是否含不安全指令</td><td><code>evaluation/skill/metrics/compute_*.py</code></td></tr>
+      <tr><td><strong>Trajectory Quality</strong></td><td>Key-point recall / order / completeness</td><td>agent 执行轨迹是否匹配预期解决路径</td><td><code>evaluation/trajectory/metrics/metric_*.py</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="pull">
+    <strong>对 AnalystBench 的启示：</strong>当前 Phase 1 聚焦「最终结果 Benchmark」，Phase 3 才规划 Trace。SkillLearnBench 证明<strong>三层可并行设计、独立落分</strong>，且 Skill 质量维度（coverage/executability/safety）<strong>不依赖 trace 基础设施</strong>就能先做。AnalystBench 自优化纵切目前用「报告分数 Delta」作唯一 Skill 质量代理，<strong>没有对 Skill 文档本身的质量度量</strong>——这是可借鉴的低成本增量。
+  </p>
+
+  <h3>2.2 Key-point Coverage：把「Skill 好不好」变成可对齐的检查项</h3>
+  <p>最精巧的设计，也是和 AnalystBench 的 Claim-Graph 评分<strong>理念同源</strong>的地方。流程（<code>compute_coverage.py</code>）：</p>
+  <ol>
+    <li>从 oracle（人工 skill + 成功轨迹）<strong>离线生成</strong> <code>skill-key-points.generated.json</code>——该任务 Skill「应该提到」的关键知识点，每条带 <code>reason</code> 与 <code>skill_reference</code>（原文出处）；</li>
+    <li>对待评 Skill，把整个 Skill 包（SKILL.md + scripts/ + references/ + assets/）拼成一个文本 blob；</li>
+    <li>逐条 key-point 让 LLM judge 判 <code>mentioned / missing / contradiction</code>；</li>
+    <li><code>coverage = mentioned / total</code>。</li>
+  </ol>
+  <p class="pull">
+    <strong>与 AnalystBench 的同构：</strong>这几乎就是 Gold-Claim → Candidate-Claim 对齐，只是 SkillLearnBench 的「claim」是 Skill 文档的关键知识点，AnalystBench 的是报告的结论/证据/因果。
+  </p>
+  <p><strong>可直接平移：</strong>新增一个 <strong>Skill Coverage 维度</strong>——对每个被优化的 Skill，离线生成「该 Skill 应覆盖的关键操作/约束点」（从 Eval Spec 和成功轨迹抽取），候选 Skill 同样做 mentioned/missing/contradiction 对齐，作为 Gate 的硬约束或软维度。能抓住一类目前漏掉的问题——「候选 Skill 改得让报告分数涨了，但把一条必须的安全约束删了」。</p>
+
+  <h3>2.3 四个 Skill 生成方法（连续学习方法学）</h3>
+  <p><code>baselines/</code> 下四个方法，是 AnalystBench「自优化」可对标的方法学光谱：</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>方法</th><th>信号来源</th><th>轮次</th><th>AnalystBench 对应</th></tr></thead>
+    <tbody>
+      <tr><td><strong>b1 one-shot</strong></td><td>无</td><td>单轮</td><td>Optimizer 生成候选 Patch 单次</td></tr>
+      <tr><td><strong>b2 self-feedback</strong></td><td>agent 自评轨迹</td><td>K=2</td><td>Evidence Builder + Mutation Generator（失败信号→patch）</td></tr>
+      <tr><td><strong>b3 teacher-feedback</strong></td><td>外部 teacher LLM 给方向性建议（不露 ground-truth）</td><td>K=3，失败触发 QA</td><td><strong>目前没有</strong>——只有报告分数反馈，无「领域专家方向性指导」层</td></tr>
+      <tr><td><strong>b4 skill-creator</strong></td><td>无，但遵守 Claude 官方 skill-creator 结构化流程</td><td>单轮</td><td>OptimizerPolicyVersion + 结构化 Patch</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="pull">
+    <strong>b3 teacher-feedback 最值得借鉴。</strong>AnalystBench 的 Evidence Builder 现在只从<strong>评分结果</strong>抽信号。b3 引入独立 teacher 角色，<strong>看得到 ground-truth skill</strong>，但只给「修改建议」不给答案——<code>_B3_TEACHER_SYSTEM</code> 明确写「Give modification suggestions only. Do NOT provide the full solution」。
+  </p>
+  <p><strong>对 AnalystBench 的转译：</strong>AnalystBench 的 ground-truth 是 Eval Spec（Gold Claim Graph）。可引入 <strong>EvalSpec-Aware Teacher</strong>：读得到冻结 Eval Spec，但给 Mutation Generator 的反馈只说「候选 Skill 缺少对 X 类证据的引导」「没覆盖根因判别步骤」，<strong>不直接写 Skill 内容</strong>。比纯分数反馈信息量大得多，且不泄漏标准答案到被测 agent。这是真正的<strong>方法学增量</strong>，不只是工程重构。</p>
+
+  <h3>2.4 统一的 Docker + verifier 范式</h3>
+  <p>每个任务实例结构固定：</p>
+<pre><code>tasks/&lt;task&gt;/&lt;task&gt;-N/
+├── instruction.md        # 任务描述
+├── environment/
+│   ├── Dockerfile        # 沙箱环境
+│   └── skills/           # oracle skill（构建时排除，防泄漏）
+├── tests/
+│   ├── test.sh           # verifier 入口，写 reward.txt
+│   └── test_outputs.py   # pytest 断言
+└── task.toml             # 元数据：难度、类别、资源、required_env</code></pre>
+  <p><code>skill_runner.py</code> / <code>eval_runner.py</code> 用一套流程吃所有任务：build image → run container → install agent → exec agent → exec verifier → 读 <code>reward.txt</code>。关键工程细节值得抄：</p>
+  <ul>
+    <li><strong>Oracle skill 防泄漏：</strong>构建上下文用 <code>ignore_patterns("skills")</code> 排除 oracle skill，注释明确写「prevent oracle skill leakage into no_skill or generated containers」。AnalystBench 也有「prospective holdout 不进入优化器输入」原则，但 SkillLearnBench 在<strong>构建层</strong>就物理隔离了，更稳。</li>
+    <li><strong>预构建镜像 + 运行时注入：</strong><code>_inject_skills_runtime</code> 在已构建 base image 上用 <code>docker cp</code> 注入候选 skill，避免每次 trial 重建镜像。<code>_parse_skill_copies</code> 从 Dockerfile 的 <code>COPY skills ...</code> 指令自动推导注入路径，<strong>比硬编码路径更鲁棒</strong>。</li>
+    <li><strong>token 用量抽取：</strong><code>_extract_token_usage</code> 从 agent tee 日志最后一行 JSON 抽 token，按 agent 类型区分。AnalystBench 的 P19 把 token/耗时列为非目标，但这套逻辑很轻，可作 Phase 2 成本核算参考。</li>
+  </ul>
+
+  <h3>2.5 方法插件契约（method.py）</h3>
+  <p><code>CONTRIBUTING.md</code> 定义两种加方法的方式：</p>
+  <ul>
+    <li><strong>Option A（prompt-only）：</strong>放个 <code>method.md</code>，内容拼到 instruction 后；</li>
+    <li><strong>Option B（custom orchestration）：</strong>放个 <code>method.py</code>，实现固定签名 <code>run(*, container_name, task_path, trial_path, agent, model_name, instruction, task_workdir, max_rounds, max_steps) -&gt; (passed, steps_used, stdout, stderr, rounds_used)</code>。</li>
+  </ul>
+  <p>b3 teacher-feedback 就是 Option B 的实现（<code>_run_teacher_student_loop</code>）。这个「prompt 注入 vs 插件编排」二分对 AnalystBench 的 <code>OptimizerPolicyVersion</code> 设计有启发：现在的 optimizer 是「prompt bundle + 结构化 patch」，等价于 Option A 增强版。未来接入更复杂的迭代方法（teacher-student、RL curator）时，需要一个 Option B 式的<strong>插件契约</strong>，而非把多轮逻辑硬塞进一个 prompt。</p>
+
+  <h3>2.6 skills_only 模式：解耦「生成 Skill」与「用 Skill 解题」</h3>
+  <p><code>--skills-only</code> 让 agent 只跑「生成 SKILL.md」阶段，写完文件就中断（<code>_poll_skills_done</code> 轮询 + 稳定窗口），跳过 verifier。这样<strong>生成 Skill 和评估 Skill 是两次独立运行</strong>，可单独评测「方法生成的 Skill 好不好」而不混入「agent 解题能力强不强」。</p>
+  <p class="pull">
+    <strong>对 AnalystBench 的启示：</strong>现在自优化是「改 Skill → 跑 agent 出报告 → 评报告」一体化。若想把「Optimizer 生成的 Skill 本身的质量」和「Skill 喂给 agent 后的报告质量」分开度量，这种<strong>两阶段解耦</strong>是现成范式。
+  </p>
+
+  <h2 id="s3"><span class="n">03</span>AnalystBench 已经更强的地方</h2>
+  <p>借鉴不是单向的。这些地方 AnalystBench 已超出 SkillLearnBench，<strong>不要为了「对齐」而退化</strong>：</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>方面</th><th>AnalystBench</th><th>SkillLearnBench</th></tr></thead>
+    <tbody>
+      <tr><td><strong>统计门禁</strong></td><td>Bootstrap CI + 胜率 + 灰区增采样 + 硬约束分层 + Case 级中位数</td><td>无统计框架，单次 pass rate</td></tr>
+      <tr><td><strong>版本治理</strong></td><td>内部 Git + 不可变 package_hash + 乐观锁 Active + provisional/validated 分级</td><td>文件目录 <code>skills/&lt;method&gt;-&lt;model&gt;/</code>，无版本概念</td></tr>
+      <tr><td><strong>数据切分诚实度</strong></td><td>明确 4-Case 用 <code>development_regression</code>，不宣称统计显著；prospective holdout 不进优化器</td><td>20 任务 100 实例，无 train/val/test 切分意识</td></tr>
+      <tr><td><strong>评分可解释性</strong></td><td>Claim Graph + 因果边 + 四级关系 + 确定性计分</td><td>Skill 质量也用 LLM judge，但粒度是 key-point 二三分类</td></tr>
+      <tr><td><strong>运行隔离</strong></td><td>独立 HOME + workspace + 只复制登记 Skill 包</td><td>Docker 容器 + 构建时排除 oracle</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="pull keep">
+    <strong>保持：</strong>统计门禁是 AnalystBench 的核心壁垒；版本治理是 SkillLearnBench 完全没有的维度；小样本方法论更严谨；评分哲学更深——这些都不能为「对齐」而退。
+  </p>
+
+  <h2 id="s4"><span class="n">04</span>可行性矩阵：哪些值得做、按什么顺序</h2>
+  <p>按「价值 × 实现成本」排序。成本是相对 AnalystBench 现有架构的增量。</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>借鉴项</th><th>价值</th><th>成本</th><th>优先级</th><th>落点</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td><td><strong>Skill Coverage 维度</strong>（key-point 对齐，Gate 软约束）</td>
+        <td>高</td><td>中</td><td><span class="pri pri-p1">P1</span></td>
+        <td><code>skill_optimization/evidence.py</code> 旁新增 <code>skill_coverage.py</code>；key-points 离线生成复用 Eval Spec 生成链路</td>
+      </tr>
+      <tr>
+        <td>2</td><td><strong>EvalSpec-Aware Teacher 角色</strong>（b3 转译）</td>
+        <td>高</td><td>中高</td><td><span class="pri pri-p1">P1</span></td>
+        <td>新增 optimizer prompt <code>evalspec_teacher.md</code>；接入 <code>experiment.py</code> reflect 阶段，产「方向性建议」喂 Mutation Generator</td>
+      </tr>
+      <tr>
+        <td>3</td><td><strong>三层评测维度并立</strong>（Task/Skill/Trajectory 显式分离）</td>
+        <td>中高</td><td>低</td><td><span class="pri pri-p2">P2</span></td>
+        <td>主要是文档与指标命名层；先把 Skill 质量维度从「报告分数代理」独立出来报</td>
+      </tr>
+      <tr>
+        <td>4</td><td><strong>method.py 插件契约</strong>（为复杂迭代方法留扩展点）</td>
+        <td>中</td><td>中</td><td><span class="pri pri-p2">P2</span></td>
+        <td><code>MutationStrategy</code> Protocol 已在附录 32 预留，补 <code>run()</code> 签名契约 + plugin loader</td>
+      </tr>
+      <tr>
+        <td>5</td><td><strong>构建层 oracle 防泄漏</strong>（物理隔离，非仅逻辑隔离）</td>
+        <td>中</td><td>低</td><td><span class="pri pri-p2">P2</span></td>
+        <td>workspace preparer 里，对 Eval Spec / Gold Claim 物理不复制进 candidate sandbox</td>
+      </tr>
+      <tr>
+        <td>6</td><td><strong>skills_only 两阶段解耦</strong>（单独评测 Skill 本身）</td>
+        <td>中</td><td>中</td><td><span class="pri pri-p3">P3</span></td>
+        <td>需先有 Skill Coverage 指标支撑，否则单独跑 Skill 无度量</td>
+      </tr>
+      <tr>
+        <td>7</td><td><strong>token/耗时抽取</strong>（Phase 2 成本核算）</td>
+        <td>低</td><td>低</td><td><span class="pri pri-p3">P3</span></td>
+        <td>P19 已列为非目标，Phase 2 再说，逻辑可抄 <code>_extract_token_usage</code></td>
+      </tr>
+      <tr>
+        <td>8</td><td><strong>Dockerfile COPY 路径自动推导</strong></td>
+        <td>低</td><td>低</td><td><span class="pri pri-p3">P3</span></td>
+        <td>AnalystBench 不用 Docker，仅作设计参考</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>两条 P1 的理由</h3>
+  <p><strong>#1 Skill Coverage：</strong>填补了自优化当前最大盲区——Gate 只看「报告分数变没变」，看不到「Skill 文档本身有没有退化掉关键约束」。SkillLearnBench 已验证 key-point 对齐可独立于任务结果工作。实现可复用 AnalystBench 已有的 Claim 对齐引擎，把「Gold Claim」换成「Skill 应覆盖的关键点」即可，工程量中等。</p>
+  <p><strong>#2 EvalSpec-Aware Teacher：</strong>这是<strong>方法学</strong>而非工程增量。现在优化信号只有「报告哪里错了」（失败 tag），没有「Skill 应该怎么改」的方向性指导。b3 证明 teacher 看 ground-truth、只给建议、不泄漏答案的闭环可行有效。转译后，teacher 看冻结 Eval Spec（被测 agent 看不到的），产出「候选 Skill 缺什么」的结构化建议，喂给现有 Mutation Generator。能显著提升候选质量，直接提升 Gate 通过率和收敛速度。</p>
+
+  <h2 id="s5"><span class="n">05</span>借鉴时的转译风险</h2>
+  <p>几处不能直接照搬、需按 AnalystBench 语义转译：</p>
+  <ol>
+    <li><strong>「Skill」语义不同：</strong>SkillLearnBench 的 key-point 是「该知道的领域知识」。AnalystBench 的 Skill 是操作包，key-point 要重新定义为「该执行的操作步骤 / 该遵守的约束 / 该调用的接口」，不能直接套「领域知识点」。</li>
+    <li><strong>verifier 形态不同：</strong>SkillLearnBench 任务有确定 pytest verifier（二值 reward）。AnalystBench 是开放式报告，没有二值 reward——「Task Success」维度不能平移，等价物是「报告分数 + 通过阈值」，已是更细粒度度量。借鉴三层<strong>框架</strong>，不借鉴 Task Success 的<strong>实现</strong>。</li>
+    <li><strong>teacher 的 ground-truth 不同：</strong>b3 teacher 看 oracle SKILL.md。AnalystBench teacher 应看 Eval Spec（Gold Claim Graph），抽象层级不同，prompt 要重写，不能复用 <code>_B3_TEACHER_USER</code> 模板。</li>
+    <li><strong>多模型矩阵：</strong>SkillLearnBench 跑 6 模型 × 4 方法做「方法×模型」研究。AnalystBench V1 明确单 Skill/单 Harness/单 Model，不需要这个矩阵，不要为「像 benchmark」而扩大被测面。</li>
+  </ol>
+
+  <h2 id="s6"><span class="n">06</span>不建议借鉴的</h2>
+  <ul>
+    <li><strong>Docker 全沙箱：</strong>AnalystBench 的 workspace 隔离已够，引入 Docker 拖慢 trial、增部署依赖，得不偿失。</li>
+    <li><strong>dataclaw / CTRF 日志格式：</strong>SkillLearnBench 依赖 <code>dataclaw</code> CLI 和 <code>ctrf.json</code>，是其生态产物。AnalystBench 的 <code>run.json/result.json/artifact_json</code> 已是稳定事实源，不要换。</li>
+    <li><strong>GPT-5-mini 作为唯一 judge：</strong>SkillLearnBench 的 Skill/Trajectory 质量维度全用 GPT-5-mini judge。AnalystBench 哲学是「LLM 只判关系，确定性代码计分」，不要为对齐而退化成「LLM 直接给分」。</li>
+  </ul>
+
+  <h2 id="s7"><span class="n">07</span>建议的下一步</h2>
+  <ol>
+    <li>把本报告 #1、#2 两条 P1 拆成两个独立设计任务，分别出 spec：
+      <ul>
+        <li><code>skill-coverage-metric-design.md</code>（Skill 质量维度设计）</li>
+        <li><code>evalspec-aware-teacher-design.md</code>（b3 转译设计）</li>
+      </ul>
+    </li>
+    <li>出 spec 前<strong>再读一遍</strong> SkillLearnBench 的 <code>compute_coverage.py</code> 全文和 <code>skill_runner.py</code> 的 <code>_run_teacher_student_loop</code>——这两个函数是借鉴的最小可行参考实现。</li>
+    <li>两个 spec 都要遵守自优化设计文档（Codex v1.1）第 0 节 Codex 执行约束——复用现有 ORM/队列/Runner，不造并行 Evaluation Runner。</li>
+  </ol>
+
+  <p class="footer-note">
+    本报告基于 2026-08-10 本地仓库快照。SkillLearnBench paper 已被 COLM 2026 接收（arXiv:2604.20087）。
+  </p>
+
+</div>

@@ -7,7 +7,7 @@
 > 目标版本：Skill Optimization V1  
 > 目标读者：Codex、后端开发、前端开发、测试、架构评审人员
 
-配套研究与实验口径：[AnalystBench 面向内核日志分析的 Skill 自优化方法研究与实验方案](./AnalystBench-Skill自优化研究与实验方案.md)。
+配套研究与实验口径：[AnalystBench 面向内核日志分析的 Skill 自优化方法研究与实验方案](../skillopt/AnalystBench-Skill自优化研究与实验方案.md)。
 
 ---
 
