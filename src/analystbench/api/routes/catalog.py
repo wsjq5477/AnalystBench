@@ -6,16 +6,16 @@ from typing import Any
 from fastapi import APIRouter, Query, Request, status
 from pydantic import BaseModel, Field
 
+from analystbench.catalog.service import CatalogService
 from analystbench.db.models import (
     Candidate,
     CandidateReport,
     CandidateVersion,
-    CaseRevision,
     CaseCategory,
+    CaseRevision,
     Dataset,
     DatasetVersion,
 )
-from analystbench.services import CatalogService
 
 router = APIRouter(tags=["catalog"])
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from analystbench.api.routes.evaluation_submissions import EvaluationTargetSelection
-from analystbench.evaluation_schedule import EvaluationScheduleService
+from analystbench.evaluation.schedule import EvaluationScheduleService
 
 router = APIRouter(tags=["evaluation-schedules"])
 

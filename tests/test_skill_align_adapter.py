@@ -3,9 +3,9 @@
 import pytest
 from pydantic import ValidationError
 
-from analystbench.eval_spec import EvalSpecV1
-from analystbench.scoring import evaluate
-from analystbench.skill_align_adapter import make_skill_alignment_judge
+from analystbench.evaluation.spec import EvalSpecV1
+from analystbench.scoring.engine import evaluate
+from analystbench.scoring.skill_adapter import make_skill_alignment_judge
 
 
 def _spec_payload() -> dict:

@@ -9,11 +9,11 @@ from typing import Any
 from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from pydantic import BaseModel
 
-from analystbench.case_library import report_payload_from_text
+from analystbench.catalog.case_library import report_payload_from_text
 from analystbench.config import Settings
-from analystbench.direct_evaluation import evaluate_direct
 from analystbench.errors import AnalystBenchError
-from analystbench.reporting import render_markdown
+from analystbench.evaluation.direct import evaluate_direct
+from analystbench.scoring.reporting import render_markdown
 
 router = APIRouter(tags=["direct-results"])
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, Field
 
 from analystbench.db.models import EvalSpecDraft, EvalSpecVersion, ScoringPolicyVersion
-from analystbench.eval_spec import EvalSpecService
+from analystbench.evaluation.spec import EvalSpecService
 
 router = APIRouter(tags=["eval-specs"])
 

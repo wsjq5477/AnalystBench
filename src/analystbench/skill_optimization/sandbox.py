@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from analystbench.db.models import EvaluationVariant
+from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.services import transaction
 from analystbench.skill_optimization.package import safe_relative_path
 from analystbench.skill_optimization.registry import SkillRegistryService
 

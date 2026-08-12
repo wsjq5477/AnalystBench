@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from analystbench.evaluation_target import (
+from analystbench.evaluation.target import (
     EvaluationHarnessService,
     EvaluationModelService,
     EvaluationTargetService,

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from alembic import command
 from analystbench.api.app import create_app
 from analystbench.config import Settings
-from analystbench.content_store import content_hash
+from analystbench.storage.content import content_hash
 
 
 def migrated_settings(tmp_path: Path) -> Settings:

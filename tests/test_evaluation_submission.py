@@ -11,16 +11,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from alembic import command
-from analystbench.agent_runner import AgentRunnerError
 from analystbench.api.app import create_app
 from analystbench.config import Settings
 from analystbench.db.models import EvaluationMethod
 from analystbench.db.session import create_database_engine, create_session_factory
-from analystbench.evaluation_submission import (
+from analystbench.db.transaction import transaction
+from analystbench.evaluation.submission import (
     EvaluationSubmissionService,
     _scoring_error_payload,
 )
-from analystbench.services import transaction
+from analystbench.execution.runner import AgentRunnerError
 from analystbench.worker import LocalWorker
 
 
@@ -161,7 +161,7 @@ def test_scoring_failure_persists_runner_output_tails(
     try:
         assert worker.run_once() is True
         monkeypatch.setattr(
-            "analystbench.evaluation_submission.evaluate_direct", fail_scoring
+            "analystbench.evaluation.submission.evaluate_direct", fail_scoring
         )
         assert worker.run_once() is True
     finally:
@@ -1201,7 +1201,7 @@ def test_claude_command_resolves_vscode_extension_binary(
     extension_binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     extension_binary.chmod(0o755)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("analystbench.executable_resolver.shutil.which", lambda _: None)
+    monkeypatch.setattr("analystbench.execution.resolver.shutil.which", lambda _: None)
 
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:

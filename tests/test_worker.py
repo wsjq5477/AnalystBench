@@ -12,7 +12,7 @@ from analystbench.db.models import (
     EvaluationSubmissionCaseRun,
     EvaluationSubmissionMethodRun,
 )
-from analystbench.services import transaction
+from analystbench.db.transaction import transaction
 from analystbench.worker import LocalWorker
 
 

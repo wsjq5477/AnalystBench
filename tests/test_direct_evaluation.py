@@ -3,13 +3,13 @@ from pathlib import Path
 import pytest
 
 from analystbench.config import Settings
-from analystbench.direct_evaluation import (
+from analystbench.errors import AnalystBenchError
+from analystbench.evaluation.direct import (
     evaluate_direct,
     evaluate_direct_with_alignment,
     prepare_alignment_draft,
 )
-from analystbench.errors import AnalystBenchError
-from analystbench.reporting import render_markdown
+from analystbench.scoring.reporting import render_markdown
 
 
 def _case_payload() -> dict:

@@ -1,7 +1,7 @@
 from typer.testing import CliRunner
 
+from analystbench.catalog.suites import get_suite, list_suites
 from analystbench.cli import app
-from analystbench.suites import get_suite, list_suites
 
 
 def test_builtin_generic_and_kdiag_suites_are_registered() -> None:

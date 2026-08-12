@@ -2,10 +2,8 @@
 
 import json
 import re
-from datetime import datetime, timezone
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -13,7 +11,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from analystbench.content_store import ContentRef, ContentStore, canonical_json
 from analystbench.db.models import (
     Candidate,
     CandidateReport,
@@ -26,32 +23,9 @@ from analystbench.db.models import (
     Dataset,
     DatasetVersion,
 )
-from analystbench.errors import AnalystBenchError
-
-
-class NotFoundError(AnalystBenchError):
-    def __init__(self, resource: str, resource_id: str) -> None:
-        super().__init__(
-            code="not_found", message=f"{resource} '{resource_id}' was not found", status_code=404
-        )
-
-
-class ConflictError(AnalystBenchError):
-    def __init__(self, message: str) -> None:
-        super().__init__(code="conflict", message=message, status_code=409)
-
-
-@contextmanager
-def transaction(factory: sessionmaker[Session]) -> Iterator[Session]:
-    session = factory()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+from analystbench.db.transaction import transaction
+from analystbench.errors import AnalystBenchError, ConflictError, NotFoundError
+from analystbench.storage.content import ContentRef, ContentStore, canonical_json
 
 
 class CatalogService:
@@ -195,7 +169,7 @@ class CatalogService:
             case = session.get(Case, case_id)
             if case is None or case.archived_at is not None:
                 raise NotFoundError("case", case_id)
-            case.archived_at = datetime.now(timezone.utc)
+            case.archived_at = datetime.now(UTC)
 
     def archive_category(self, dataset_id: str, category_id: str) -> None:
         with transaction(self.session_factory) as session:
@@ -209,7 +183,7 @@ class CatalogService:
                 or category.archived_at is not None
             ):
                 raise NotFoundError("case_category", category_id)
-            archived_at = datetime.now(timezone.utc)
+            archived_at = datetime.now(UTC)
             category.archived_at = archived_at
             for case in session.scalars(
                 select(Case).where(Case.category_id == category_id, Case.archived_at.is_(None))
@@ -221,7 +195,7 @@ class CatalogService:
             dataset = session.get(Dataset, dataset_id)
             if dataset is None or dataset.archived_at is not None:
                 raise NotFoundError("dataset", dataset_id)
-            archived_at = datetime.now(timezone.utc)
+            archived_at = datetime.now(UTC)
             dataset.archived_at = archived_at
             for category in session.scalars(
                 select(CaseCategory).where(

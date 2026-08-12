@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from analystbench.agent_runner import AgentRunnerError
 from analystbench.config import Settings
-from analystbench.eval_spec import EvalSpecV1
-from analystbench.scoring import evaluate
-from analystbench.semantic_alignment import SemanticAlignment
-from analystbench.semantic_judge import SemanticJudge
+from analystbench.evaluation.spec import EvalSpecV1
+from analystbench.execution.runner import AgentRunnerError
+from analystbench.scoring.alignment import SemanticAlignment
+from analystbench.scoring.engine import evaluate
+from analystbench.scoring.judge import SemanticJudge
 
 
 def root_category_chain_spec() -> dict:
@@ -156,10 +156,10 @@ def test_semantic_judge_logs_runner_failure_context(
             )
 
     monkeypatch.setattr(
-        "analystbench.semantic_judge.create_runner", lambda _runner_id: FailingRunner()
+        "analystbench.scoring.judge.create_runner", lambda _runner_id: FailingRunner()
     )
     judge = _judge(tmp_path)
-    with caplog.at_level("WARNING", logger="analystbench.semantic_judge"):
+    with caplog.at_level("WARNING", logger="analystbench.scoring.judge"):
         with pytest.raises(AgentRunnerError):
             judge.align(EvalSpecV1.model_validate(root_category_chain_spec()), [], _report())
 
@@ -180,10 +180,10 @@ def test_semantic_judge_logs_each_validation_failure(
             return SimpleNamespace(final_report="not-json")
 
     monkeypatch.setattr(
-        "analystbench.semantic_judge.create_runner", lambda _runner_id: InvalidRunner()
+        "analystbench.scoring.judge.create_runner", lambda _runner_id: InvalidRunner()
     )
     judge = _judge(tmp_path)
-    with caplog.at_level("WARNING", logger="analystbench.semantic_judge"):
+    with caplog.at_level("WARNING", logger="analystbench.scoring.judge"):
         with pytest.raises(AgentRunnerError) as raised:
             judge.align(EvalSpecV1.model_validate(root_category_chain_spec()), [], _report())
 

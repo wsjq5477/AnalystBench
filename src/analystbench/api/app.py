@@ -9,7 +9,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from analystbench import __version__
-from analystbench.agent_execution import AgentExecutionService
 from analystbench.api.routes.benchmarks import router as benchmark_router
 from analystbench.api.routes.case_library import router as case_library_router
 from analystbench.api.routes.cases_local import router as cases_local_router
@@ -30,36 +29,37 @@ from analystbench.api.routes.skill_optimization import (
     router as skill_optimization_router,
 )
 from analystbench.api.routes.skills import router as skills_router
-from analystbench.benchmark import BenchmarkService
-from analystbench.case_library import (
+from analystbench.catalog.case_library import (
     CaseLibraryService,
     EvaluationBatchService,
     ReportDraftService,
 )
-from analystbench.comparison import ComparisonService
+from analystbench.catalog.service import CatalogService
 from analystbench.config import Settings, get_settings
-from analystbench.content_store import ContentStore
 from analystbench.db.session import create_database_engine, create_session_factory
 from analystbench.errors import AnalystBenchError
-from analystbench.eval_spec import EvalSpecService
-from analystbench.evaluation_schedule import EvaluationScheduleService
-from analystbench.evaluation_session import EvaluationSessionService
-from analystbench.evaluation_submission import (
+from analystbench.evaluation.benchmark import BenchmarkService
+from analystbench.evaluation.comparison import ComparisonService
+from analystbench.evaluation.schedule import EvaluationScheduleService
+from analystbench.evaluation.session import EvaluationSessionService
+from analystbench.evaluation.spec import EvalSpecService
+from analystbench.evaluation.submission import (
     EvaluationMethodService,
     EvaluationSubmissionService,
 )
-from analystbench.evaluation_target import (
+from analystbench.evaluation.target import (
     EvaluationHarnessService,
     EvaluationModelService,
     EvaluationTargetService,
 )
-from analystbench.logging import configure_logging
-from analystbench.services import CatalogService
+from analystbench.execution.service import AgentExecutionService
+from analystbench.runtime.logging import configure_logging
 from analystbench.skill_optimization import (
     SkillRegistryService,
     SkillWorkspacePreparer,
 )
 from analystbench.skill_optimization.experiment import OptimizationExperimentService
+from analystbench.storage.content import ContentStore
 
 logger = logging.getLogger(__name__)
 

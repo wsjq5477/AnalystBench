@@ -1,0 +1,2 @@
+"""Content-addressed storage adapters."""
+

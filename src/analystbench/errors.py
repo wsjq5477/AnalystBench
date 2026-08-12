@@ -16,3 +16,15 @@ class AnalystBenchError(Exception):
 class ReadinessError(AnalystBenchError):
     def __init__(self, message: str) -> None:
         super().__init__(code="service_not_ready", message=message, retryable=True)
+
+
+class NotFoundError(AnalystBenchError):
+    def __init__(self, resource: str, resource_id: str) -> None:
+        super().__init__(
+            code="not_found", message=f"{resource} '{resource_id}' was not found", status_code=404
+        )
+
+
+class ConflictError(AnalystBenchError):
+    def __init__(self, message: str) -> None:
+        super().__init__(code="conflict", message=message, status_code=409)

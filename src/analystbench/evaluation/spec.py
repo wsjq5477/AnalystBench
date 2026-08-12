@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from analystbench.content_store import ContentRef, ContentStore, canonical_json
 from analystbench.db.models import (
     CaseRevision,
     ContentBlob,
@@ -20,8 +19,9 @@ from analystbench.db.models import (
     EvalSpecVersion,
     ScoringPolicyVersion,
 )
-from analystbench.errors import AnalystBenchError
-from analystbench.services import NotFoundError, transaction
+from analystbench.db.transaction import transaction
+from analystbench.errors import AnalystBenchError, NotFoundError
+from analystbench.storage.content import ContentRef, ContentStore, canonical_json
 
 
 class SourceRef(BaseModel):

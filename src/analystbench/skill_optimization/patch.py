@@ -8,10 +8,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from analystbench.content_store import canonical_json, content_hash
 from analystbench.errors import AnalystBenchError
 from analystbench.skill_optimization.package import safe_relative_path
 from analystbench.skill_optimization.registry import SkillRegistryService
+from analystbench.storage.content import canonical_json, content_hash
 
 
 class StructuredPatchApplier:

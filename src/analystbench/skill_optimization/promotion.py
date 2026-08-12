@@ -8,15 +8,15 @@ from uuid import uuid4
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from analystbench.content_store import canonical_json
 from analystbench.db.models import (
     DecisionRecord,
     OptimizationEvent,
     SkillPackageVersion,
     SkillTargetBinding,
 )
+from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.services import transaction
+from analystbench.storage.content import canonical_json
 
 
 class PromotionService:

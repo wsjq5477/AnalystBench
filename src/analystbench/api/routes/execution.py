@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, Field
 
-from analystbench.agent_execution import AgentExecutionService
 from analystbench.db.models import AgentCaseRun, CandidateGenerationRun, ExecutionProfile
+from analystbench.execution.service import AgentExecutionService
 
 router = APIRouter(tags=["agent-execution"])
 

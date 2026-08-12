@@ -15,7 +15,7 @@ from analystbench.db.models import (
     EvaluationTarget,
     Job,
 )
-from analystbench.services import transaction
+from analystbench.db.transaction import transaction
 
 
 class JobQueue:

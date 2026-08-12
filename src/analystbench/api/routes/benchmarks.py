@@ -7,8 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel
 
-from analystbench.benchmark import BenchmarkService
 from analystbench.db.models import BenchmarkCaseRun, BenchmarkRun
+from analystbench.evaluation.benchmark import BenchmarkService
 
 router = APIRouter(tags=["benchmarks"])
 

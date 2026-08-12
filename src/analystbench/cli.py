@@ -18,35 +18,35 @@ from alembic.config import Config
 from alembic import command
 from analystbench import __version__
 from analystbench.api.app import create_app
-from analystbench.benchmark import BenchmarkService
-from analystbench.case_library import (
+from analystbench.catalog.case_library import (
     CaseLibraryService,
     EvaluationBatchService,
     report_payload_from_text,
 )
-from analystbench.comparison import ComparisonService
+from analystbench.catalog.service import CatalogService
+from analystbench.catalog.suites import list_suites
 from analystbench.config import get_settings
-from analystbench.content_store import ContentStore
 from analystbench.db.models import DatasetVersion
 from analystbench.db.session import create_database_engine, create_session_factory
-from analystbench.direct_evaluation import (
+from analystbench.errors import AnalystBenchError, NotFoundError
+from analystbench.evaluation.benchmark import BenchmarkService
+from analystbench.evaluation.comparison import ComparisonService
+from analystbench.evaluation.direct import (
     evaluate_direct,
     evaluate_direct_with_alignment,
     prepare_alignment_draft,
 )
-from analystbench.errors import AnalystBenchError
-from analystbench.eval_spec import EvalSpecService
-from analystbench.evaluation_session import EvaluationSessionService
-from analystbench.reporting import render_markdown
-from analystbench.service_runtime import (
+from analystbench.evaluation.session import EvaluationSessionService
+from analystbench.evaluation.spec import EvalSpecService
+from analystbench.runtime.service import (
     read_service_record,
     remove_service_record,
     service_is_running,
     start_detached_service,
     stop_detached_service,
 )
-from analystbench.services import CatalogService, NotFoundError
-from analystbench.suites import list_suites
+from analystbench.scoring.reporting import render_markdown
+from analystbench.storage.content import ContentStore
 from analystbench.worker import LocalWorker
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)

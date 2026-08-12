@@ -8,8 +8,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from analystbench.content_store import canonical_json, content_hash
 from analystbench.errors import AnalystBenchError
+from analystbench.storage.content import canonical_json, content_hash
 
 
 @dataclass(frozen=True, slots=True)

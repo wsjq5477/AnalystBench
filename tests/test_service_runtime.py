@@ -4,10 +4,11 @@ from unittest.mock import Mock
 
 from typer.testing import CliRunner
 
-from analystbench import cli, service_runtime
+from analystbench import cli
 from analystbench.cli import app
 from analystbench.config import Settings
-from analystbench.service_runtime import ServiceRecord
+from analystbench.runtime import service as service_runtime
+from analystbench.runtime.service import ServiceRecord
 
 
 def service_settings(tmp_path: Path) -> Settings:

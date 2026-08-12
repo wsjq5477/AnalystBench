@@ -34,6 +34,31 @@
         |
     SQLite + Content Store
 
+## 源码目录
+
+后端 Python 包按业务能力组织，避免在 `src/analystbench` 根目录继续堆放业务模块：
+
+```text
+src/analystbench/
+├── api/                 # FastAPI 组合根与 HTTP 路由
+├── catalog/             # Dataset、Case Library、Candidate 与 Suite
+├── db/                  # ORM、Session、事务边界
+├── evaluation/          # Benchmark、Target、Submission、Schedule、Session
+├── execution/           # Agent 执行服务、Runner 与可执行文件解析
+├── runtime/             # 持久化 Job、结构化日志、服务进程生命周期
+├── scoring/             # 确定性评分、语义对齐/Judge、结果渲染
+├── skill_optimization/  # Skill 版本化优化闭环
+├── storage/             # 内容寻址存储
+├── cli.py               # CLI 组合根和稳定脚本入口
+├── config.py            # 环境配置
+├── errors.py            # 稳定机器错误码
+└── worker.py            # Local Worker 组合根
+```
+
+根目录只保留入口和跨能力公共契约。新增业务代码必须进入对应能力目录；各包的
+`__init__.py` 保持轻量，内部代码直接导入具体实现模块，避免隐式初始化副作用和循环依赖。
+API 路由、CLI 命令、Worker Job kind、数据库模型和迁移契约不因目录调整而改变。
+
 ## 依赖规则
 
 - Evaluation Core 只依赖领域类型和标准库，不依赖 FastAPI、SQLAlchemy 或具体模型 SDK。

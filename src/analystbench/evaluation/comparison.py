@@ -3,7 +3,7 @@
 from decimal import Decimal
 from typing import Any
 
-from analystbench.benchmark import BenchmarkService
+from analystbench.evaluation.benchmark import BenchmarkService
 
 
 class ComparisonService:

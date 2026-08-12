@@ -3,8 +3,8 @@
 from collections.abc import Callable
 from typing import Any
 
-from analystbench.eval_spec import EvalSpecV1
-from analystbench.semantic_alignment import (
+from analystbench.evaluation.spec import EvalSpecV1
+from analystbench.scoring.alignment import (
     SemanticJudgeOutput,
     make_semantic_alignment_judge,
     validate_semantic_alignment,

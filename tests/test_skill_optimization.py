@@ -17,9 +17,9 @@ from analystbench.db.models import (
     OptimizationRunGroup,
 )
 from analystbench.db.session import create_database_engine, create_session_factory
+from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.evaluation_submission import EvaluationSubmissionService
-from analystbench.services import transaction
+from analystbench.evaluation.submission import EvaluationSubmissionService
 from analystbench.skill_optimization.evidence import (
     build_evidence_summary,
     extract_report_evidence,

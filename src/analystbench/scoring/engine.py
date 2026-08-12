@@ -7,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
-from analystbench.eval_spec import EvalSpecV1
+from analystbench.evaluation.spec import EvalSpecV1
 
 ClaimRelation = Literal["match", "partial_match", "missing", "contradiction"]
 EdgeRelation = Literal[

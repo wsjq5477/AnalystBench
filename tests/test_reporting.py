@@ -1,4 +1,4 @@
-from analystbench.reporting import build_human_summary, render_markdown
+from analystbench.scoring.reporting import build_human_summary, render_markdown
 
 
 def test_analysis_chain_uses_combined_keyword_and_conclusion_verdict() -> None:

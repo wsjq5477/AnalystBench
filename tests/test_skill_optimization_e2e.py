@@ -33,8 +33,8 @@ from analystbench.db.models import (
     SkillTargetBinding,
 )
 from analystbench.db.session import create_database_engine, create_session_factory
-from analystbench.evaluation_submission import EvaluationSubmissionService
-from analystbench.services import transaction
+from analystbench.db.transaction import transaction
+from analystbench.evaluation.submission import EvaluationSubmissionService
 from analystbench.skill_optimization.experiment import OptimizationExperimentService
 from analystbench.skill_optimization.registry import SkillRegistryService
 from analystbench.skill_optimization.sandbox import SkillWorkspacePreparer

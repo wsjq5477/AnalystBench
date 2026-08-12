@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from analystbench.executable_resolver import resolve_executable
+from analystbench.execution.resolver import resolve_executable
 
 
 class AgentRunnerError(Exception):

@@ -12,7 +12,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from analystbench.config import Settings
-from analystbench.content_store import canonical_json, content_hash
 from analystbench.db.models import (
     EvaluationHarness,
     EvaluationMethod,
@@ -22,8 +21,8 @@ from analystbench.db.models import (
     SkillPackageVersion,
     SkillTargetBinding,
 )
+from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.services import transaction
 from analystbench.skill_optimization.git_store import ManagedGitStore
 from analystbench.skill_optimization.package import (
     PackageLimits,
@@ -31,6 +30,7 @@ from analystbench.skill_optimization.package import (
     make_package_read_only,
     validate_install_path,
 )
+from analystbench.storage.content import canonical_json, content_hash
 
 SKILL_KEY_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$")
 INVOKE_RE = re.compile(r"^/[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$")

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, Field
 
 from analystbench.db.models import EvaluationSession
-from analystbench.evaluation_session import EvaluationSessionService
+from analystbench.evaluation.session import EvaluationSessionService
 
 router = APIRouter(tags=["evaluation-sessions"])
 

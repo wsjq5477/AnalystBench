@@ -11,7 +11,7 @@ from alembic import command
 from analystbench.api.app import create_app
 from analystbench.config import Settings
 from analystbench.db.models import Case, CaseTrace, DatasetVersion
-from analystbench.reporting import render_markdown
+from analystbench.scoring.reporting import render_markdown
 from analystbench.worker import LocalWorker
 
 

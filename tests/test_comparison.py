@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from analystbench.comparison import ComparisonService
+from analystbench.evaluation.comparison import ComparisonService
 
 
 class FakeBenchmarks:

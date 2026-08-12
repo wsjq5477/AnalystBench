@@ -14,12 +14,12 @@ from analystbench.api.app import create_app
 from analystbench.config import Settings
 from analystbench.db.models import EvaluationSchedule, EvaluationScheduleRun
 from analystbench.db.session import create_database_engine, create_session_factory
-from analystbench.evaluation_schedule import (
+from analystbench.db.transaction import transaction
+from analystbench.evaluation.schedule import (
     EvaluationScheduleService,
     latest_due_run,
     next_daily_run,
 )
-from analystbench.services import transaction
 from analystbench.worker import LocalWorker
 
 

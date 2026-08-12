@@ -1,6 +1,6 @@
 import pytest
 
-from analystbench.case_library import ensure_scoring_spec_supported
+from analystbench.catalog.case_library import ensure_scoring_spec_supported
 from analystbench.errors import AnalystBenchError
 
 

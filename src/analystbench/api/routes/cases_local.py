@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from analystbench.config import Settings
 from analystbench.errors import AnalystBenchError
-from analystbench.evaluation_submission import (
+from analystbench.evaluation.submission import (
     _atomic_json,
     _safe_case_directory,
     _safe_relative_path,

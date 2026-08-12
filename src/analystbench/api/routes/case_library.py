@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, Field, model_validator
 
-from analystbench.case_library import (
+from analystbench.catalog.case_library import (
     CaseLibraryService,
     EvaluationBatchService,
     ReportDraftService,

@@ -13,9 +13,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from analystbench.agent_runner import AgentRunnerError, create_runner
 from analystbench.config import Settings
-from analystbench.content_store import canonical_json, content_hash
 from analystbench.db.models import (
     CandidateComparison,
     CandidateMutation,
@@ -34,10 +32,11 @@ from analystbench.db.models import (
     SkillTargetBinding,
     VerifierBundleVersion,
 )
+from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.evaluation_submission import EvaluationSubmissionService
-from analystbench.jobs import JobQueue
-from analystbench.services import transaction
+from analystbench.evaluation.submission import EvaluationSubmissionService
+from analystbench.execution.runner import AgentRunnerError, create_runner
+from analystbench.runtime.jobs import JobQueue
 from analystbench.skill_optimization.evidence import (
     build_evidence_summary,
     extract_report_evidence,
@@ -47,6 +46,7 @@ from analystbench.skill_optimization.patch import StructuredPatchApplier
 from analystbench.skill_optimization.promotion import PromotionService
 from analystbench.skill_optimization.registry import SkillRegistryService
 from analystbench.skill_optimization.statistics import RunObservation, compare_paired
+from analystbench.storage.content import canonical_json, content_hash
 
 TERMINAL_SUBMISSION_STATES = {"completed", "completed_with_errors", "failed", "cancelled"}
 
