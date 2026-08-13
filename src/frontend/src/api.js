@@ -318,11 +318,22 @@ export const analystBenchApi = {
   listSkills() {
     return request({ url: "/skills", method: "get" });
   },
-  listHostSkills() {
-    return request({ url: "/host-skills", method: "get" });
+  listHostSkills(harnessId) {
+    return request({
+      url: "/host-skills",
+      method: "get",
+      params: { harness_id: harnessId },
+    });
   },
   adoptHostSkill(data) {
     return request({ url: "/host-skills:adopt", method: "post", data });
+  },
+  resolveHostSkillCombination(data) {
+    return request({
+      url: "/host-skills:resolve-combination",
+      method: "post",
+      data,
+    });
   },
   listSkillVersions(skillId) {
     return request({ url: `/skills/${skillId}/versions`, method: "get" });

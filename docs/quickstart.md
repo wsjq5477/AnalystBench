@@ -275,8 +275,10 @@ Active 版本派生的不可变候选，不是直接修改正在使用的源 Ski
 
 开始前准备好：
 
-- 一个已配置 `skill_base_dir` 的冻结 Harness。宿主机已有 Skill 位于
-  `<skill_base_dir>/skills/<skill-key>`，并包含 `SKILL.md`；设置页会只读扫描这些目录；
+- 一个已配置 `skill_base_dir` 的冻结 Harness。该字段直接指向包含各 Skill
+  子目录的根目录，宿主机已有 Skill 位于 `<skill_base_dir>/<skill-key>` 并包含
+  `SKILL.md`；在设置页点击“新建 Skill”、
+  选择该 Harness 后，页面才会即时扫描该目录并让用户选择；
 - 已导入的正式 Case 和日志；
 - 一个已冻结的 claude Evaluation Target，且命令明确调用目标 Skill，例如
   `claude -p "/my-skill 分析 {input}"`；

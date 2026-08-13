@@ -22,7 +22,7 @@
 ## 系统究竟会修改什么
 
 ```text
-冻结 Harness.skill_base_dir/skills/<skill-key>  （只作为导入来源）
+冻结 Harness.skill_base_dir/<skill-key>         （只作为导入来源）
                          │
                          ▼
              Managed Root 内部 Git v1
@@ -137,19 +137,21 @@ ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=/srv/analystbench/skill-optimizatio
 
 在前端“设置 → Harness”中创建 Harness：
 
-- `skill_base_dir`：`/private/claude-config`，不是 `my-skill` 子目录；
+- `skill_base_dir`：`/private/claude-config/skills`，即直接包含 `my-skill` 等子目录的根目录；
 - command template：必须明确包含 `/my-skill`，例如
   `claude -p "/my-skill 分析 {input}"`；
 - 如命令包含 `{model}`，同时创建 Model；否则使用无 Model Harness；
 - 先“检测”，再“冻结”。
 
-冻结 Harness 后，设置页会扫描其 `skills/*/SKILL.md` 并显示宿主机已有 Skill。
-测评和自优化页面直接选择 `Harness × Model × Skill` 组合；没有面向用户的
-“新建/注册 Skill”步骤。首次选中时，后端根据冻结 Harness 和目录名自动得到：
+冻结 Harness 后，在设置页点击“新建 Skill”，先选择该 Harness；页面只在此时
+扫描它的 `skills/*/SKILL.md`，用户从下拉框选择一个已有 Skill 并保存。
+这个“新建”只建立 AnalystBench 内部配置和不可变版本，不会在宿主机创建目录。
+测评和自优化页面随后直接选择 `Harness × Model × Skill` 组合。后端根据冻结
+Harness 和所选目录名自动得到：
 
 | 字段 | 派生值 |
 |---|---|
-| 源目录 | `<skill_base_dir>/skills/my-skill` |
+| 源目录 | `<skill_base_dir>/my-skill` |
 | `name` | `my-skill` |
 | `invoke_as` | `/my-skill` |
 | 安装路径 | `.claude/skills/my-skill` |
@@ -742,7 +744,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/evaluation-submissions \
 | `package_test_sandbox=WARN` | `bwrap` 缺失，或当前 WSL/容器不允许 namespace | 安装 bubblewrap，并用实际 Worker 用户运行预检；严格验收不应忽略 WARN |
 | `skill_package_test_sandbox_unavailable` | Skill 声明了 `package_tests.argv`，但安全沙箱不可用 | 修复 Worker 宿主的 bubblewrap/namespace；不要关闭测试或沙箱来绕过 |
 | `database_migration_head=FAIL` | 未升级或 API/CLI 指向不同数据库 | 停止服务，确认配置后运行 `db-upgrade` |
-| `harness_skill_directory` / `skill_source_directory=FAIL` | `skill_base_dir` 指错层级，或缺少 `skills/<key>/SKILL.md` | Harness 配置父目录；Skill Key 对应其 `skills/` 子目录 |
+| `harness_skill_directory` / `skill_source_directory=FAIL` | `skill_base_dir` 指错层级，或缺少 `<key>/SKILL.md` | Harness 直接配置包含各 Skill 子目录的根目录 |
 | `evaluation_target_frozen=FAIL` | Target/Harness 尚未检测和冻结 | 在设置页完成 probe 和 freeze |
 | `skill_invocation_in_harness=FAIL` | Target 命令没有精确 `/skill-key` | 修订 Harness 生成新版本，再冻结新 Target |
 | `evaluation_target_skill_binding_conflict` | 同一 Target 已绑定另一个 Active Skill | 使用正确 Target；V1 不在普通评测时隐式选择多 Skill |

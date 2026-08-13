@@ -383,7 +383,7 @@ def test_host_skill_discovery_and_explicit_evaluation_selection_are_idempotent(
                     version_number=1,
                     model_policy="none",
                     command_template='claude -p "{skill} analyze {input}"',
-                    skill_base_dir=str(skill_base_dir),
+                    skill_base_dir=str(skill_base_dir / "skills"),
                     status="frozen",
                     content_hash=f"sha256:{'a' * 64}",
                 ),
@@ -410,7 +410,7 @@ def test_host_skill_discovery_and_explicit_evaluation_selection_are_idempotent(
         )
 
     registry = SkillRegistryService(session_factory, settings)  # type: ignore[arg-type]
-    discovered = registry.discover_host_skills()
+    discovered = registry.discover_host_skills(harness_id=harness_id)
     assert [(item["key"], item["status"]) for item in discovered] == [
         ("crash", "available")
     ]
@@ -424,7 +424,7 @@ def test_host_skill_discovery_and_explicit_evaluation_selection_are_idempotent(
     )
     assert second_skill.id == first_skill.id
     assert second_version.id == first_version.id
-    assert registry.discover_host_skills()[0]["status"] == "managed"
+    assert registry.discover_host_skills(harness_id=harness_id)[0]["status"] == "managed"
 
     submissions = EvaluationSubmissionService(
         session_factory, settings  # type: ignore[arg-type]

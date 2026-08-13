@@ -75,7 +75,12 @@ export default {
       evaluationHarnesses: [],
       evaluationModels: [],
       evaluationTargets: [],
-      hostSkills: [],
+      configuredSkills: [],
+      skillScanResults: [],
+      showSkillDialog: false,
+      skillScanning: false,
+      skillSaving: false,
+      skillForm: { harness_id: "", key: "" },
       evaluationSubmissions: [],
       evaluationSchedules: [],
       selectedSubmissionId: "",
@@ -233,6 +238,11 @@ export default {
     frozenEvaluationModels() {
       return this.evaluationModels.filter((item) => item.status === "frozen");
     },
+    skillConfigurationHarnesses() {
+      return this.frozenEvaluationHarnesses.filter(
+        (item) => item.skill_base_dir,
+      );
+    },
     visibleEvaluationHarnesses() {
       return this.evaluationHarnesses.filter((item) => item.status !== "archived");
     },
@@ -248,7 +258,7 @@ export default {
               : this.frozenEvaluationModels;
           const skills = [
             null,
-            ...this.hostSkills.filter(
+            ...this.configuredSkills.filter(
               (skill) =>
                 skill.harness_id === harness.id && skill.selectable,
             ),
@@ -671,25 +681,17 @@ export default {
         prospective: this.optimizationForm.prospective_holdout_case_paths.length,
       };
     },
-    frozenOptimizationTargets() {
-      return this.evaluationTargets.filter(
-        (item) => item.status === "frozen" && item.materialized_method_id,
-      );
-    },
     optimizationCombinationOptions() {
-      return this.frozenOptimizationTargets.flatMap((target) =>
-        this.hostSkills
-          .filter(
-            (skill) =>
-              skill.harness_id === target.harness?.id && skill.selectable,
-          )
-          .map((skill) => ({
-            key: `${target.id}|${skill.key}`,
-            target,
-            skill,
-            label: `${target.harness?.key || "Harness"} · ${
-              target.model?.name || "无模型基线"
-            } · /${skill.key}`,
+      return this.evaluationSelectionGroups.flatMap((group) =>
+        group.options
+          .filter((option) => option.skill)
+          .map((option) => ({
+            ...option,
+            key: `${option.harness_id}|${option.model_id || ""}|${option.skill.key}`,
+            harness: group.harness,
+            label: `${group.harness.key} · ${
+              option.model?.name || "无模型基线"
+            } · /${option.skill.key}`,
           })),
       );
     },
@@ -1295,19 +1297,61 @@ export default {
     },
     async loadEvaluationCatalog() {
       try {
-        const [harnesses, models, hostSkills] = await Promise.all([
+        const [harnesses, models, configuredSkills] = await Promise.all([
           analystBenchApi.listEvaluationHarnesses(),
           analystBenchApi.listEvaluationModels(),
-          analystBenchApi.listHostSkills().catch(() => []),
+          analystBenchApi.listSkills().catch(() => []),
         ]);
         this.evaluationHarnesses = harnesses;
         this.evaluationModels = models;
-        this.hostSkills = hostSkills;
+        this.configuredSkills = configuredSkills;
         this.connection = "connected";
       } catch {
         this.evaluationHarnesses = [];
         this.evaluationModels = [];
-        this.hostSkills = [];
+        this.configuredSkills = [];
+      }
+    },
+    openSkillDialog() {
+      const harness = this.skillConfigurationHarnesses[0];
+      this.skillForm = { harness_id: harness?.id || "", key: "" };
+      this.skillScanResults = [];
+      this.showSkillDialog = true;
+      if (harness) this.scanHarnessSkills();
+    },
+    async scanHarnessSkills() {
+      this.skillForm.key = "";
+      this.skillScanResults = [];
+      if (!this.skillForm.harness_id) return;
+      this.skillScanning = true;
+      try {
+        this.skillScanResults = await analystBenchApi.listHostSkills(
+          this.skillForm.harness_id,
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "扫描 Skill 失败");
+      } finally {
+        this.skillScanning = false;
+      }
+    },
+    async saveHostSkill() {
+      if (!this.skillForm.harness_id || !this.skillForm.key) {
+        this.showToast("请选择 Harness 和宿主机 Skill");
+        return;
+      }
+      this.skillSaving = true;
+      try {
+        await analystBenchApi.adoptHostSkill({
+          harness_id: this.skillForm.harness_id,
+          key: this.skillForm.key,
+        });
+        await this.loadEvaluationCatalog();
+        this.showSkillDialog = false;
+        this.showToast("Skill 已保存，可用于测评和自优化");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "保存 Skill 失败");
+      } finally {
+        this.skillSaving = false;
       }
     },
     openHarnessDialog(harness = null) {
@@ -2432,7 +2476,7 @@ export default {
       this.optimizationForm = {
         name: `Skill 优化 ${new Date().toLocaleDateString()}`,
         combination_key: defaultCombination?.key || "",
-        evaluation_target_id: defaultCombination?.target?.id || "",
+        evaluation_target_id: "",
         data_mode: "development_regression",
         case_paths: readyCases,
         train_case_paths: [],
@@ -2495,8 +2539,7 @@ export default {
       }
     },
     syncOptimizationCombination() {
-      this.optimizationForm.evaluation_target_id =
-        this.selectedOptimizationCombination?.target?.id || "";
+      this.optimizationForm.evaluation_target_id = "";
     },
     async createOptimizationExperiment() {
       const form = this.optimizationForm;
@@ -2528,12 +2571,17 @@ export default {
       }
       this.optimizationSaving = true;
       try {
-        const adopted = await analystBenchApi.adoptHostSkill({
-          harness_id: combination.target.harness.id,
+        const resolved = await analystBenchApi.resolveHostSkillCombination({
+          harness_id: combination.harness.id,
+          model_id: combination.model?.id || null,
           key: combination.skill.key,
         });
-        const skillId = adopted.skill.id;
-        const skillKey = adopted.skill.key;
+        const target = resolved.target;
+        const activeSkill = target.active_skill;
+        const skillId = activeSkill.skill_id;
+        const skillKey = activeSkill.skill_key;
+        const baseVersionId = activeSkill.skill_package_version_id;
+        form.evaluation_target_id = target.id;
         const snapshot = await analystBenchApi.createOptimizationSnapshot({
           dataset_key: [...datasets][0],
           mode: form.data_mode,
@@ -2554,12 +2602,6 @@ export default {
               ? form.prospective_holdout_case_paths
               : [],
         });
-        const bindings = await analystBenchApi.listSkillBindings(skillId);
-        const binding = bindings.find(
-          (item) => item.evaluation_target_id === combination.target.id,
-        );
-        const baseVersionId =
-          binding?.active_version_id || adopted.initial_version.id;
         const profile = await analystBenchApi.createExecutionProfile({
           name: `${skillKey}-optimizer`,
           runner: form.optimizer_runner,
@@ -2614,7 +2656,7 @@ export default {
         });
         const preflight = await analystBenchApi.runOptimizationPreflight({
           skill_key: skillKey,
-          evaluation_target_id: combination.target.id,
+          evaluation_target_id: target.id,
           execution_profile_id: profile.id,
           optimizer_policy_version_id: policy.id,
           verifier_bundle_version_id: verifier.id,
@@ -2643,7 +2685,7 @@ export default {
           name: form.name,
           skill_id: skillId,
           base_skill_version_id: baseVersionId,
-          evaluation_target_id: combination.target.id,
+          evaluation_target_id: target.id,
           data_snapshot_id: snapshot.id,
           optimizer_policy_version_id: policy.id,
           verifier_bundle_version_id: verifier.id,

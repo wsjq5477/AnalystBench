@@ -154,9 +154,7 @@ class SkillRegistryService:
                     "宿主机 Skill 必须来自已配置 Skill 目录的冻结 Harness。",
                 )
             session.expunge(harness)
-        skills_root = (
-            Path(str(harness.skill_base_dir)).expanduser().resolve() / "skills"
-        )
+        skills_root = Path(str(harness.skill_base_dir)).expanduser().resolve()
         source = skills_root / key
         if source.parent != skills_root or source.is_symlink():
             raise AnalystBenchError(
@@ -164,23 +162,20 @@ class SkillRegistryService:
             )
         return harness, self._source(str(source))
 
-    def discover_host_skills(self) -> list[dict[str, Any]]:
-        """List host Skills exposed by frozen Harness configurations, read-only."""
+    def discover_host_skills(self, *, harness_id: str) -> list[dict[str, Any]]:
+        """Scan one user-selected frozen Harness for host Skills, read-only."""
 
         with transaction(self.session_factory) as session:
-            harnesses = list(
-                session.scalars(
-                    select(EvaluationHarness)
-                    .where(
-                        EvaluationHarness.status == "frozen",
-                        EvaluationHarness.skill_base_dir.is_not(None),
-                    )
-                    .order_by(
-                        EvaluationHarness.harness_key,
-                        EvaluationHarness.version_number.desc(),
-                    )
+            harness = session.get(EvaluationHarness, harness_id)
+            if harness is None:
+                raise AnalystBenchError(
+                    "evaluation_harness_not_found", "找不到 Harness。", status_code=404
                 )
-            )
+            if harness.status != "frozen" or not harness.skill_base_dir:
+                raise AnalystBenchError(
+                    "host_skill_harness_invalid",
+                    "请选择已冻结且配置了 Skill 本地目录的 Harness。",
+                )
             managed = {
                 item.skill_key: item
                 for item in session.scalars(select(Skill).order_by(Skill.skill_key))
@@ -196,18 +191,17 @@ class SkillRegistryService:
                     )
                 )
             }
-            for harness in harnesses:
-                session.expunge(harness)
+            session.expunge(harness)
             for item in managed.values():
                 session.expunge(item)
             for item in initial_versions.values():
                 session.expunge(item)
 
         discovered: list[dict[str, Any]] = []
-        for harness in harnesses:
-            skills_root = (
-                Path(str(harness.skill_base_dir)).expanduser().resolve() / "skills"
-            )
+        for selected_harness in [harness]:
+            skills_root = Path(
+                str(selected_harness.skill_base_dir)
+            ).expanduser().resolve()
             if not skills_root.is_dir():
                 continue
             try:
@@ -232,14 +226,14 @@ class SkillRegistryService:
                 registered = managed.get(key)
                 source_matches = bool(
                     registered
-                    and registered.harness_key == harness.harness_key
+                    and registered.harness_key == selected_harness.harness_key
                     and Path(registered.source_path).expanduser().resolve()
                     == source.resolve()
                 )
                 initial = initial_versions.get(registered.id) if registered else None
                 command_compatible = (
-                    "{skill}" in harness.command_template
-                    or f"/{key}" in harness.command_template
+                    "{skill}" in selected_harness.command_template
+                    or f"/{key}" in selected_harness.command_template
                 )
                 if error:
                     status = "invalid"
@@ -267,9 +261,9 @@ class SkillRegistryService:
                     status = "available"
                 discovered.append(
                     {
-                        "harness_id": harness.id,
-                        "harness_key": harness.harness_key,
-                        "harness_version": harness.version_number,
+                        "harness_id": selected_harness.id,
+                        "harness_key": selected_harness.harness_key,
+                        "harness_version": selected_harness.version_number,
                         "key": key,
                         "source_path": str(source.resolve()),
                         "package_hash": package_hash,
@@ -281,6 +275,51 @@ class SkillRegistryService:
                     }
                 )
         return discovered
+
+    def configured_skill_views(self) -> list[dict[str, Any]]:
+        """Return managed Skills enriched with their current concrete Harness source."""
+
+        skills = self.list()
+        with transaction(self.session_factory) as session:
+            harnesses = list(
+                session.scalars(
+                    select(EvaluationHarness)
+                    .where(
+                        EvaluationHarness.status == "frozen",
+                        EvaluationHarness.skill_base_dir.is_not(None),
+                    )
+                    .order_by(EvaluationHarness.version_number.desc())
+                )
+            )
+            for harness in harnesses:
+                session.expunge(harness)
+        views: list[dict[str, Any]] = []
+        for skill in skills:
+            source = Path(skill.source_path).expanduser().resolve()
+            harness = next(
+                (
+                    item
+                    for item in harnesses
+                    if item.harness_key == skill.harness_key
+                    and item.skill_base_dir
+                    and (
+                        Path(str(item.skill_base_dir)).expanduser().resolve()
+                        / skill.skill_key
+                    ).resolve()
+                    == source
+                ),
+                None,
+            )
+            view = self.skill_view(skill)
+            view.update(
+                {
+                    "harness_id": harness.id if harness else None,
+                    "harness_version": harness.version_number if harness else None,
+                    "selectable": harness is not None,
+                }
+            )
+            views.append(view)
+        return views
 
     def adopt_host_skill(
         self, *, harness_id: str, skill_key: str
@@ -389,9 +428,7 @@ class SkillRegistryService:
                 )
             allowed_sources = {
                 (
-                    Path(str(harness.skill_base_dir)).expanduser().resolve()
-                    / "skills"
-                    / key
+                    Path(str(harness.skill_base_dir)).expanduser().resolve() / key
                 ).resolve()
                 for harness in harnesses
                 if harness.skill_base_dir
@@ -401,7 +438,7 @@ class SkillRegistryService:
                     "skill_source_not_harness_managed",
                     (
                         "Skill source_path 必须精确等于已冻结 Harness 的 "
-                        "{skill_base_dir}/skills/{skill_key}。"
+                        "{skill_base_dir}/{skill_key}。"
                     ),
                     status_code=403,
                 )

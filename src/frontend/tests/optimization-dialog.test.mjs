@@ -29,7 +29,8 @@ test("Skill optimization selects a host combination and keeps drafts until cance
   assert.doesNotMatch(options, /optimizationForm\.invoke_as/);
   assert.doesNotMatch(options, /createSkill\(/);
   assert.match(options, /optimizationCombinationOptions/);
-  assert.match(options, /adoptHostSkill\(/);
-  assert.match(options, /combination\.target\.id/);
+  assert.match(options, /resolveHostSkillCombination\(/);
+  assert.match(options, /harness_id: combination\.harness\.id/);
+  assert.match(options, /evaluation_target_id: target\.id/);
   assert.match(options, /combination\.skill\.key/);
 });

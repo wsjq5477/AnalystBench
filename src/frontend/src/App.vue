@@ -926,22 +926,45 @@ export default appOptions;
           <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>暂无模型</p></div>
         </section>
         <section class="surface form-card method-card">
-          <div class="panel-heading"><h2>宿主机 Skill</h2><button class="ghost-button" @click="loadEvaluationCatalog"><IconRefresh :size="16" />重新扫描</button></div>
-          <p class="form-note">只读扫描冻结 Harness 的 <code>skill_base_dir/skills/*/SKILL.md</code>。这里不创建 Skill；测评或自优化选中后，系统才自动建立内部不可变版本。</p>
-          <div v-if="hostSkills.length" class="method-list">
-            <div v-for="skill in hostSkills" :key="`${skill.harness_id}:${skill.key}`" class="method-row">
+          <div class="panel-heading"><h2>Skill</h2><button class="primary-button" @click="openSkillDialog"><IconPlus :size="16" />新建 Skill</button></div>
+          <p class="form-note">这里只展示已保存的 Skill。新建时先选择冻结 Harness，再直接扫描该 Harness 配置的 Skills 本地目录。</p>
+          <div v-if="configuredSkills.length" class="method-list">
+            <div v-for="skill in configuredSkills" :key="skill.id" class="method-row">
               <div><strong>/{{ skill.key }}</strong><code>{{ skill.source_path }}</code><span>Harness：{{ skill.harness_key }} v{{ skill.harness_version }}</span></div>
-              <span :class="skill.selectable ? 'tag-match' : 'tag-missing'">{{ skill.status }}</span>
-              <span v-if="skill.error" class="tone-warning">{{ skill.error }}</span>
+              <span :class="skill.selectable ? 'tag-match' : 'tag-missing'">{{ skill.selectable ? '可用' : 'Harness 不可用' }}</span>
             </div>
           </div>
-          <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>未发现宿主机 Skill</p><span>请为冻结 Harness 配置 Skill 目录，并在其 skills 子目录中放置包含 SKILL.md 的 Skill。</span></div>
+          <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>尚未配置 Skill</p><span>点击“新建 Skill”，从指定 Harness 的宿主机目录中选择。</span></div>
         </section>
       </section>
     </main>
 
     <div v-if="loading" class="busy-layer"><IconLoader2 :size="25" class="spin" />正在与 AnalystBench API 通信…</div>
     <div v-if="toast" class="toast"><IconAlertCircle :size="17" />{{ toast }}</div>
+
+    <div v-if="showSkillDialog" class="dialog-overlay" @click.self="showSkillDialog = false">
+      <section class="surface dialog-card">
+        <div class="panel-heading"><h2>新建 Skill</h2></div>
+        <p class="form-note">不会在宿主机创建目录；只从所选 Harness 的 Skill 本地配置目录中选择已有 Skill，并保存内部不可变版本。</p>
+        <label>Harness
+          <select v-model="skillForm.harness_id" @change="scanHarnessSkills">
+            <option value="">请选择已冻结 Harness</option>
+            <option v-for="harness in skillConfigurationHarnesses" :key="harness.id" :value="harness.id">{{ harness.key }} v{{ harness.version }} · {{ harness.skill_base_dir }}</option>
+          </select>
+        </label>
+        <label>宿主机 Skill
+          <select v-model="skillForm.key" :disabled="!skillForm.harness_id || skillScanning">
+            <option value="">{{ skillScanning ? '正在扫描…' : '请选择 Skill' }}</option>
+            <option v-for="skill in skillScanResults" :key="skill.key" :value="skill.key" :disabled="!skill.selectable">/{{ skill.key }} · {{ skill.status }}</option>
+          </select>
+        </label>
+        <p v-if="skillForm.harness_id && !skillScanning && !skillScanResults.length" class="form-note tone-warning">该 Harness 配置的 Skills 本地目录下没有发现有效 Skill。</p>
+        <div class="dialog-actions">
+          <button class="ghost-button" @click="showSkillDialog = false">取消</button>
+          <button class="primary-button" :disabled="skillSaving || !skillForm.key" @click="saveHostSkill">{{ skillSaving ? '保存中…' : '保存 Skill' }}</button>
+        </div>
+      </section>
+    </div>
 
     <!-- Submit evaluation dialog -->
     <div v-if="showSubmitEvaluationDialog" class="dialog-overlay" @click.self="showSubmitEvaluationDialog = false">
@@ -1060,7 +1083,7 @@ export default appOptions;
         <div class="panel-heading"><h2>{{ editingHarnessId ? '修改 Harness' : '新建 Harness' }}</h2></div>
         <p class="form-note">命令含 <code>{model}</code> 时需要模型；使用 <code>{skill}</code> 可注入下拉框选择的 <code>/skill-key</code>。命令不经过 Shell。</p>
         <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="claude-native" /></label>
-        <label>Skill 本地配置目录<input v-model.trim="harnessForm.skill_base_dir" placeholder="~/.claude" /><span>Skill 来源自动使用该目录下的 <code>skills/{skill-key}</code></span></label>
+        <label>Skills 本地配置目录<input v-model.trim="harnessForm.skill_base_dir" placeholder="~/.claude/skills" /><span>该目录应直接包含各个 <code>{skill-key}/SKILL.md</code> 子目录</span></label>
         <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='claude -p "{skill} 分析 {input}" --model {model}'></textarea></label>
         <div class="form-grid"><label>超时时间（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>并发数<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>

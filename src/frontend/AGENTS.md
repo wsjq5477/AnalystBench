@@ -19,7 +19,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - 提交测评第一步允许逐个选择 Case，默认勾选全部日志就绪项；缺日志 Case 置灰并自动跳过，不能阻塞其他已选 Case。
 - 提交测评生成的结果直接属于正式结果；批次结束后自动切换到正式结果并打开本批次结果，已结束批次保留“查看正式结果”入口。
 - 测评方式只要求填写一个 Key，不再单独填写显示名称；界面统一显示 Key，且 Key 支持 `claude(glm5.1)-native`、`agent(deepseek)` 这类可安全作为文件名的字符，包括以右括号结尾。
-- 设置页只读扫描冻结 Harness 的 `{skill_base_dir}/skills/*/SKILL.md`，不提供创建或注册 Skill 的用户流程；Harness 设置必须维护宿主机 Skill 配置目录（例如 claude 为 `~/.claude`）。
+- 设置页不自动扫描全部宿主机 Skill；点击“新建 Skill”后先选择冻结 Harness，再只读扫描该 Harness 的 `{skill_base_dir}/*/SKILL.md` 并从下拉框选择。`skill_base_dir` 就是直接包含各 Skill 子目录的根目录，后端不得固定追加 `skills`；该流程只保存已有 Skill，不在宿主机创建目录。
 - 普通测评、定时测评和 Skill 自优化统一选择明确的 `Harness × Model × Skill` 组合；普通测评保留“无 Skill”基线，自优化必须选择宿主机已有 Skill。选中后后端自动建立内部不可变版本，用户不填写 Skill Key、来源目录或注册方式。自优化弹窗只有点击“取消”才关闭，点击遮罩不得丢失已填写内容。
 - 测评方式的垃圾桶表示彻底删除：用户确认后删除该版本、引用它的完整测评批次、正式结果目录和定时执行历史；若同一批次包含其他方式，该批次也整体删除。正在运行的任务必须先停止。
 - Frozen 测评方式允许从界面修改；修改创建同 Key 的新草稿版本并重新检测，旧版本在新版本冻结前继续可用。

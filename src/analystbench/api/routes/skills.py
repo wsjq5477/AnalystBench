@@ -34,6 +34,10 @@ class HostSkillAdopt(BaseModel):
     key: str = Field(min_length=1, max_length=64)
 
 
+class HostSkillCombinationResolve(HostSkillAdopt):
+    model_id: str | None = None
+
+
 class SkillImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -87,6 +91,9 @@ class SkillResponse(BaseModel):
     publish_mode: str
     editable_paths: list[str]
     limits: dict[str, Any]
+    harness_id: str | None = None
+    harness_version: int | None = None
+    selectable: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -125,8 +132,8 @@ def binding_view(item: Any) -> dict[str, Any]:
 
 
 @router.get("/host-skills")
-def list_host_skills(request: Request) -> list[dict[str, Any]]:
-    return registry(request).discover_host_skills()
+def list_host_skills(harness_id: str, request: Request) -> list[dict[str, Any]]:
+    return registry(request).discover_host_skills(harness_id=harness_id)
 
 
 @router.post("/host-skills:adopt", status_code=status.HTTP_200_OK)
@@ -141,9 +148,33 @@ def adopt_host_skill(payload: HostSkillAdopt, request: Request) -> dict[str, Any
     }
 
 
+@router.post("/host-skills:resolve-combination")
+def resolve_host_skill_combination(
+    payload: HostSkillCombinationResolve,
+    request: Request,
+) -> dict[str, Any]:
+    methods, target_ids, snapshots, selections = (
+        request.app.state.evaluation_submission_service.resolve_target_selections(
+            [
+                {
+                    "harness_id": payload.harness_id,
+                    "model_id": payload.model_id,
+                    "skill_key": payload.key,
+                }
+            ]
+        )
+    )
+    return {
+        "method_id": methods[0],
+        "target_id": target_ids[0],
+        "target": snapshots[0],
+        "selection": selections[0],
+    }
+
+
 @router.get("/skills", response_model=list[SkillResponse])
 def list_skills(request: Request) -> list[dict[str, Any]]:
-    return [SkillRegistryService.skill_view(item) for item in registry(request).list()]
+    return registry(request).configured_skill_views()
 
 
 @router.get("/skills/{skill_id}", response_model=SkillResponse)

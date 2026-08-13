@@ -11,14 +11,16 @@ test("evaluation UI selects explicit Harness, model, and host Skill combinations
 
   assert.doesNotMatch(app, /新建运行组合/);
   assert.match(app, /Harness × 模型 × Skill（默认全选）/);
-  assert.match(app, /<h2>宿主机 Skill<\/h2>/);
-  assert.match(app, /skill_base_dir\/skills\/\*\/SKILL\.md/);
+  assert.match(app, /<h2>Skill<\/h2>/);
+  assert.match(app, /@click="openSkillDialog"/);
+  assert.match(app, /v-model="skillForm\.harness_id" @change="scanHarnessSkills"/);
   assert.match(app, /v-model="submissionForm\.target_selection_keys" multiple/);
   assert.match(app, /@click="deleteEvaluationHarness\(harness\)"/);
   assert.match(app, /@click="deleteEvaluationModel\(model\)"/);
   assert.match(options, /target_selections:/);
   assert.match(options, /skill_key: skillKey \|\| null/);
-  assert.match(options, /listHostSkills\(\)/);
+  assert.match(options, /listHostSkills\(\s*this\.skillForm\.harness_id/);
+  assert.doesNotMatch(options, /listHostSkills\(\)\.catch/);
   assert.match(options, /allEvaluationSelectionKeys/);
   assert.match(options, /archiveEvaluationHarness\(harness.id\)/);
   assert.match(options, /archiveEvaluationModel\(model.id\)/);

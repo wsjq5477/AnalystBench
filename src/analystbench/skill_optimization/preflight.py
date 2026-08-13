@@ -1028,7 +1028,7 @@ class SkillOptimizationPreflightService:
                 if harness.skill_base_dir
                 else None
             )
-            expected = base_dir / "skills" / skill.skill_key if base_dir else None
+            expected = base_dir / skill.skill_key if base_dir else None
             structure_ready = bool(
                 base_dir
                 and base_dir.is_absolute()
