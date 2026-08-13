@@ -82,7 +82,7 @@ def test_p16_upgrades_existing_p15_sqlite_database(tmp_path: Path) -> None:
         schedule_columns = {
             column["name"] for column in inspector.get_columns("evaluation_schedules")
         }
-        assert "target_ids_json" in schedule_columns
+        assert {"target_ids_json", "target_selections_json"} <= schedule_columns
     finally:
         engine.dispose()
 

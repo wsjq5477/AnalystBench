@@ -134,6 +134,216 @@ class SkillRegistryService:
             )
         return source
 
+    def _host_skill_source(
+        self, *, harness_id: str, skill_key: str
+    ) -> tuple[EvaluationHarness, Path]:
+        """Resolve one existing host Skill below a concrete frozen Harness."""
+
+        key = skill_key.strip()
+        if not SKILL_KEY_RE.fullmatch(key):
+            raise AnalystBenchError("skill_invalid", "Skill key 格式无效。")
+        with transaction(self.session_factory) as session:
+            harness = session.get(EvaluationHarness, harness_id)
+            if harness is None:
+                raise AnalystBenchError(
+                    "evaluation_harness_not_found", "找不到 Harness。", status_code=404
+                )
+            if harness.status != "frozen" or not harness.skill_base_dir:
+                raise AnalystBenchError(
+                    "host_skill_harness_invalid",
+                    "宿主机 Skill 必须来自已配置 Skill 目录的冻结 Harness。",
+                )
+            session.expunge(harness)
+        skills_root = (
+            Path(str(harness.skill_base_dir)).expanduser().resolve() / "skills"
+        )
+        source = skills_root / key
+        if source.parent != skills_root or source.is_symlink():
+            raise AnalystBenchError(
+                "skill_source_invalid", "宿主机 Skill 必须是 skills 目录下的普通目录。"
+            )
+        return harness, self._source(str(source))
+
+    def discover_host_skills(self) -> list[dict[str, Any]]:
+        """List host Skills exposed by frozen Harness configurations, read-only."""
+
+        with transaction(self.session_factory) as session:
+            harnesses = list(
+                session.scalars(
+                    select(EvaluationHarness)
+                    .where(
+                        EvaluationHarness.status == "frozen",
+                        EvaluationHarness.skill_base_dir.is_not(None),
+                    )
+                    .order_by(
+                        EvaluationHarness.harness_key,
+                        EvaluationHarness.version_number.desc(),
+                    )
+                )
+            )
+            managed = {
+                item.skill_key: item
+                for item in session.scalars(select(Skill).order_by(Skill.skill_key))
+            }
+            initial_versions = {
+                item.skill_id: item
+                for item in session.scalars(
+                    select(SkillPackageVersion)
+                    .where(SkillPackageVersion.parent_version_id.is_(None))
+                    .order_by(
+                        SkillPackageVersion.skill_id,
+                        SkillPackageVersion.version_number,
+                    )
+                )
+            }
+            for harness in harnesses:
+                session.expunge(harness)
+            for item in managed.values():
+                session.expunge(item)
+            for item in initial_versions.values():
+                session.expunge(item)
+
+        discovered: list[dict[str, Any]] = []
+        for harness in harnesses:
+            skills_root = (
+                Path(str(harness.skill_base_dir)).expanduser().resolve() / "skills"
+            )
+            if not skills_root.is_dir():
+                continue
+            try:
+                children = sorted(skills_root.iterdir(), key=lambda item: item.name)
+            except OSError:
+                continue
+            for source in children:
+                key = source.name
+                if (
+                    not SKILL_KEY_RE.fullmatch(key)
+                    or source.is_symlink()
+                    or not source.is_dir()
+                ):
+                    continue
+                error: dict[str, Any] | None = None
+                package_hash: str | None = None
+                try:
+                    snapshot = inspect_package(source, self.limits)
+                    package_hash = snapshot.package_hash
+                except AnalystBenchError as exc:
+                    error = {"code": exc.code, "message": exc.message}
+                registered = managed.get(key)
+                source_matches = bool(
+                    registered
+                    and registered.harness_key == harness.harness_key
+                    and Path(registered.source_path).expanduser().resolve()
+                    == source.resolve()
+                )
+                initial = initial_versions.get(registered.id) if registered else None
+                command_compatible = (
+                    "{skill}" in harness.command_template
+                    or f"/{key}" in harness.command_template
+                )
+                if error:
+                    status = "invalid"
+                elif not command_compatible:
+                    status = "command_incompatible"
+                    error = {
+                        "code": "host_skill_command_incompatible",
+                        "message": "Harness 命令既未使用 {skill}，也未显式调用该 Skill。",
+                    }
+                elif registered and not source_matches:
+                    status = "conflict"
+                    error = {
+                        "code": "host_skill_identity_conflict",
+                        "message": "同名 Skill 已由其他 Harness 或宿主路径纳管。",
+                    }
+                elif registered and initial and initial.package_hash != package_hash:
+                    status = "source_changed"
+                    error = {
+                        "code": "host_skill_source_changed",
+                        "message": "宿主机 Skill 内容已偏离首次纳管版本。",
+                    }
+                elif registered:
+                    status = "managed"
+                else:
+                    status = "available"
+                discovered.append(
+                    {
+                        "harness_id": harness.id,
+                        "harness_key": harness.harness_key,
+                        "harness_version": harness.version_number,
+                        "key": key,
+                        "source_path": str(source.resolve()),
+                        "package_hash": package_hash,
+                        "status": status,
+                        "selectable": status in {"available", "managed"},
+                        "managed_skill_id": registered.id if source_matches else None,
+                        "managed_version_id": initial.id if source_matches and initial else None,
+                        "error": error,
+                    }
+                )
+        return discovered
+
+    def adopt_host_skill(
+        self, *, harness_id: str, skill_key: str
+    ) -> tuple[Skill, SkillPackageVersion]:
+        """Idempotently snapshot a selected host Skill into the managed registry."""
+
+        self._require_enabled()
+        harness, source = self._host_skill_source(
+            harness_id=harness_id, skill_key=skill_key
+        )
+        snapshot = inspect_package(source, self.limits)
+        key = skill_key.strip()
+        with transaction(self.session_factory) as session:
+            existing = session.scalar(select(Skill).where(Skill.skill_key == key))
+            if existing is not None:
+                expected_source = Path(existing.source_path).expanduser().resolve()
+                if (
+                    existing.archived_at is not None
+                    or existing.harness_key != harness.harness_key
+                    or expected_source != source
+                ):
+                    raise AnalystBenchError(
+                        "host_skill_identity_conflict",
+                        "同名 Skill 已由其他 Harness 或宿主路径纳管。",
+                        status_code=409,
+                    )
+                version = session.scalar(
+                    select(SkillPackageVersion)
+                    .where(
+                        SkillPackageVersion.skill_id == existing.id,
+                        SkillPackageVersion.parent_version_id.is_(None),
+                        SkillPackageVersion.package_hash == snapshot.package_hash,
+                    )
+                    .order_by(SkillPackageVersion.version_number)
+                    .limit(1)
+                )
+                if version is None:
+                    raise AnalystBenchError(
+                        "host_skill_source_changed",
+                        "宿主机 Skill 内容已偏离首次纳管版本；请明确导入新版本后再使用。",
+                        status_code=409,
+                    )
+                session.expunge(existing)
+                session.expunge(version)
+                return existing, version
+
+        item = self.create(
+            skill_key=key,
+            name=key,
+            source_path=str(source),
+            invoke_as=f"/{key}",
+            harness_key=harness.harness_key,
+            install_relative_path=f".claude/skills/{key}",
+            editable_paths=["SKILL.md", "references/*.md", "references/**/*.md"],
+            require_harness_source=True,
+        )
+        try:
+            version = self.import_version(item.id, source_type="initial")
+        except Exception:
+            self.discard_empty(item.id)
+            raise
+        return item, version
+
     def create(
         self,
         *,
@@ -214,6 +424,8 @@ class SkillRegistryService:
             limits_json=canonical_json(normalized_limits),
         )
         with transaction(self.session_factory) as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             if session.scalar(select(Skill.id).where(Skill.skill_key == key)):
                 raise AnalystBenchError(
                     "skill_already_exists", f"Skill {key} 已存在。", status_code=409
@@ -659,22 +871,6 @@ class SkillRegistryService:
                 raise AnalystBenchError(
                     "skill_binding_invalid", "运行组合必须先冻结。"
                 )
-            other_skill_id = session.scalar(
-                select(SkillTargetBinding.skill_id)
-                .where(
-                    SkillTargetBinding.evaluation_target_id
-                    == evaluation_target_id,
-                    SkillTargetBinding.skill_id != skill_id,
-                )
-                .limit(1)
-            )
-            if other_skill_id is not None:
-                raise AnalystBenchError(
-                    "evaluation_target_skill_binding_conflict",
-                    "V1 一个 Evaluation Target 只能绑定一个 Active Skill。",
-                    status_code=409,
-                    details=[{"existing_skill_id": other_skill_id}],
-                )
             binding = session.scalar(
                 select(SkillTargetBinding).where(
                     SkillTargetBinding.skill_id == skill_id,
@@ -899,6 +1095,18 @@ class SkillRegistryService:
                 "install_relative_path": skill.install_relative_path,
                 "invoke_as": skill.invoke_as,
             }
+            command_template = harness.command_template.replace(
+                "{skill}", skill.invoke_as
+            )
+            if harness.model_policy == "required":
+                if not target.model_argument:
+                    raise AnalystBenchError(
+                        "evaluation_variant_invalid",
+                        "需要模型的 Variant 缺少冻结模型参数。",
+                    )
+                command_template = command_template.replace(
+                    "{model}", target.model_argument
+                )
             variant_hash = content_hash(canonical_json(variant_manifest).encode("utf-8"))
             method = EvaluationMethod(
                 id=str(uuid4()),
@@ -906,7 +1114,7 @@ class SkillRegistryService:
                 name=f"{base_method.name} + {skill.invoke_as} v{version.version_number}",
                 version_number=1,
                 tool_dir=base_method.tool_dir,
-                command_template=base_method.command_template,
+                command_template=command_template,
                 timeout_seconds=base_method.timeout_seconds,
                 max_output_bytes=base_method.max_output_bytes,
                 concurrency_limit=base_method.concurrency_limit,

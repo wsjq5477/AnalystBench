@@ -802,13 +802,16 @@ class SkillOptimizationPreflightService:
                     },
                 )
             )
-            invocation_present = skill.invoke_as in harness.command_template
+            invocation_present = (
+                skill.invoke_as in harness.command_template
+                or "{skill}" in harness.command_template
+            )
             checks.append(
                 PreflightCheck(
                     code="skill_invocation_in_harness",
                     status="PASS" if invocation_present else "WARN",
                     message=(
-                        "Harness 命令显式包含 Skill 调用名。"
+                        "Harness 命令显式包含 Skill 调用名或 {skill} 占位符。"
                         if invocation_present
                         else "Harness 命令未显式包含 Skill 调用名，请确认其通过其他方式调用 Skill。"
                     ),

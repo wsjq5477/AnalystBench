@@ -318,8 +318,11 @@ export const analystBenchApi = {
   listSkills() {
     return request({ url: "/skills", method: "get" });
   },
-  createSkill(data) {
-    return request({ url: "/skills", method: "post", data });
+  listHostSkills() {
+    return request({ url: "/host-skills", method: "get" });
+  },
+  adoptHostSkill(data) {
+    return request({ url: "/host-skills:adopt", method: "post", data });
   },
   listSkillVersions(skillId) {
     return request({ url: `/skills/${skillId}/versions`, method: "get" });

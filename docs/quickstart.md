@@ -266,7 +266,7 @@ HM_PANIC_SYSMGR-test1-skill-1.txt
 
 # 路径 C：Skill 自优化（实验功能）
 
-Skill 自优化会导入本地 Skill，用独立 Git 保存版本，重复运行基线与候选
+Skill 自优化会从宿主机已有 Skill 自动建立内部版本，用独立 Git 保存版本，重复运行基线与候选
 Benchmark，并且只在 Gate 通过时更新 Active 版本。它不会修改 AnalystBench
 主仓库、用户 Skill 源目录或用户源仓库。优化器修改的是 Managed Root 中从
 Active 版本派生的不可变候选，不是直接修改正在使用的源 Skill。
@@ -275,9 +275,8 @@ Active 版本派生的不可变候选，不是直接修改正在使用的源 Ski
 
 开始前准备好：
 
-- 一个已配置 `skill_base_dir` 的冻结 Harness。若 Skill Key 为 `my-skill`，
-  源目录自动派生为 `<skill_base_dir>/skills/my-skill`，该目录包含
-  `SKILL.md`；
+- 一个已配置 `skill_base_dir` 的冻结 Harness。宿主机已有 Skill 位于
+  `<skill_base_dir>/skills/<skill-key>`，并包含 `SKILL.md`；设置页会只读扫描这些目录；
 - 已导入的正式 Case 和日志；
 - 一个已冻结的 claude Evaluation Target，且命令明确调用目标 Skill，例如
   `claude -p "/my-skill 分析 {input}"`；
@@ -335,9 +334,9 @@ npm run serve
 
 点击“新建实验”，依次完成：
 
-1. **Skill**：填写 Skill Key 并选择已配置 Skill 目录的冻结 Harness，或选择
-   已注册 Skill；源目录和调用名由 Harness + Skill Key 自动派生，不再手填；
-2. **Benchmark**：选择已冻结 Target 和数据模式。开发回归直接勾选 Case；
+1. **Skill**：从下拉框选择明确的 `Harness × Model × Skill` 宿主机组合；页面不创建
+   或注册 Skill，选中后后端自动建立内部不可变版本；
+2. **Benchmark**：确认所选组合并选择数据模式。开发回归直接勾选 Case；
    独立验证在页面为每个 Case 指定 Train、Validation、Hidden 或
    Prospective；
 3. **Gate**：选择 Optimizer，设置提升阈值与 Epoch 数。开发回归第一次

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("evaluation UI selects Harness and models without a Target management step", async () => {
+test("evaluation UI selects explicit Harness, model, and host Skill combinations", async () => {
   const app = await readFile(new URL("../src/App.vue", import.meta.url), "utf8");
   const options = await readFile(
     new URL("../src/app-options.js", import.meta.url),
@@ -10,10 +10,15 @@ test("evaluation UI selects Harness and models without a Target management step"
   );
 
   assert.doesNotMatch(app, /新建运行组合/);
-  assert.match(app, /Harness × 模型（默认全选）/);
+  assert.match(app, /Harness × 模型 × Skill（默认全选）/);
+  assert.match(app, /<h2>宿主机 Skill<\/h2>/);
+  assert.match(app, /skill_base_dir\/skills\/\*\/SKILL\.md/);
+  assert.match(app, /v-model="submissionForm\.target_selection_keys" multiple/);
   assert.match(app, /@click="deleteEvaluationHarness\(harness\)"/);
   assert.match(app, /@click="deleteEvaluationModel\(model\)"/);
   assert.match(options, /target_selections:/);
+  assert.match(options, /skill_key: skillKey \|\| null/);
+  assert.match(options, /listHostSkills\(\)/);
   assert.match(options, /allEvaluationSelectionKeys/);
   assert.match(options, /archiveEvaluationHarness\(harness.id\)/);
   assert.match(options, /archiveEvaluationModel\(model.id\)/);

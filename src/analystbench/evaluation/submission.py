@@ -45,6 +45,7 @@ from analystbench.execution.isolation import isolated_process_environment
 from analystbench.execution.resolver import resolve_executable
 from analystbench.runtime.jobs import JobQueue
 from analystbench.scoring.reporting import render_markdown
+from analystbench.skill_optimization.registry import SkillRegistryService
 from analystbench.storage.content import canonical_json, content_hash
 
 METHOD_KEY_RE = re.compile(
@@ -850,6 +851,124 @@ class EvaluationSubmissionService:
                 resolved_snapshots.append(frozen_snapshot)
         return resolved_methods, resolved_snapshots
 
+    def resolve_target_selections(
+        self,
+        target_selections: list[dict[str, str | None]],
+    ) -> tuple[list[str], list[str], list[dict[str, Any]], list[dict[str, str | None]]]:
+        """Resolve explicit Harness x Model x optional host-Skill combinations."""
+
+        if not target_selections:
+            raise AnalystBenchError(
+                "evaluation_targets_missing", "至少选择一个运行组合。"
+            )
+        target_service = EvaluationTargetService(self.session_factory, self.settings)
+        registry = SkillRegistryService(self.session_factory, self.settings)
+        method_ids: list[str] = []
+        target_ids: list[str] = []
+        snapshots: list[dict[str, Any]] = []
+        normalized: list[dict[str, str | None]] = []
+        seen: set[tuple[str, str | None, str | None, str | None]] = set()
+        for selection in target_selections:
+            harness_id = str(selection.get("harness_id") or "")
+            model_id = (
+                str(selection["model_id"]) if selection.get("model_id") else None
+            )
+            skill_key = (
+                str(selection["skill_key"]).strip()
+                if selection.get("skill_key")
+                else None
+            )
+            requested_version_id = (
+                str(selection["skill_package_version_id"])
+                if selection.get("skill_package_version_id")
+                else None
+            )
+            if requested_version_id and not skill_key:
+                raise AnalystBenchError(
+                    "evaluation_skill_selection_invalid",
+                    "指定 Skill 版本时必须同时指定 Skill key。",
+                )
+            identity = (harness_id, model_id, skill_key, requested_version_id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            targets, base_snapshots = target_service.resolve_selections(
+                [{"harness_id": harness_id, "model_id": model_id}]
+            )
+            target = targets[0]
+            base_snapshot = base_snapshots[0]
+            target_ids.append(target.id)
+            normalized.append(
+                {
+                    "harness_id": harness_id,
+                    "model_id": model_id,
+                    "skill_key": skill_key,
+                    "skill_package_version_id": requested_version_id,
+                }
+            )
+            if skill_key is None:
+                baseline_snapshot = dict(base_snapshot)
+                baseline_snapshot["skill_resolution"] = "explicit_no_skill"
+                method_ids.append(str(target.materialized_method_id))
+                snapshots.append(baseline_snapshot)
+                continue
+
+            if requested_version_id:
+                version = registry.get_version(requested_version_id)
+                skill = registry.get(version.skill_id)
+                if skill.skill_key != skill_key:
+                    raise AnalystBenchError(
+                        "evaluation_skill_selection_invalid",
+                        "冻结 Skill 版本与所选 Skill key 不一致。",
+                    )
+                initial_version = version
+            else:
+                skill, initial_version = registry.adopt_host_skill(
+                    harness_id=harness_id,
+                    skill_key=skill_key,
+                )
+            binding = registry.find_binding(
+                skill_id=skill.id,
+                evaluation_target_id=target.id,
+            )
+            if binding is None:
+                binding = registry.bind(
+                    skill_id=skill.id,
+                    evaluation_target_id=target.id,
+                    version_id=initial_version.id,
+                    active_level="provisional",
+                )
+            version = (
+                initial_version
+                if requested_version_id
+                else registry.get_version(binding.active_version_id)
+            )
+            normalized[-1]["skill_package_version_id"] = version.id
+            variant = registry.freeze_variant(
+                evaluation_target_id=target.id,
+                version_id=version.id,
+            )
+            frozen_snapshot = dict(base_snapshot)
+            frozen_snapshot["base_materialized_method_id"] = str(
+                target.materialized_method_id
+            )
+            frozen_snapshot["materialized_method_id"] = variant.materialized_method_id
+            frozen_snapshot["skill_resolution"] = "explicit_host_skill"
+            frozen_snapshot["active_skill"] = {
+                "skill_id": skill.id,
+                "skill_key": skill.skill_key,
+                "skill_package_version_id": version.id,
+                "version_number": version.version_number,
+                "package_hash": version.package_hash,
+                "binding_id": binding.id,
+                "binding_lock_version": binding.lock_version,
+                "active_level": binding.active_level,
+                "evaluation_variant_id": variant.id,
+            }
+            method_ids.append(variant.materialized_method_id)
+            snapshots.append(frozen_snapshot)
+        return method_ids, target_ids, snapshots, normalized
+
     def create_submission(
         self,
         dataset_key: str,
@@ -890,15 +1009,12 @@ class EvaluationSubmissionService:
         if selection_modes != 1:
             raise AnalystBenchError(
                 "evaluation_selection_invalid",
-                "请选择旧测评方式或 Harness/模型组合中的一种，且不能混用。",
+                "请选择旧测评方式或 Harness/模型/Skill 组合中的一种，且不能混用。",
             )
         target_snapshots: list[dict[str, Any]] = []
         if target_selections:
-            targets, target_snapshots = EvaluationTargetService(
-                self.session_factory, self.settings
-            ).resolve_selections(target_selections)
-            method_ids, target_snapshots = self._resolve_active_target_methods(
-                targets, target_snapshots
+            method_ids, target_ids, target_snapshots, _ = (
+                self.resolve_target_selections(target_selections)
             )
         elif target_ids:
             targets, target_snapshots = EvaluationTargetService(

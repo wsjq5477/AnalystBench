@@ -59,6 +59,8 @@ class EvaluationTargetSelection(BaseModel):
 
     harness_id: str
     model_id: str | None = None
+    skill_key: str | None = Field(default=None, min_length=1, max_length=64)
+    skill_package_version_id: str | None = Field(default=None, min_length=1)
 
 
 class EvaluationSubmissionCreate(BaseModel):

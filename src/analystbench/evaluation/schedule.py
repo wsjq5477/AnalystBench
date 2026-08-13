@@ -177,20 +177,23 @@ class EvaluationScheduleService:
         if selection_modes != 1:
             raise AnalystBenchError(
                 "evaluation_schedule_invalid",
-                "请选择旧测评方式或 Harness/模型组合中的一种，且不能混用。",
+                "请选择旧测评方式或 Harness/模型/Skill 组合中的一种，且不能混用。",
             )
         if target_selections:
-            targets, target_snapshots = EvaluationTargetService(
-                self.session_factory, self.settings
-            ).resolve_selections(target_selections)
-            target_ids = [item.id for item in targets]
+            (
+                resolved_method_ids,
+                target_ids,
+                target_snapshots,
+                normalized_selections,
+            ) = self.submissions.resolve_target_selections(target_selections)
             return {
                 "name": normalized_name,
                 "dataset_key": normalized_dataset,
                 "case_mode": case_mode,
                 "case_paths": normalized_cases,
-                "method_ids": [str(item.materialized_method_id) for item in targets],
+                "method_ids": resolved_method_ids,
                 "target_ids": target_ids,
+                "target_selections": normalized_selections,
                 "targets": target_snapshots,
                 "methods": [],
                 "judge_runner": self._validate_judge(judge_runner),
@@ -208,6 +211,7 @@ class EvaluationScheduleService:
                 "case_paths": normalized_cases,
                 "method_ids": [str(item.materialized_method_id) for item in targets],
                 "target_ids": [item.id for item in targets],
+                "target_selections": [],
                 "targets": target_snapshots,
                 "methods": [],
                 "judge_runner": self._validate_judge(judge_runner),
@@ -243,6 +247,7 @@ class EvaluationScheduleService:
             "case_paths": normalized_cases,
             "method_ids": normalized_method_ids,
             "target_ids": [],
+            "target_selections": [],
             "targets": [],
             "methods": [
                 {
@@ -285,6 +290,9 @@ class EvaluationScheduleService:
             "case_paths": json.loads(schedule.case_paths_json or "[]"),
             "method_ids": json.loads(schedule.method_ids_json or "[]"),
             "target_ids": json.loads(schedule.target_ids_json or "[]"),
+            "target_selections": json.loads(
+                getattr(schedule, "target_selections_json", "[]") or "[]"
+            ),
             "judge_runner": schedule.judge_runner,
             "timezone": schedule.timezone,
             "local_time": schedule.local_time,
@@ -326,6 +334,9 @@ class EvaluationScheduleService:
                 case_paths_json=canonical_json(config["case_paths"]),
                 method_ids_json=canonical_json(config["method_ids"]),
                 target_ids_json=canonical_json(config["target_ids"]),
+                target_selections_json=canonical_json(
+                    config["target_selections"]
+                ),
                 judge_runner=config["judge_runner"],
                 timezone=config["timezone"],
                 local_time=config["local_time"],
@@ -410,6 +421,9 @@ class EvaluationScheduleService:
             item.case_paths_json = canonical_json(config["case_paths"])
             item.method_ids_json = canonical_json(config["method_ids"])
             item.target_ids_json = canonical_json(config["target_ids"])
+            item.target_selections_json = canonical_json(
+                config["target_selections"]
+            )
             item.judge_runner = config["judge_runner"]
             item.timezone = config["timezone"]
             item.local_time = config["local_time"]
@@ -645,12 +659,14 @@ class EvaluationScheduleService:
             None if snapshot["case_mode"] == "all_ready" else snapshot["case_paths"]
         )
         target_ids = snapshot.get("target_ids") or []
+        target_selections = snapshot.get("target_selections") or []
         try:
             submission = self.submissions.create_submission(
                 snapshot["dataset_key"],
-                [] if target_ids else snapshot["method_ids"],
+                [] if target_ids or target_selections else snapshot["method_ids"],
                 snapshot["judge_runner"],
-                target_ids=target_ids or None,
+                target_ids=None if target_selections else (target_ids or None),
+                target_selections=target_selections or None,
                 case_paths=case_paths,
                 schedule_run_id=schedule_run_id,
             )
@@ -762,9 +778,12 @@ class EvaluationScheduleService:
     def view(self, item: EvaluationSchedule) -> dict[str, Any]:
         stored_method_ids = json.loads(item.method_ids_json or "[]")
         target_ids = json.loads(item.target_ids_json or "[]")
+        stored_target_selections = json.loads(
+            getattr(item, "target_selections_json", "[]") or "[]"
+        )
         # Target schedules keep materialized Method ids only as an internal
         # execution bridge.  The public schedule contract remains Target-only.
-        method_ids = [] if target_ids else stored_method_ids
+        method_ids = [] if target_ids or stored_target_selections else stored_method_ids
         with transaction(self.session_factory) as session:
             methods = [
                 method
@@ -805,10 +824,11 @@ class EvaluationScheduleService:
             ],
             "target_ids": target_ids,
             "targets": target_views,
-            "target_selections": [
+            "target_selections": stored_target_selections or [
                 {
                     "harness_id": target.get("harness", {}).get("id"),
                     "model_id": (target.get("model") or {}).get("id"),
+                    "skill_key": None,
                 }
                 for target in target_views
                 if target.get("harness", {}).get("id")

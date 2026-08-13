@@ -143,8 +143,9 @@ ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=/srv/analystbench/skill-optimizatio
 - 如命令包含 `{model}`，同时创建 Model；否则使用无 Model Harness；
 - 先“检测”，再“冻结”。
 
-然后创建并冻结 Evaluation Target。新建 Skill 时，前端根据冻结 Harness 和
-Skill Key 自动得到：
+冻结 Harness 后，设置页会扫描其 `skills/*/SKILL.md` 并显示宿主机已有 Skill。
+测评和自优化页面直接选择 `Harness × Model × Skill` 组合；没有面向用户的
+“新建/注册 Skill”步骤。首次选中时，后端根据冻结 Harness 和目录名自动得到：
 
 | 字段 | 派生值 |
 |---|---|
@@ -154,10 +155,9 @@ Skill Key 自动得到：
 | 安装路径 | `.claude/skills/my-skill` |
 | Harness Key | 所选冻结 Harness 的 key |
 
-不再手填源目录或调用名。Target 的 Harness Key、Skill 的 Harness Key 和命令
-中的 `/my-skill` 必须一致。V1 一个 Evaluation Target 只允许一个 Active Skill；
-若已有其他 Skill 绑定该 Target，新绑定以
-`evaluation_target_skill_binding_conflict` 拒绝，不会在普通评测时猜测要用哪一个。
+不手填 Skill Key、源目录或调用名。Target 的 Harness Key、Skill 的 Harness Key 和命令
+中的 `/my-skill` 必须一致。同一 Target 可以有多个 Skill 绑定；每次普通测评、
+定时测评和自优化都携带明确的 Skill 选择，因此不会在多个 Active Skill 间猜测。
 运行时，平台从内部 Git checkout 指定版本并只读
 安装到每次运行自己的 `<workspace>/.claude/skills/my-skill`，并向目标
 命令注入 `ANALYSTBENCH_SKILL_VERSION_ID=<实际冻结版本 UUID>`。该环境变量用于
@@ -166,20 +166,14 @@ commit 这些持久化运行身份。
 
 如果不用普通向导而要完全脚本化，以下 `curl` 均要求 API 已就绪；先在另一
 终端运行 `.venv/bin/analystbench serve`（完整服务方式见第 7 节）。然后按
-同一派生规则注册 Skill，并保存返回的 `skill.id` 和 `initial_version.id`：
+同一规则选择并纳管宿主机 Skill，保存返回的 `skill.id` 和 `initial_version.id`：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8000/api/v1/skills \
+curl -sS -X POST http://127.0.0.1:8000/api/v1/host-skills:adopt \
   -H 'Content-Type: application/json' \
   -d '{
-    "key": "my-skill",
-    "name": "my-skill",
-    "source_path": "/private/claude-config/skills/my-skill",
-    "invoke_as": "/my-skill",
-    "harness_key": "FROZEN_HARNESS_KEY",
-    "install_relative_path": ".claude/skills/my-skill",
-    "editable_paths": ["SKILL.md", "references/*.md", "references/**/*.md"],
-    "import_initial_version": true
+    "harness_id": "FROZEN_HARNESS_ID",
+    "key": "my-skill"
   }'
 ```
 
@@ -301,7 +295,7 @@ shell 命令会被拒绝。非法 JSON 只做一次同 Runner 格式修复；
 
 ## 6. 先跑上下文预检
 
-注册 Skill、冻结 Target、创建 Optimizer Execution Profile/Policy 和 Snapshot
+选择并纳管宿主机 Skill、冻结 Target、创建 Optimizer Execution Profile/Policy 和 Snapshot
 后，使用实际标识再次预检：
 
 ```bash
@@ -371,8 +365,8 @@ Swagger        http://127.0.0.1:8000/docs
 普通前端三步向导支持在 `development_regression` 和
 `independent_validation` 之间选择。开发回归的操作为：
 
-1. 填 Skill Key 并选择已有冻结 Harness，或选择已有 Skill；
-2. 选择兼容的冻结 Target、`Development Regression`，并勾选日志就绪的
+1. 从下拉框选择 `Harness × Model × Skill` 宿主机组合；
+2. 选择 `Development Regression`，并勾选日志就绪的
    Case；
 3. 选择 Optimizer、可执行文件、Judge、阈值和最大 Epoch；
 4. 第一次用真实 CLI 时将 `max_epochs` 设为 `1`；

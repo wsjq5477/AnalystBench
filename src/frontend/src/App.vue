@@ -799,19 +799,18 @@ export default appOptions;
 
             <template v-if="optimizationDialogStep === 1">
               <label>实验名称<input v-model.trim="optimizationForm.name" /></label>
-              <label>Skill 来源<select v-model="optimizationForm.skill_mode" @change="syncOptimizationTarget"><option value="new">注册本地 Skill</option><option value="existing">使用已有 Skill</option></select></label>
-              <template v-if="optimizationForm.skill_mode === 'new'">
-                <label>Skill Key<input v-model.trim="optimizationForm.skill_key" placeholder="my-skill" /></label>
-                <p class="form-note">调用名称自动使用 {{ optimizationInvokeAs }}。</p>
-                <label>Harness Key<select v-model="optimizationForm.harness_key" @change="syncOptimizationTarget"><option value="">请选择已配置 Skill 目录的 Harness</option><option v-for="harness in skillOptimizationHarnesses" :key="harness.id" :value="harness.key">{{ harness.key }}</option></select></label>
-                <p class="form-note">本地 Skill 目录自动使用 {{ optimizationSourcePath || 'Harness 配置目录/skills/Skill Key' }}。</p>
-              </template>
-              <label v-else>已有 Skill<select v-model="optimizationForm.skill_id" @change="syncOptimizationTarget"><option value="">请选择</option><option v-for="skill in skills" :key="skill.id" :value="skill.id">{{ skill.key }} · {{ skill.harness_key }}</option></select></label>
+              <label>Harness × 模型 × Skill
+                <select v-model="optimizationForm.combination_key" @change="syncOptimizationCombination">
+                  <option value="">请选择宿主机运行组合</option>
+                  <option v-for="option in optimizationCombinationOptions" :key="option.key" :value="option.key">{{ option.label }}</option>
+                </select>
+              </label>
+              <p v-if="selectedOptimizationCombination" class="form-note">调用名称使用 {{ optimizationInvokeAs }}；源目录为 {{ optimizationSourcePath }}。启动时系统会自动冻结内部版本。</p>
+              <p v-else class="form-note tone-warning">没有可用组合时，请先在设置页冻结 Harness、配置模型，并确认 Harness 的 Skill 目录中存在 SKILL.md。</p>
             </template>
 
             <template v-else-if="optimizationDialogStep === 2">
-              <label>claude Evaluation Target<select v-model="optimizationForm.evaluation_target_id" @change="syncOptimizationHarnessKey"><option value="">请选择已冻结 Target</option><option v-for="target in compatibleOptimizationTargets" :key="target.id" :value="target.id">{{ target.display_name || target.key }} · {{ target.command_template }}</option></select></label>
-              <p class="form-note">Target 命令必须明确包含 {{ optimizationInvokeAs }}；系统会把冻结版本复制到每个独立工作区。</p>
+              <p class="form-note">当前组合：{{ selectedOptimizationCombination?.label || '尚未选择' }}。Harness 命令使用 <code>{skill}</code> 或明确包含 {{ optimizationInvokeAs }}；系统会把冻结版本复制到每个独立工作区。</p>
               <label>数据验证模式<select v-model="optimizationForm.data_mode" @change="syncOptimizationDataMode"><option value="development_regression">Development Regression（快速开发回归）</option><option value="independent_validation">Independent Validation（正式验证推荐）</option></select></label>
               <p v-if="optimizationForm.data_mode === 'development_regression'" class="form-note tone-warning">同一批 Case 会用于 Evidence、Screening 和 Gate，因此结果只能视为开发期 provisional 证据。</p>
               <div v-if="optimizationForm.data_mode === 'development_regression'" class="optimization-case-picker">
@@ -875,7 +874,7 @@ export default appOptions;
 
       <!-- Settings view -->
       <section v-if="activeView === 'settings'" class="work-page settings-page">
-        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径、Harness 和模型；测评时直接选择需要运行的组合。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods(); loadEvaluationCatalog()"><IconRefresh :size="16" />刷新</button></div>
+        <div class="work-heading"><div><p class="eyebrow">SETTINGS</p><h1>设置</h1><p>配置结果路径、Harness、模型和宿主机 Skill；测评时直接选择需要运行的组合。</p></div><button class="ghost-button" @click="loadAppSettings(); loadEvaluationMethods(); loadEvaluationCatalog()"><IconRefresh :size="16" />刷新</button></div>
         <section class="surface form-card">
           <div class="panel-heading"><h2>结果路径配置</h2></div>
           <label>临时结果目录<span>单次评测默认输出到此目录</span><input v-model="appSettings.results_tmp_path" placeholder="data/results/tmp" /></label>
@@ -900,7 +899,7 @@ export default appOptions;
         </section>
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>Harness</h2><button class="primary-button" @click="openHarnessDialog"><IconPlus :size="16" />新建 Harness</button></div>
-          <p class="form-note">定义 Harness 命令与共享并发；命令包含 <code>{model}</code> 时自动启用模型选择。</p>
+          <p class="form-note">定义 Harness 命令与共享并发；<code>{model}</code> 注入模型，<code>{skill}</code> 注入所选宿主机 Skill 调用名。</p>
           <div v-if="visibleEvaluationHarnesses.length" class="method-list">
             <div v-for="harness in visibleEvaluationHarnesses" :key="harness.id" class="method-row">
               <div><strong>{{ harness.key }} <small>v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code><span>Skill 配置目录：{{ harness.skill_base_dir || '未配置' }}</span></div>
@@ -925,6 +924,18 @@ export default appOptions;
             </div>
           </div>
           <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>暂无模型</p></div>
+        </section>
+        <section class="surface form-card method-card">
+          <div class="panel-heading"><h2>宿主机 Skill</h2><button class="ghost-button" @click="loadEvaluationCatalog"><IconRefresh :size="16" />重新扫描</button></div>
+          <p class="form-note">只读扫描冻结 Harness 的 <code>skill_base_dir/skills/*/SKILL.md</code>。这里不创建 Skill；测评或自优化选中后，系统才自动建立内部不可变版本。</p>
+          <div v-if="hostSkills.length" class="method-list">
+            <div v-for="skill in hostSkills" :key="`${skill.harness_id}:${skill.key}`" class="method-row">
+              <div><strong>/{{ skill.key }}</strong><code>{{ skill.source_path }}</code><span>Harness：{{ skill.harness_key }} v{{ skill.harness_version }}</span></div>
+              <span :class="skill.selectable ? 'tag-match' : 'tag-missing'">{{ skill.status }}</span>
+              <span v-if="skill.error" class="tone-warning">{{ skill.error }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>未发现宿主机 Skill</p><span>请为冻结 Harness 配置 Skill 目录，并在其 skills 子目录中放置包含 SKILL.md 的 Skill。</span></div>
         </section>
       </section>
     </main>
@@ -972,14 +983,14 @@ export default appOptions;
         </template>
         <fieldset v-else-if="submissionStep === 2" class="method-picker">
           <template v-if="evaluationSelectionGroups.length">
-            <legend>Harness × 模型（默认全选）</legend>
+            <legend>Harness × 模型 × Skill（默认全选）</legend>
             <div v-for="group in evaluationSelectionGroups" :key="group.harness.id" class="target-picker-group">
               <strong>{{ group.harness.key }} <small>v{{ group.harness.version }}</small></strong>
-              <label v-for="option in group.options" :key="option.key" class="check-row">
-                <input v-model="submissionForm.target_selection_keys" type="checkbox" :value="option.key" />
-                <span><strong>{{ option.model?.name || '无模型基线' }}</strong><code>{{ option.model?.argument || 'script-only' }}</code></span>
-              </label>
+              <select v-model="submissionForm.target_selection_keys" multiple size="8" class="combination-select">
+                <option v-for="option in group.options" :key="option.key" :value="option.key">{{ option.model?.name || '无模型基线' }} · {{ option.skill ? `/${option.skill.key}` : '无 Skill' }}</option>
+              </select>
             </div>
+            <p class="form-note">可使用 Ctrl / Cmd 多选；“无 Skill”保留原始 Harness 基线。</p>
           </template>
           <template v-else>
             <legend>旧测评方式</legend>
@@ -1047,10 +1058,10 @@ export default appOptions;
     <div v-if="showHarnessDialog" class="dialog-overlay" @click.self="showHarnessDialog = false">
       <section class="surface dialog-card dialog-card-wide">
         <div class="panel-heading"><h2>{{ editingHarnessId ? '修改 Harness' : '新建 Harness' }}</h2></div>
-        <p class="form-note">命令含 <code>{model}</code> 时需要模型，不含则作为无模型基线；命令不经过 Shell。</p>
+        <p class="form-note">命令含 <code>{model}</code> 时需要模型；使用 <code>{skill}</code> 可注入下拉框选择的 <code>/skill-key</code>。命令不经过 Shell。</p>
         <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="claude-native" /></label>
         <label>Skill 本地配置目录<input v-model.trim="harnessForm.skill_base_dir" placeholder="~/.claude" /><span>Skill 来源自动使用该目录下的 <code>skills/{skill-key}</code></span></label>
-        <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='claude -p "分析 {input}" --model {model}'></textarea></label>
+        <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='claude -p "{skill} 分析 {input}" --model {model}'></textarea></label>
         <div class="form-grid"><label>超时时间（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>并发数<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>
       </section>
@@ -1111,14 +1122,14 @@ export default appOptions;
           </label>
         </fieldset>
         <fieldset v-if="evaluationSelectionGroups.length" class="method-picker">
-          <legend>Harness × 模型（保存时固定当前版本）</legend>
+          <legend>Harness × 模型 × Skill（保存时固定当前版本）</legend>
           <div v-for="group in evaluationSelectionGroups" :key="group.harness.id" class="target-picker-group">
             <strong>{{ group.harness.key }} <small>v{{ group.harness.version }}</small></strong>
-            <label v-for="option in group.options" :key="option.key" class="check-row">
-              <input v-model="scheduleForm.target_selection_keys" type="checkbox" :value="option.key" />
-              <span><strong>{{ option.model?.name || '无模型基线' }}</strong><code>{{ option.model?.argument || 'script-only' }}</code></span>
-            </label>
+            <select v-model="scheduleForm.target_selection_keys" multiple size="8" class="combination-select">
+              <option v-for="option in group.options" :key="option.key" :value="option.key">{{ option.model?.name || '无模型基线' }} · {{ option.skill ? `/${option.skill.key}` : '无 Skill' }}</option>
+            </select>
           </div>
+          <p class="form-note">可使用 Ctrl / Cmd 多选；执行时会固定所选宿主机 Skill 的内部版本。</p>
         </fieldset>
         <fieldset v-else class="method-picker">
           <legend>旧测评方式（固定到当前版本）</legend>

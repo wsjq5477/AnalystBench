@@ -275,7 +275,12 @@ def test_run_now_accepts_script_only_target(tmp_path: Path) -> None:
         assert schedule["method_ids"] == []
         assert schedule["targets"][0]["model"] is None
         assert schedule["target_selections"] == [
-            {"harness_id": harness["id"], "model_id": None}
+            {
+                "harness_id": harness["id"],
+                "model_id": None,
+                "skill_key": None,
+                "skill_package_version_id": None,
+            }
         ]
         assert (
             client.post(f"/api/v1/evaluation-schedules/{schedule['id']}:run-now").status_code

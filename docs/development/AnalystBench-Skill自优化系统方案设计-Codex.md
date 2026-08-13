@@ -30,7 +30,7 @@ Codex 在开始编码前必须：
 
 ### 0.1 已确认产品决策
 
-1. 普通产品流程由冻结 Harness 的 `skill_base_dir` 与 Skill Key 派生源路径：
+1. 普通产品流程只读发现冻结 Harness 的 `skill_base_dir/skills/*/SKILL.md`，并由用户选择明确的 Harness × Model × Skill 组合：
    `<skill_base_dir>/skills/<skill-key>`；`name=<skill-key>`、
    `invoke_as=/<skill-key>`，不再要求用户分别手填；
 2. 每次目标 Agent 运行前，把冻结 Skill 版本安装到该次隔离工作区的项目级 Skill 目录，例如 `<workspace>/.claude/skills/xxx`；
@@ -1763,7 +1763,7 @@ Variant/Version/Binding 身份写进冻结 Target snapshot。Active 变化不得
 - V1 每个 Evaluation Target 只允许一个 Active Skill；优化 Submission/结果默认不进入普通列表和统计，普通取消/删除 API 不能绕过 Experiment 破坏它们；
 - 已实现基础与上下文环境预检，覆盖功能开关、绝对 Managed Root、Git/Runner、迁移、磁盘、Skill/Harness/Target/Profile/Policy/Snapshot 和 Case 日志；
 - 已提供 `/api/v1/skills`、`/api/v1/evaluation-variants`、`/api/v1/skill-optimization/*` 后端接口，以及实验向导、分页 Epoch 流、Evidence、候选、比较、Diff、总账、导出、版本和回滚前端；
-- 普通创建向导从冻结 Harness 的 `skill_base_dir` 与 Skill Key 派生源路径和 `/skill-key`；前端已支持选择 `development_regression` 或 `independent_validation`，并在页面为 Case 编辑 Train/Validation/Hidden/Prospective split；独立模式的 Epoch 输入被锁定为 1；
+- 设置页只读发现宿主机 Skill，普通测评、定时测评和自优化统一选择明确的 Harness × Model × Skill 组合；选择后后端自动建立内部版本。前端支持 `development_regression` 或 `independent_validation`，并在页面为 Case 编辑 Train/Validation/Hidden/Prospective split；独立模式的 Epoch 输入被锁定为 1；
 - 已通过确定性 `/skill` 命令契约并发 E2E：两个冻结版本分别安装到独立 `<workspace>/.claude/skills/<skill>`，并发执行且互不污染。真实 claude E2E 自动发现 PATH 中的 `claude`，也可由 `ANALYSTBENCH_REAL_CLAUDE` 显式指定。
 
 本地代码闭环已覆盖 V1 开发范围。真实 claude 二进制、用户私有 Case 先导实验、
@@ -1831,7 +1831,7 @@ claude 或私有数据已经跑出提升。真实环境证据单列在末尾。
 ### 功能
 
 - [x] 注册和导入 Skill；
-- [x] 普通向导由冻结 Harness `skill_base_dir` + Skill Key 派生源路径、调用名和安装路径；
+- [x] 设置页只读发现冻结 Harness 下的宿主机 Skill，三个执行入口统一使用 Harness × Model × Skill 组合并自动建立内部版本；
 - [x] 每个 Skill 使用与用户仓库隔离的内部 Git；
 - [x] 完整包不可变版本；
 - [x] EvaluationVariant 绑定 Target 与 SkillVersion，并校验 Harness Key；

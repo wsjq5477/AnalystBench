@@ -951,6 +951,9 @@ class EvaluationSchedule(TimestampedModel, Base):
     case_paths_json: Mapped[str] = mapped_column(Text, default="[]")
     method_ids_json: Mapped[str] = mapped_column(Text)
     target_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    target_selections_json: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]"
+    )
     judge_runner: Mapped[str] = mapped_column(String(32))
     timezone: Mapped[str] = mapped_column(String(100))
     local_time: Mapped[str] = mapped_column(String(5))

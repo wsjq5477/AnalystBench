@@ -75,6 +75,7 @@ export default {
       evaluationHarnesses: [],
       evaluationModels: [],
       evaluationTargets: [],
+      hostSkills: [],
       evaluationSubmissions: [],
       evaluationSchedules: [],
       selectedSubmissionId: "",
@@ -185,10 +186,7 @@ export default {
       optimizationCandidateDetail: null,
       optimizationForm: {
         name: "",
-        skill_mode: "new",
-        skill_id: "",
-        skill_key: "",
-        harness_key: "",
+        combination_key: "",
         evaluation_target_id: "",
         data_mode: "development_regression",
         case_paths: [],
@@ -243,25 +241,36 @@ export default {
     },
     evaluationSelectionGroups() {
       return this.frozenEvaluationHarnesses
-        .map((harness) => ({
-          harness,
-          options:
+        .map((harness) => {
+          const models =
             harness.model_policy === "none"
-              ? [
-                  {
-                    key: this.targetSelectionKey(harness.id, null),
-                    harness_id: harness.id,
-                    model_id: null,
-                    model: null,
-                  },
-                ]
-              : this.frozenEvaluationModels.map((model) => ({
-                  key: this.targetSelectionKey(harness.id, model.id),
-                  harness_id: harness.id,
-                  model_id: model.id,
-                  model,
-                })),
-        }))
+              ? [null]
+              : this.frozenEvaluationModels;
+          const skills = [
+            null,
+            ...this.hostSkills.filter(
+              (skill) =>
+                skill.harness_id === harness.id && skill.selectable,
+            ),
+          ];
+          return {
+            harness,
+            options: models.flatMap((model) =>
+              skills.map((skill) => ({
+                key: this.targetSelectionKey(
+                  harness.id,
+                  model?.id || null,
+                  skill?.key || null,
+                ),
+                harness_id: harness.id,
+                model_id: model?.id || null,
+                skill_key: skill?.key || null,
+                model,
+                skill,
+              })),
+            ),
+          };
+        })
         .filter((group) => group.options.length);
     },
     allEvaluationSelectionKeys() {
@@ -667,51 +676,34 @@ export default {
         (item) => item.status === "frozen" && item.materialized_method_id,
       );
     },
-    skillOptimizationHarnesses() {
-      const seenKeys = new Set();
-      return this.frozenEvaluationHarnesses.filter((item) => {
-        if (!item.skill_base_dir || seenKeys.has(item.key)) return false;
-        seenKeys.add(item.key);
-        return true;
-      });
+    optimizationCombinationOptions() {
+      return this.frozenOptimizationTargets.flatMap((target) =>
+        this.hostSkills
+          .filter(
+            (skill) =>
+              skill.harness_id === target.harness?.id && skill.selectable,
+          )
+          .map((skill) => ({
+            key: `${target.id}|${skill.key}`,
+            target,
+            skill,
+            label: `${target.harness?.key || "Harness"} · ${
+              target.model?.name || "无模型基线"
+            } · /${skill.key}`,
+          })),
+      );
     },
-    compatibleOptimizationTargets() {
-      if (this.optimizationForm.skill_mode === "new") {
-        const harness = this.skillOptimizationHarnesses.find(
-          (item) => item.key === this.optimizationForm.harness_key,
-        );
-        if (!harness) return [];
-        return this.frozenOptimizationTargets.filter(
-          (item) => item.harness?.id === harness.id,
-        );
-      }
-      const harnessKey = this.skills.find(
-        (item) => item.id === this.optimizationForm.skill_id,
-      )?.harness_key;
-      if (!harnessKey) return this.frozenOptimizationTargets;
-      return this.frozenOptimizationTargets.filter(
-        (item) => item.harness?.key === harnessKey,
+    selectedOptimizationCombination() {
+      return this.optimizationCombinationOptions.find(
+        (item) => item.key === this.optimizationForm.combination_key,
       );
     },
     optimizationInvokeAs() {
-      if (this.optimizationForm.skill_mode === "existing") {
-        return (
-          this.skills.find(
-            (item) => item.id === this.optimizationForm.skill_id,
-          )?.invoke_as || "/skill-name"
-        );
-      }
-      const skillKey = this.optimizationForm.skill_key.trim();
+      const skillKey = this.selectedOptimizationCombination?.skill?.key;
       return skillKey ? `/${skillKey}` : "/skill-name";
     },
     optimizationSourcePath() {
-      if (this.optimizationForm.skill_mode !== "new") return "";
-      const harness = this.skillOptimizationHarnesses.find(
-        (item) => item.key === this.optimizationForm.harness_key,
-      );
-      const skillKey = this.optimizationForm.skill_key.trim();
-      if (!harness?.skill_base_dir || !skillKey) return "";
-      return `${harness.skill_base_dir.replace(/[\\/]+$/, "")}/skills/${skillKey}`;
+      return this.selectedOptimizationCombination?.skill?.source_path || "";
     },
     selectedOptimizationExperiment() {
       return this.optimizationExperiments.find(
@@ -1303,16 +1295,19 @@ export default {
     },
     async loadEvaluationCatalog() {
       try {
-        const [harnesses, models] = await Promise.all([
+        const [harnesses, models, hostSkills] = await Promise.all([
           analystBenchApi.listEvaluationHarnesses(),
           analystBenchApi.listEvaluationModels(),
+          analystBenchApi.listHostSkills().catch(() => []),
         ]);
         this.evaluationHarnesses = harnesses;
         this.evaluationModels = models;
+        this.hostSkills = hostSkills;
         this.connection = "connected";
       } catch {
         this.evaluationHarnesses = [];
         this.evaluationModels = [];
+        this.hostSkills = [];
       }
     },
     openHarnessDialog(harness = null) {
@@ -1601,13 +1596,17 @@ export default {
     scheduleCasePath(caseItem) {
       return `${this.scheduleForm.dataset_key}/${caseItem.category}/${caseItem.key}`;
     },
-    targetSelectionKey(harnessId, modelId) {
-      return `${harnessId}|${modelId || ""}`;
+    targetSelectionKey(harnessId, modelId, skillKey = null) {
+      return `${harnessId}|${modelId || ""}|${skillKey || ""}`;
     },
     targetSelectionPayload(keys) {
       return keys.map((key) => {
-        const [harness_id, modelId] = key.split("|");
-        return { harness_id, model_id: modelId || null };
+        const [harness_id, modelId, skillKey] = key.split("|");
+        return {
+          harness_id,
+          model_id: modelId || null,
+          skill_key: skillKey || null,
+        };
       });
     },
     resetScheduleCaseSelection() {
@@ -1631,7 +1630,11 @@ export default {
       this.editingScheduleId = schedule ? schedule.id : "";
       const scheduleSelectionKeys = schedule
         ? (schedule.target_selections || []).map((selection) =>
-            this.targetSelectionKey(selection.harness_id, selection.model_id),
+            this.targetSelectionKey(
+              selection.harness_id,
+              selection.model_id,
+              selection.skill_key,
+            ),
           )
         : [];
       this.scheduleForm = schedule
@@ -2424,18 +2427,12 @@ export default {
       const readyCases = this.optimizationCaseOptions
         .filter((item) => item.ready)
         .map((item) => item.path);
-      const defaultHarness = this.skillOptimizationHarnesses[0];
-      const defaultTarget = this.frozenOptimizationTargets.find(
-        (item) => item.harness?.id === defaultHarness?.id,
-      );
+      const defaultCombination = this.optimizationCombinationOptions[0];
       this.optimizationDialogStep = 1;
       this.optimizationForm = {
         name: `Skill 优化 ${new Date().toLocaleDateString()}`,
-        skill_mode: "new",
-        skill_id: "",
-        skill_key: "",
-        harness_key: defaultHarness?.key || "",
-        evaluation_target_id: defaultTarget?.id || "",
+        combination_key: defaultCombination?.key || "",
+        evaluation_target_id: defaultCombination?.target?.id || "",
         data_mode: "development_regression",
         case_paths: readyCases,
         train_case_paths: [],
@@ -2497,27 +2494,15 @@ export default {
         this.optimizationForm.max_epochs = 1;
       }
     },
-    syncOptimizationHarnessKey() {
-      const target = this.frozenOptimizationTargets.find(
-        (item) => item.id === this.optimizationForm.evaluation_target_id,
-      );
-      if (target?.harness?.key && this.optimizationForm.skill_mode === "new") {
-        this.optimizationForm.harness_key = target.harness.key;
-      }
-    },
-    syncOptimizationTarget() {
-      const currentTarget = this.compatibleOptimizationTargets.find(
-        (item) => item.id === this.optimizationForm.evaluation_target_id,
-      );
-      if (!currentTarget) {
-        this.optimizationForm.evaluation_target_id =
-          this.compatibleOptimizationTargets[0]?.id || "";
-      }
+    syncOptimizationCombination() {
+      this.optimizationForm.evaluation_target_id =
+        this.selectedOptimizationCombination?.target?.id || "";
     },
     async createOptimizationExperiment() {
       const form = this.optimizationForm;
-      if (!form.name || !form.evaluation_target_id) {
-        this.showToast("请填写实验名称并选择 Evaluation Target");
+      const combination = this.selectedOptimizationCombination;
+      if (!form.name || !combination) {
+        this.showToast("请填写实验名称并选择 Harness × 模型 × Skill 组合");
         return;
       }
       if (
@@ -2534,15 +2519,6 @@ export default {
         this.showToast("独立验证模式必须同时选择 Train 和 Validation Case");
         return;
       }
-      if (
-        form.skill_mode === "new" &&
-        (!form.skill_key ||
-          !form.harness_key ||
-          !this.optimizationSourcePath)
-      ) {
-        this.showToast("请填写 Skill Key，并选择已配置 Skill 目录的 Harness Key");
-        return;
-      }
       const datasets = new Set(
         this.optimizationSelectedCasePaths.map((item) => item.split("/")[0]),
       );
@@ -2552,6 +2528,12 @@ export default {
       }
       this.optimizationSaving = true;
       try {
+        const adopted = await analystBenchApi.adoptHostSkill({
+          harness_id: combination.target.harness.id,
+          key: combination.skill.key,
+        });
+        const skillId = adopted.skill.id;
+        const skillKey = adopted.skill.key;
         const snapshot = await analystBenchApi.createOptimizationSnapshot({
           dataset_key: [...datasets][0],
           mode: form.data_mode,
@@ -2572,46 +2554,12 @@ export default {
               ? form.prospective_holdout_case_paths
               : [],
         });
-        let skillId = form.skill_id;
-        let baseVersionId = "";
-        let skillKey = form.skill_key;
-        if (form.skill_mode === "new") {
-          const created = await analystBenchApi.createSkill({
-            key: form.skill_key,
-            name: form.skill_key,
-            source_path: this.optimizationSourcePath,
-            invoke_as: `/${form.skill_key}`,
-            harness_key: form.harness_key,
-            install_relative_path: `.claude/skills/${form.skill_key}`,
-            editable_paths: [
-              "SKILL.md",
-              "references/*.md",
-              "references/**/*.md",
-            ],
-            import_initial_version: true,
-          });
-          skillId = created.skill.id;
-          baseVersionId = created.initial_version.id;
-          skillKey = created.skill.key;
-        } else {
-          const skill = this.skills.find((item) => item.id === skillId);
-          const [bindings, versions] = await Promise.all([
-            analystBenchApi.listSkillBindings(skillId),
-            analystBenchApi.listSkillVersions(skillId),
-          ]);
-          const binding = bindings.find(
-            (item) =>
-              item.evaluation_target_id === form.evaluation_target_id,
-          );
-          const initialVersion = [...versions]
-            .filter((item) => !item.parent_version_id)
-            .sort((left, right) => left.version - right.version)[0];
-          if (!skill || (!binding?.active_version_id && !initialVersion)) {
-            throw new Error("所选 Skill 没有可用的 Active 或初始版本");
-          }
-          baseVersionId = binding?.active_version_id || initialVersion.id;
-          skillKey = skill.key;
-        }
+        const bindings = await analystBenchApi.listSkillBindings(skillId);
+        const binding = bindings.find(
+          (item) => item.evaluation_target_id === combination.target.id,
+        );
+        const baseVersionId =
+          binding?.active_version_id || adopted.initial_version.id;
         const profile = await analystBenchApi.createExecutionProfile({
           name: `${skillKey}-optimizer`,
           runner: form.optimizer_runner,
@@ -2666,7 +2614,7 @@ export default {
         });
         const preflight = await analystBenchApi.runOptimizationPreflight({
           skill_key: skillKey,
-          evaluation_target_id: form.evaluation_target_id,
+          evaluation_target_id: combination.target.id,
           execution_profile_id: profile.id,
           optimizer_policy_version_id: policy.id,
           verifier_bundle_version_id: verifier.id,
@@ -2695,7 +2643,7 @@ export default {
           name: form.name,
           skill_id: skillId,
           base_skill_version_id: baseVersionId,
-          evaluation_target_id: form.evaluation_target_id,
+          evaluation_target_id: combination.target.id,
           data_snapshot_id: snapshot.id,
           optimizer_policy_version_id: policy.id,
           verifier_bundle_version_id: verifier.id,

@@ -360,6 +360,104 @@ def test_normal_target_submission_freezes_the_current_active_skill_version(
     ]
 
 
+def test_host_skill_discovery_and_explicit_evaluation_selection_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory = configured(tmp_path)
+    write_case(settings, "kernel/panic/case-1")
+    skill_base_dir = tmp_path / "host-claude"
+    write_skill(
+        skill_base_dir / "skills" / "crash",
+        "# Crash\n\nAnalyze crash evidence.\n",
+    )
+    harness_id = str(uuid4())
+    method_id = str(uuid4())
+    target_id = str(uuid4())
+    with transaction(session_factory) as session:  # type: ignore[arg-type]
+        session.add_all(
+            [
+                EvaluationHarness(
+                    id=harness_id,
+                    harness_key="claude",
+                    name="claude",
+                    version_number=1,
+                    model_policy="none",
+                    command_template='claude -p "{skill} analyze {input}"',
+                    skill_base_dir=str(skill_base_dir),
+                    status="frozen",
+                    content_hash=f"sha256:{'a' * 64}",
+                ),
+                EvaluationMethod(
+                    id=method_id,
+                    method_key="claude",
+                    name="claude",
+                    version_number=1,
+                    command_template='claude -p "analyze {input}"',
+                    status="frozen",
+                    content_hash=f"sha256:{'b' * 64}",
+                    last_probe_json='{"available":true}',
+                ),
+                EvaluationTarget(
+                    id=target_id,
+                    target_key="claude",
+                    version_number=1,
+                    harness_id=harness_id,
+                    status="frozen",
+                    content_hash=f"sha256:{'c' * 64}",
+                    materialized_method_id=method_id,
+                ),
+            ]
+        )
+
+    registry = SkillRegistryService(session_factory, settings)  # type: ignore[arg-type]
+    discovered = registry.discover_host_skills()
+    assert [(item["key"], item["status"]) for item in discovered] == [
+        ("crash", "available")
+    ]
+    first_skill, first_version = registry.adopt_host_skill(
+        harness_id=harness_id,
+        skill_key="crash",
+    )
+    second_skill, second_version = registry.adopt_host_skill(
+        harness_id=harness_id,
+        skill_key="crash",
+    )
+    assert second_skill.id == first_skill.id
+    assert second_version.id == first_version.id
+    assert registry.discover_host_skills()[0]["status"] == "managed"
+
+    submissions = EvaluationSubmissionService(
+        session_factory, settings  # type: ignore[arg-type]
+    )
+    baseline_methods, _, baseline_snapshots, _ = (
+        submissions.resolve_target_selections(
+            [{"harness_id": harness_id, "model_id": None, "skill_key": None}]
+        )
+    )
+    assert baseline_methods == [method_id]
+    assert baseline_snapshots[0]["skill_resolution"] == "explicit_no_skill"
+
+    skill_methods, _, skill_snapshots, normalized = (
+        submissions.resolve_target_selections(
+            [
+                {
+                    "harness_id": harness_id,
+                    "model_id": None,
+                    "skill_key": "crash",
+                }
+            ]
+        )
+    )
+    assert skill_methods != [method_id]
+    assert skill_snapshots[0]["active_skill"]["skill_key"] == "crash"
+    assert normalized[0]["skill_key"] == "crash"
+    assert normalized[0]["skill_package_version_id"] == first_version.id
+    with transaction(session_factory) as session:  # type: ignore[arg-type]
+        variant_method = session.get(EvaluationMethod, skill_methods[0])
+        assert variant_method is not None
+        assert variant_method.command_template == 'claude -p "/crash analyze {input}"'
+
+
 def test_paired_gate_keeps_four_case_regression_provisional() -> None:
     observations: list[RunObservation] = []
     for case_index in range(4):

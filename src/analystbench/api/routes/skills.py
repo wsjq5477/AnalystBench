@@ -27,19 +27,11 @@ SKILL_VERSION_EXPORT_RESPONSES = {
 }
 
 
-class SkillCreate(BaseModel):
+class HostSkillAdopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    harness_id: str = Field(min_length=1)
     key: str = Field(min_length=1, max_length=64)
-    name: str = Field(min_length=1, max_length=255)
-    source_path: str = Field(min_length=1)
-    invoke_as: str | None = Field(default=None, min_length=2, max_length=64)
-    harness_key: str = Field(default="claude", min_length=1, max_length=100)
-    install_relative_path: str | None = None
-    description: str = ""
-    editable_paths: list[str] = Field(default_factory=lambda: ["SKILL.md"])
-    limits: dict[str, int] = Field(default_factory=dict)
-    import_initial_version: bool = True
 
 
 class SkillImport(BaseModel):
@@ -132,28 +124,20 @@ def binding_view(item: Any) -> dict[str, Any]:
     }
 
 
-@router.post("/skills", status_code=status.HTTP_201_CREATED)
-def create_skill(payload: SkillCreate, request: Request) -> dict[str, Any]:
-    values = payload.model_dump(exclude={"key", "import_initial_version"})
-    item = registry(request).create(
+@router.get("/host-skills")
+def list_host_skills(request: Request) -> list[dict[str, Any]]:
+    return registry(request).discover_host_skills()
+
+
+@router.post("/host-skills:adopt", status_code=status.HTTP_200_OK)
+def adopt_host_skill(payload: HostSkillAdopt, request: Request) -> dict[str, Any]:
+    skill, version = registry(request).adopt_host_skill(
+        harness_id=payload.harness_id,
         skill_key=payload.key,
-        require_harness_source=True,
-        **values,
     )
-    try:
-        version = (
-            registry(request).import_version(item.id, source_type="initial")
-            if payload.import_initial_version
-            else None
-        )
-    except Exception:
-        registry(request).discard_empty(item.id)
-        raise
     return {
-        "skill": SkillRegistryService.skill_view(item),
-        "initial_version": (
-            SkillRegistryService.version_view(version) if version is not None else None
-        ),
+        "skill": SkillRegistryService.skill_view(skill),
+        "initial_version": SkillRegistryService.version_view(version),
     }
 
 

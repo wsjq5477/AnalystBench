@@ -1463,6 +1463,13 @@ a:focus-visible,
   color: var(--text-muted);
   font-weight: 400;
 }
+.combination-select {
+  min-height: 132px;
+  padding: 6px;
+}
+.combination-select option {
+  padding: 7px 8px;
+}
 .target-comparison-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

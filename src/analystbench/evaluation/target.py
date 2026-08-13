@@ -30,7 +30,7 @@ from analystbench.storage.content import canonical_json, content_hash
 KEY_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9)])?$")
 RESERVED_KEYS = {"result", "run", "inputs", "artifacts", "_artifacts", "logs"}
 BASE_PLACEHOLDERS = {"input", "input_dir", "workspace", "tool_dir"}
-ALL_PLACEHOLDERS = BASE_PLACEHOLDERS | {"model"}
+ALL_PLACEHOLDERS = BASE_PLACEHOLDERS | {"model", "skill"}
 SHELL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "2>", "2>>"}
 
 
@@ -734,6 +734,7 @@ class EvaluationTargetService:
             if harness.model_policy == "required":
                 assert stored.model_argument
                 command_template = command_template.replace("{model}", stored.model_argument)
+            command_template = command_template.replace("{skill}", "")
             method_manifest = {
                 "target_id": stored.id,
                 "target_key": stored.target_key,
