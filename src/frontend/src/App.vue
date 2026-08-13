@@ -597,9 +597,44 @@ export default appOptions;
                   </div>
                 </div>
                 <div class="heading-actions">
+                  <button class="ghost-button" :disabled="optimizationPreflightRunning" @click="runOptimizationPreflight">{{ optimizationPreflightRunning ? '预检中…' : '环境预检' }}</button>
+                  <button class="ghost-button" :disabled="Boolean(optimizationExportFormat)" @click="exportOptimizationLedger('json')">{{ optimizationExportFormat === 'json' ? '导出中…' : '导出 JSON' }}</button>
+                  <button class="ghost-button" :disabled="Boolean(optimizationExportFormat)" @click="exportOptimizationLedger('markdown')">{{ optimizationExportFormat === 'markdown' ? '导出中…' : 'Markdown' }}</button>
+                  <button class="ghost-button" :disabled="Boolean(optimizationExportFormat)" @click="exportOptimizationLedger('csv')">{{ optimizationExportFormat === 'csv' ? '导出中…' : 'CSV' }}</button>
                   <button v-if="selectedOptimizationDetail.experiment.status === 'created'" class="primary-button" @click="startOptimizationExperiment(selectedOptimizationDetail.experiment)">启动</button>
                   <button v-if="selectedOptimizationDetail.experiment.status === 'failed'" class="primary-button" @click="resumeOptimizationExperiment(selectedOptimizationDetail.experiment)">从断点恢复</button>
                   <button v-if="selectedOptimizationDetail.experiment.status === 'running'" class="ghost-button danger-button" @click="cancelOptimizationExperiment(selectedOptimizationDetail.experiment)">取消</button>
+                </div>
+              </section>
+
+              <section class="surface optimization-ledger-summary">
+                <div class="panel-heading"><h2>优化总账</h2><span>只使用持久化配对评测分数</span></div>
+                <div class="optimization-summary-grid">
+                  <article><span>INITIAL SCORE</span><strong>{{ selectedOptimizationDetail.summary?.initial_score ?? '—' }}</strong></article>
+                  <article><span>ACTIVE PATH SCORE</span><strong>{{ selectedOptimizationDetail.summary?.active_path_score ?? selectedOptimizationDetail.summary?.final_score ?? '—' }}</strong></article>
+                  <article><span>CUMULATIVE DELTA</span><strong :class="{ 'delta-positive': selectedOptimizationDetail.summary?.cumulative_delta > 0, 'delta-negative': selectedOptimizationDetail.summary?.cumulative_delta < 0 }">{{ signedDelta(selectedOptimizationDetail.summary?.cumulative_delta) }}</strong></article>
+                  <article><span>PROMOTED / RETAINED</span><strong>{{ selectedOptimizationDetail.summary?.promoted_epochs ?? 0 }} / {{ selectedOptimizationDetail.summary?.retained_epochs ?? 0 }}</strong></article>
+                </div>
+              </section>
+
+              <section v-if="optimizationPreflight" class="surface optimization-preflight">
+                <div class="panel-heading"><h2>私有环境预检</h2><span :class="optimizationStatusClass(optimizationPreflight.status === 'PASS' ? 'pass' : optimizationPreflight.status === 'FAIL' ? 'failed' : 'running')">{{ optimizationPreflight.status }}</span></div>
+                <div class="preflight-checks">
+                  <div v-for="check in optimizationPreflight.checks" :key="check.code"><code>{{ check.code }}</code><span :class="optimizationStatusClass(check.status === 'PASS' ? 'pass' : check.status === 'FAIL' ? 'failed' : 'running')">{{ check.status }}</span><p>{{ check.message }}</p></div>
+                  <p v-if="!optimizationPreflight.checks?.length" class="optimization-inline-empty">预检未返回检查项。</p>
+                </div>
+              </section>
+
+              <section class="surface optimization-versions">
+                <div class="panel-heading"><h2>Managed Skill 版本</h2><span>原始来源目录不会被修改</span></div>
+                <div class="optimization-version-list">
+                  <div v-for="version in selectedOptimizationVersions" :key="version.id">
+                    <span><strong>v{{ version.version }}</strong><code :title="version.package_hash">{{ version.package_hash }}</code></span>
+                    <span :class="optimizationStatusClass(selectedOptimizationBinding?.active_version_id === version.id ? 'pass' : optimizationRollbackVersionIds.has(version.id) ? 'completed' : version.status)">{{ optimizationVersionTargetLabel(version) }}</span>
+                    <button class="text-button" :disabled="Boolean(optimizationVersionActionId)" @click="exportOptimizationVersion(version)">{{ optimizationVersionActionId === `export:${version.id}` ? '导出中…' : '导出 ZIP' }}</button>
+                    <button v-if="selectedOptimizationBinding && selectedOptimizationBinding.active_version_id !== version.id && optimizationRollbackVersionIds.has(version.id)" class="text-button" :disabled="Boolean(optimizationVersionActionId)" @click="rollbackOptimizationVersion(version)">{{ optimizationVersionActionId === `rollback:${version.id}` ? '回滚中…' : '显式回滚' }}</button>
+                  </div>
+                  <p v-if="!selectedOptimizationVersions.length" class="optimization-inline-empty">尚无 Managed Skill 版本。</p>
                 </div>
               </section>
 
@@ -608,6 +643,60 @@ export default appOptions;
                   <div><span class="epoch-number">E{{ epoch.number }}</span><div><h3>Epoch {{ epoch.number }}</h3><small>Parent {{ epoch.parent_skill_version_id }}</small></div></div>
                   <div><span :class="optimizationStatusClass(epoch.status)">{{ optimizationStatusLabel(epoch.status) }}</span><small v-if="epoch.decision">决策：{{ epoch.decision }}</small></div>
                 </div>
+
+                <div v-if="epoch.summary?.epoch_id" class="optimization-epoch-summary">
+                  <div class="panel-heading"><h3>本轮做了什么，分数如何变化</h3><span>{{ epoch.summary.decision?.action || epoch.decision }}</span></div>
+                  <div class="optimization-summary-grid">
+                    <article><span>BASELINE</span><strong>{{ epoch.summary.baseline_score ?? '—' }}</strong></article>
+                    <article><span>CANDIDATE</span><strong>{{ epoch.summary.candidate_score ?? '—' }}</strong></article>
+                    <article><span>EPOCH DELTA</span><strong :class="{ 'delta-positive': epoch.summary.epoch_delta > 0, 'delta-negative': epoch.summary.epoch_delta < 0 }">{{ signedDelta(epoch.summary.epoch_delta) }}</strong></article>
+                    <article><span>CUMULATIVE</span><strong :class="{ 'delta-positive': epoch.summary.cumulative_delta > 0, 'delta-negative': epoch.summary.cumulative_delta < 0 }">{{ signedDelta(epoch.summary.cumulative_delta) }}</strong></article>
+                  </div>
+                  <p v-if="epoch.summary.selected_candidate?.intent?.rationale">修改理由：{{ epoch.summary.selected_candidate.intent.rationale }}</p>
+                  <div v-if="epoch.summary.selected_candidate?.intent" class="candidate-intent">
+                    <span v-if="epoch.summary.selected_candidate.intent.change_type">变更类型：{{ epoch.summary.selected_candidate.intent.change_type }}</span>
+                    <span v-if="epoch.summary.selected_candidate.intent.failure_clusters?.length">目标 Failure：{{ epoch.summary.selected_candidate.intent.failure_clusters.join('、') }}</span>
+                    <span v-if="epoch.summary.selected_candidate.intent.expected_dimensions?.length">预期 Dimension：{{ epoch.summary.selected_candidate.intent.expected_dimensions.join('、') }}</span>
+                    <span v-if="epoch.summary.selected_candidate.intent.protected_behaviors?.length">保护行为：{{ epoch.summary.selected_candidate.intent.protected_behaviors.join('、') }}</span>
+                  </div>
+                  <div v-if="epoch.summary.changes" class="change-facts">
+                    <span>文件：{{ (epoch.summary.changes.files || []).join('、') || '无' }}</span>
+                    <span>操作：{{ epoch.summary.changes.operation_count ?? '—' }}</span>
+                    <span>Token：{{ optimizationTokenChanges(epoch.summary.changes) }}</span>
+                  </div>
+                  <div v-if="epoch.summary.case_deltas?.length" class="optimization-delta-section">
+                    <h4>Case 变化</h4>
+                    <div class="optimization-table-scroll">
+                      <table>
+                        <thead><tr><th>CASE / FAMILY</th><th>BASELINE</th><th>CANDIDATE</th><th>DELTA</th></tr></thead>
+                        <tbody><tr v-for="item in epoch.summary.case_deltas" :key="`${epoch.id}:${item.case_path}`"><td>{{ item.case_family || '—' }}<small>{{ item.case_path || '—' }}</small></td><td>{{ item.baseline_score ?? '—' }}</td><td>{{ item.candidate_score ?? '—' }}</td><td :class="{ 'delta-positive': item.delta > 0, 'delta-negative': item.delta < 0 }">{{ signedDelta(item.delta) }}</td></tr></tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div v-if="optimizationObjectRows(epoch.summary.family_deltas).length || optimizationObjectRows(epoch.summary.dimension_deltas).length" class="optimization-delta-grid">
+                    <div class="optimization-delta-section">
+                      <h4>Failure Family 变化</h4>
+                      <p v-if="!optimizationObjectRows(epoch.summary.family_deltas).length" class="optimization-inline-empty">无可用 Family Delta。</p>
+                      <div v-else class="optimization-compact-deltas"><span v-for="row in optimizationObjectRows(epoch.summary.family_deltas)" :key="row.key"><code>{{ row.key }}</code><strong :class="{ 'delta-positive': row.value > 0, 'delta-negative': row.value < 0 }">{{ signedDelta(row.value) }}</strong></span></div>
+                    </div>
+                    <div class="optimization-delta-section">
+                      <h4>Dimension 变化</h4>
+                      <p v-if="!optimizationObjectRows(epoch.summary.dimension_deltas).length" class="optimization-inline-empty">无可用 Dimension Delta。</p>
+                      <div v-else class="optimization-compact-deltas"><span v-for="row in optimizationObjectRows(epoch.summary.dimension_deltas)" :key="row.key"><code>{{ row.key }}</code><strong :class="{ 'delta-positive': row.value > 0, 'delta-negative': row.value < 0 }">{{ signedDelta(row.value) }}</strong></span></div>
+                    </div>
+                  </div>
+                  <div v-if="epoch.summary.gate" class="optimization-gate-summary">
+                    <h4>Promotion Gate</h4>
+                    <span :class="optimizationStatusClass(epoch.summary.gate.verdict)">{{ optimizationStatusLabel(epoch.summary.gate.verdict) }}</span>
+                    <code v-if="epoch.summary.gate.active_level">Active Level · {{ epoch.summary.gate.active_level }}</code>
+                    <ul v-if="epoch.summary.gate.reasons?.length"><li v-for="(reason, reasonIndex) in epoch.summary.gate.reasons" :key="`${epoch.id}:gate:${reasonIndex}`">{{ optimizationReasonLabel(reason) }}</li></ul>
+                  </div>
+                  <div v-if="epoch.summary.rejections?.length" class="optimization-rejections">
+                    <h4>拒绝记录</h4>
+                    <div v-for="rejection in epoch.summary.rejections" :key="rejection.candidate_id"><code>{{ rejection.candidate_id }}</code><strong>{{ rejection.code || 'rejected' }}</strong><span v-if="optimizationRejectionMessage(rejection)">{{ optimizationRejectionMessage(rejection) }}</span></div>
+                  </div>
+                </div>
+                <p v-else-if="epoch.status === 'completed'" class="optimization-inline-empty optimization-summary-missing">该历史 Epoch 尚无持久化总结；请刷新或执行一次恢复以回填。</p>
 
                 <div class="optimization-flow" aria-label="优化阶段">
                   <span :class="{ done: epoch.evidence?.case_count }">Evidence</span>
@@ -641,6 +730,20 @@ export default appOptions;
                       <span :class="optimizationStatusClass(candidate.status)">{{ optimizationStatusLabel(candidate.status) }}</span>
                     </div>
                     <p>{{ candidate.rationale || 'Optimizer 未提供说明。' }}</p>
+                    <div v-if="candidate.intent && Object.keys(candidate.intent).length" class="candidate-intent">
+                      <span>方向：{{ candidate.intent.change_type }}</span>
+                      <span v-if="candidate.intent.target_failure_families?.length">目标 Family：{{ candidate.intent.target_failure_families.join('、') }}</span>
+                      <span v-if="candidate.intent.target_dimensions?.length">目标 Dimension：{{ candidate.intent.target_dimensions.join('、') }}</span>
+                      <span v-if="candidate.intent.target_failure_tags?.length">目标 Failure Tag：{{ candidate.intent.target_failure_tags.join('、') }}</span>
+                      <span v-if="candidate.intent.protected_behaviors?.length">保护行为：{{ candidate.intent.protected_behaviors.join('、') }}</span>
+                    </div>
+                    <div v-if="hasOptimizationChangeStats(candidate.change_stats)" class="change-facts">
+                      <span>{{ candidate.change_stats.changed_files?.length || 0 }} 文件</span>
+                      <span>{{ candidate.change_stats.operation_count ?? '—' }} 操作</span>
+                      <span>{{ optimizationTokenChanges(candidate.change_stats) }} Token</span>
+                      <span v-if="candidate.change_stats.changed_files?.length">{{ candidate.change_stats.changed_files.join('、') }}</span>
+                      <span v-if="candidate.change_stats.static_validation?.status">Static Verifier：{{ candidate.change_stats.static_validation.status }}</span>
+                    </div>
                     <div v-if="candidateComparison(candidate, 'screening')" class="candidate-metrics">
                       <span>SCREENING DELTA <strong>{{ signedDelta(candidateComparison(candidate, 'screening').metrics.overall_delta) }}</strong></span>
                       <span>FAMILY <strong>{{ optimizationObjectRows(candidateComparison(candidate, 'screening').metrics.family_deltas).length }}</strong></span>
@@ -649,7 +752,7 @@ export default appOptions;
                       <span>FULL DELTA <strong>{{ signedDelta(candidateComparison(candidate, 'paired_repeated_validation').metrics.overall_delta) }}</strong></span>
                       <span>REPEATS <strong>{{ candidateComparison(candidate, 'paired_repeated_validation').metrics.repeat_count }}</strong></span>
                     </div>
-                    <span v-if="candidate.rejection_code" class="candidate-rejection">{{ candidate.rejection_code }}</span>
+                    <span v-if="candidate.rejection_code" class="candidate-rejection">{{ candidate.rejection_code }}<template v-if="optimizationRejectionMessage(candidate)"> · {{ optimizationRejectionMessage(candidate) }}</template></span>
                     <button class="ghost-button" @click="openOptimizationCandidate(candidate)">查看 Patch 与 Diff</button>
                   </article>
                 </div>
@@ -657,6 +760,7 @@ export default appOptions;
                 <div v-for="candidate in epoch.candidates" :key="`cmp-${candidate.id}`">
                   <section v-if="candidateComparison(candidate, 'paired_repeated_validation')" class="comparison-breakdown">
                     <div class="panel-heading"><h3>候选比较</h3><span :class="optimizationStatusClass(candidateComparison(candidate, 'paired_repeated_validation').gate.verdict)">{{ candidateComparison(candidate, 'paired_repeated_validation').gate.verdict }}</span></div>
+                    <ul v-if="candidateComparison(candidate, 'paired_repeated_validation').gate.reasons?.length" class="optimization-gate-reasons"><li v-for="(reason, reasonIndex) in candidateComparison(candidate, 'paired_repeated_validation').gate.reasons" :key="`${candidate.id}:reason:${reasonIndex}`">{{ optimizationReasonLabel(reason) }}</li></ul>
                     <div class="evidence-grid">
                       <table>
                         <thead><tr><th>CASE / FAMILY</th><th>BASELINE</th><th>CANDIDATE</th><th>DELTA</th></tr></thead>
@@ -667,9 +771,16 @@ export default appOptions;
                         <tbody><tr v-for="row in optimizationObjectRows(candidateComparison(candidate, 'paired_repeated_validation').metrics.dimension_deltas)" :key="row.key"><td>{{ row.key }}</td><td :class="{ 'delta-positive': row.value > 0, 'delta-negative': row.value < 0 }">{{ signedDelta(row.value) }}</td></tr></tbody>
                       </table>
                     </div>
+                    <div v-if="optimizationObjectRows(candidateComparison(candidate, 'paired_repeated_validation').metrics.family_deltas).length" class="optimization-compact-deltas"><span v-for="row in optimizationObjectRows(candidateComparison(candidate, 'paired_repeated_validation').metrics.family_deltas)" :key="row.key"><code>{{ row.key }}</code><strong :class="{ 'delta-positive': row.value > 0, 'delta-negative': row.value < 0 }">{{ signedDelta(row.value) }}</strong></span></div>
                   </section>
                 </div>
               </section>
+
+              <div v-if="selectedOptimizationDetail.pagination?.total > selectedOptimizationDetail.pagination?.limit" class="optimization-pagination">
+                <button class="ghost-button" :disabled="!selectedOptimizationDetail.pagination.has_more" @click="loadOptimizationEpochPage(optimizationEpochOffset + optimizationEpochLimit)">更早 Epoch</button>
+                <span>{{ optimizationEpochOffset + 1 }}–{{ Math.min(optimizationEpochOffset + selectedOptimizationDetail.epochs.length, selectedOptimizationDetail.pagination.total) }} / {{ selectedOptimizationDetail.pagination.total }}</span>
+                <button class="ghost-button" :disabled="optimizationEpochOffset === 0" @click="loadOptimizationEpochPage(Math.max(0, optimizationEpochOffset - optimizationEpochLimit))">较新 Epoch</button>
+              </div>
 
               <section v-if="optimizationCandidateDetail" class="surface optimization-diff">
                 <div class="panel-heading"><h2>候选 Patch 与 Diff</h2><button class="text-button" @click="optimizationCandidateDetail = null">关闭</button></div>
@@ -701,25 +812,49 @@ export default appOptions;
             <template v-else-if="optimizationDialogStep === 2">
               <label>claude Evaluation Target<select v-model="optimizationForm.evaluation_target_id" @change="syncOptimizationHarnessKey"><option value="">请选择已冻结 Target</option><option v-for="target in compatibleOptimizationTargets" :key="target.id" :value="target.id">{{ target.display_name || target.key }} · {{ target.command_template }}</option></select></label>
               <p class="form-note">Target 命令必须明确包含 {{ optimizationInvokeAs }}；系统会把冻结版本复制到每个独立工作区。</p>
-              <div class="optimization-case-picker">
+              <label>数据验证模式<select v-model="optimizationForm.data_mode" @change="syncOptimizationDataMode"><option value="development_regression">Development Regression（快速开发回归）</option><option value="independent_validation">Independent Validation（正式验证推荐）</option></select></label>
+              <p v-if="optimizationForm.data_mode === 'development_regression'" class="form-note tone-warning">同一批 Case 会用于 Evidence、Screening 和 Gate，因此结果只能视为开发期 provisional 证据。</p>
+              <div v-if="optimizationForm.data_mode === 'development_regression'" class="optimization-case-picker">
                 <label v-for="item in optimizationCaseOptions" :key="item.path" :class="{ disabled: !item.ready }">
                   <input type="checkbox" :checked="optimizationForm.case_paths.includes(item.path)" :disabled="!item.ready" @change="toggleOptimizationCase(item.path)" />
                   <span>{{ item.label }}</span><small>{{ item.ready ? '日志已就绪' : '缺少日志' }}</small>
                 </label>
               </div>
-              <p class="form-note">已选择 {{ optimizationForm.case_paths.length }} 个 Case；基线和候选默认各运行 3 次，灰区自动追加到 5/7 次。</p>
+              <p v-if="optimizationForm.data_mode === 'development_regression'" class="form-note">已选择 {{ optimizationForm.case_paths.length }} 个 Case；基线和候选默认各运行 3 次，灰区自动追加到 5/7 次。</p>
+              <template v-else>
+                <div class="optimization-split-contract">
+                  <p><strong>Train</strong><span>用于 Failure Evidence、Optimizer Prompt 与 Screening。</span></p>
+                  <p><strong>Validation</strong><span>只用于 Promotion Gate；分数、结论和拒绝原因不回流后续 Prompt。</span></p>
+                  <p><strong>Hidden / Prospective</strong><span>仅冻结进快照，本项目不会自动执行；留待私有环境独立验收。</span></p>
+                </div>
+                <div class="optimization-case-picker optimization-split-picker">
+                  <label v-for="item in optimizationCaseOptions" :key="item.path" :class="{ disabled: !item.ready }">
+                    <select :value="optimizationCaseSplit(item.path)" :disabled="!item.ready" @change="setOptimizationCaseSplit(item.path, $event.target.value)">
+                      <option value="">不纳入</option>
+                      <option value="train_case_paths">Train</option>
+                      <option value="validation_case_paths">Validation</option>
+                      <option value="hidden_test_case_paths">Hidden</option>
+                      <option value="prospective_holdout_case_paths">Prospective</option>
+                    </select>
+                    <span>{{ item.label }}</span><small>{{ item.ready ? '日志已就绪' : '缺少日志' }}</small>
+                  </label>
+                </div>
+                <div class="optimization-split-counts"><span>Train <strong>{{ optimizationSplitCounts.train }}</strong></span><span>Validation <strong>{{ optimizationSplitCounts.validation }}</strong></span><span>Hidden <strong>{{ optimizationSplitCounts.hidden }}</strong></span><span>Prospective <strong>{{ optimizationSplitCounts.prospective }}</strong></span></div>
+                <p class="form-note">每个 Case 只能属于一个 Split；Train 与 Validation 必填。Validation 的最低数量和跨 Split 来源组隔离由后端按当前配置强制校验，不足时会返回明确错误。</p>
+              </template>
             </template>
 
             <template v-else>
               <div class="form-two-columns">
-                <label>Optimizer<select v-model="optimizationForm.optimizer_runner"><option value="claude">claude</option><option value="opencode">OpenCode</option></select></label>
+                <label>Optimizer<select v-model="optimizationForm.optimizer_runner"><option value="claude">claude</option></select></label>
                 <label>可执行文件<input v-model.trim="optimizationForm.optimizer_executable" /></label>
               </div>
               <label>优化指令<textarea v-model.trim="optimizationForm.optimizer_instruction" rows="4"></textarea></label>
               <div class="form-two-columns">
-                <label>评分 Judge<select v-model="optimizationForm.judge_runner"><option value="claude">claude</option><option value="opencode">OpenCode</option><option value="lexical">Lexical（调试）</option></select></label>
-                <label>最大 Epoch<input v-model.number="optimizationForm.max_epochs" type="number" min="1" max="5" /></label>
+                <label>评分 Judge<select v-model="optimizationForm.judge_runner"><option value="claude">claude</option><option value="lexical">Lexical（调试）</option></select></label>
+                <label>最大 Epoch<input v-model.number="optimizationForm.max_epochs" type="number" min="1" max="5" :disabled="optimizationForm.data_mode === 'independent_validation'" /></label>
               </div>
+              <p v-if="optimizationForm.data_mode === 'independent_validation'" class="form-note">独立 Validation 固定只运行一个 Epoch，避免根据晋升结果再次适配同一验证集。</p>
               <div class="form-three-columns">
                 <label>最小分数提升<input v-model.number="optimizationForm.min_overall_delta" type="number" step="0.1" /></label>
                 <label>最大耗时增长<input v-model.number="optimizationForm.max_latency_growth" type="number" step="0.05" /></label>

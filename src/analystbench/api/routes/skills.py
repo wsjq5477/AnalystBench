@@ -3,15 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from analystbench.errors import AnalystBenchError
 from analystbench.skill_optimization.registry import SkillRegistryService
 
 router = APIRouter(tags=["skills"])
+
+SKILL_VERSION_EXPORT_RESPONSES = {
+    200: {
+        "description": "Immutable Skill version ZIP download.",
+        "headers": {
+            "Content-Disposition": {"schema": {"type": "string"}},
+            "Cache-Control": {"schema": {"type": "string"}},
+            "X-Content-Type-Options": {"schema": {"type": "string"}},
+        },
+        "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}},
+    }
+}
 
 
 class SkillCreate(BaseModel):
@@ -45,6 +58,22 @@ class SkillBind(BaseModel):
     version_id: str
     active_level: str = "provisional"
     expected_lock_version: int | None = Field(default=None, ge=0)
+
+
+class SkillRollback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version_id: str
+    expected_lock_version: int = Field(ge=1)
+    reason: str = Field(default="manual_api_rollback", min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("reason must not be blank")
+        return normalized
 
 
 class VariantCreate(BaseModel):
@@ -90,15 +119,36 @@ def registry(request: Request) -> SkillRegistryService:
     return request.app.state.skill_registry_service
 
 
+def binding_view(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "skill_id": item.skill_id,
+        "evaluation_target_id": item.evaluation_target_id,
+        "active_version_id": item.active_version_id,
+        "active_level": item.active_level,
+        "lock_version": item.lock_version,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
 @router.post("/skills", status_code=status.HTTP_201_CREATED)
 def create_skill(payload: SkillCreate, request: Request) -> dict[str, Any]:
     values = payload.model_dump(exclude={"key", "import_initial_version"})
-    item = registry(request).create(skill_key=payload.key, **values)
-    version = (
-        registry(request).import_version(item.id, source_type="initial")
-        if payload.import_initial_version
-        else None
+    item = registry(request).create(
+        skill_key=payload.key,
+        require_harness_source=True,
+        **values,
     )
+    try:
+        version = (
+            registry(request).import_version(item.id, source_type="initial")
+            if payload.import_initial_version
+            else None
+        )
+    except Exception:
+        registry(request).discard_empty(item.id)
+        raise
     return {
         "skill": SkillRegistryService.skill_view(item),
         "initial_version": (
@@ -122,22 +172,72 @@ def get_skill(skill_id: str, request: Request) -> dict[str, Any]:
     response_model=SkillVersionResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def import_skill_version(
-    skill_id: str, payload: SkillImport, request: Request
-) -> dict[str, Any]:
-    item = registry(request).import_version(
-        skill_id, **payload.model_dump(exclude_none=True)
-    )
+def import_skill_version(skill_id: str, payload: SkillImport, request: Request) -> dict[str, Any]:
+    if payload.source_path is not None:
+        skill = registry(request).get(skill_id)
+        requested = Path(payload.source_path).expanduser().resolve()
+        if requested != Path(skill.source_path).expanduser().resolve():
+            raise AnalystBenchError(
+                "skill_source_override_forbidden",
+                "通用 API 不能从其他服务器路径导入 Skill 版本。",
+                status_code=403,
+            )
+    item = registry(request).import_version(skill_id, **payload.model_dump(exclude_none=True))
     return SkillRegistryService.version_view(item)
 
 
-@router.get(
-    "/skills/{skill_id}/versions", response_model=list[SkillVersionResponse]
-)
+@router.get("/skills/{skill_id}/versions", response_model=list[SkillVersionResponse])
 def list_skill_versions(skill_id: str, request: Request) -> list[dict[str, Any]]:
     return [
         SkillRegistryService.version_view(item)
         for item in registry(request).list_versions(skill_id)
+    ]
+
+
+@router.get(
+    "/skills/{skill_id}/versions/{version_id}/export",
+    response_class=Response,
+    responses=SKILL_VERSION_EXPORT_RESPONSES,
+)
+def export_skill_version(skill_id: str, version_id: str, request: Request) -> Response:
+    exported = registry(request).export_version_archive(
+        skill_id=skill_id,
+        version_id=version_id,
+    )
+    content = exported["content"]
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{exported["filename"]}"',
+            "Content-Length": str(len(content)),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/skills/{skill_id}/bindings")
+def list_skill_bindings(skill_id: str, request: Request) -> list[dict[str, Any]]:
+    return [binding_view(item) for item in registry(request).list_bindings(skill_id)]
+
+
+@router.get("/skills/{skill_id}/binding-history")
+def list_skill_binding_history(
+    skill_id: str,
+    request: Request,
+    evaluation_target_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    return [
+        SkillRegistryService.binding_history_view(item)
+        for item in registry(request).list_binding_history(
+            skill_id,
+            evaluation_target_id=evaluation_target_id,
+            limit=limit,
+            offset=offset,
+        )
     ]
 
 
@@ -149,9 +249,7 @@ def diff_skill_versions(
     old = registry(request).get_version(from_version_id)
     new = registry(request).get_version(to_version_id)
     if old.skill_id != current.id or new.skill_id != current.id:
-        raise AnalystBenchError(
-            "skill_version_mismatch", "版本不属于 URL 指定的 Skill。"
-        )
+        raise AnalystBenchError("skill_version_mismatch", "版本不属于 URL 指定的 Skill。")
     return {
         "from_version_id": from_version_id,
         "to_version_id": to_version_id,
@@ -160,28 +258,32 @@ def diff_skill_versions(
 
 
 @router.put("/skills/{skill_id}/bindings")
-def bind_skill(
-    skill_id: str, payload: SkillBind, request: Request
-) -> dict[str, Any]:
+def bind_skill(skill_id: str, payload: SkillBind, request: Request) -> dict[str, Any]:
     item = registry(request).bind(
-        skill_id=skill_id, **payload.model_dump()
+        skill_id=skill_id,
+        allow_initial_unbound=False,
+        **payload.model_dump(),
     )
-    return {
-        "id": item.id,
-        "skill_id": item.skill_id,
-        "evaluation_target_id": item.evaluation_target_id,
-        "active_version_id": item.active_version_id,
-        "active_level": item.active_level,
-        "lock_version": item.lock_version,
-        "created_at": item.created_at,
-        "updated_at": item.updated_at,
-    }
+    return binding_view(item)
+
+
+@router.post("/skills/{skill_id}/bindings/{evaluation_target_id}/rollback")
+def rollback_skill_binding(
+    skill_id: str,
+    evaluation_target_id: str,
+    payload: SkillRollback,
+    request: Request,
+) -> dict[str, Any]:
+    item = registry(request).rollback(
+        skill_id=skill_id,
+        evaluation_target_id=evaluation_target_id,
+        **payload.model_dump(),
+    )
+    return binding_view(item)
 
 
 @router.post("/evaluation-variants", status_code=status.HTTP_201_CREATED)
-def create_evaluation_variant(
-    payload: VariantCreate, request: Request
-) -> dict[str, Any]:
+def create_evaluation_variant(payload: VariantCreate, request: Request) -> dict[str, Any]:
     item = registry(request).freeze_variant(**payload.model_dump())
     return {
         "id": item.id,

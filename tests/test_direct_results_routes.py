@@ -3,12 +3,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from analystbench.api.routes.direct_results import (
     PromotePayload,
     ResultVisibilityPayload,
+    delete_direct_result,
     get_direct_result_stats,
     list_direct_results,
     move_direct_result,
@@ -17,6 +19,7 @@ from analystbench.api.routes.direct_results import (
     set_direct_result_visibility,
 )
 from analystbench.config import Settings
+from analystbench.errors import AnalystBenchError
 
 
 def request_for(settings: Settings) -> SimpleNamespace:
@@ -230,6 +233,56 @@ def test_hidden_formal_result_is_listed_but_excluded_from_stats(tmp_path: Path) 
     assert get_direct_result_stats(request_for(settings))["candidates"] == [
         {"name": "agent-a", "avg_score": 50.0, "avg_duration_ms": None}
     ]
+
+
+def test_skill_optimization_results_are_isolated_and_operator_guarded(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        results_tmp_path=tmp_path / "results" / "tmp",
+        results_formal_path=tmp_path / "results",
+    )
+    normal_id = "kdiag/deadlock/case_a/runs/202607271000"
+    optimization_id = "kdiag/deadlock/case_a/runs/202607271100"
+    write_scored_result(
+        settings.results_formal_path / normal_id,
+        normal_id,
+        [("agent-a", 80)],
+    )
+    optimization_dir = settings.results_formal_path / optimization_id
+    write_scored_result(
+        optimization_dir,
+        optimization_id,
+        [("agent-a", 0)],
+    )
+    result_json = optimization_dir / "result.json"
+    payload = json.loads(result_json.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "included_in_statistics": False,
+            "result_purpose": "skill_optimization",
+            "optimization_context": {"experiment_id": "experiment-1"},
+        }
+    )
+    result_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert [item["id"] for item in list_direct_results(request_for(settings))] == [
+        normal_id
+    ]
+    assert get_direct_result_stats(request_for(settings))["candidates"] == [
+        {"name": "agent-a", "avg_score": 80.0, "avg_duration_ms": None}
+    ]
+    with pytest.raises(AnalystBenchError) as visibility:
+        set_direct_result_visibility(
+            optimization_id,
+            ResultVisibilityPayload(included_in_statistics=True),
+            request_for(settings),
+        )
+    with pytest.raises(AnalystBenchError) as deletion:
+        delete_direct_result(optimization_id, request_for(settings))
+    assert visibility.value.code == "optimization_result_managed_by_experiment"
+    assert deletion.value.code == "optimization_result_managed_by_experiment"
+    assert result_json.is_file()
 
 
 def test_promote_tmp_result_uses_runs_directory(tmp_path: Path) -> None:

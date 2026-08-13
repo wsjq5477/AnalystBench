@@ -313,7 +313,7 @@
   </table>
   </div>
   <p class="pull">
-    <strong>关键差异：</strong>SkillLearnBench 的 Skill 承载<strong>领域 know-how</strong>，AnalystBench 的 Skill 承载<strong>工具流程</strong>。二者都符合 Claude <code>SKILL.md</code> 格式，但语义层不同——这决定了借鉴时哪些可平移、哪些需转译。
+    <strong>关键差异：</strong>SkillLearnBench 的 Skill 承载<strong>领域 know-how</strong>，AnalystBench 的 Skill 承载<strong>工具流程</strong>。二者都符合 claude <code>SKILL.md</code> 格式，但语义层不同——这决定了借鉴时哪些可平移、哪些需转译。
   </p>
 
   <h2 id="s2"><span class="n">02</span>SkillLearnBench 的核心做法</h2>
@@ -356,7 +356,7 @@
       <tr><td><strong>b1 one-shot</strong></td><td>无</td><td>单轮</td><td>Optimizer 生成候选 Patch 单次</td></tr>
       <tr><td><strong>b2 self-feedback</strong></td><td>agent 自评轨迹</td><td>K=2</td><td>Evidence Builder + Mutation Generator（失败信号→patch）</td></tr>
       <tr><td><strong>b3 teacher-feedback</strong></td><td>外部 teacher LLM 给方向性建议（不露 ground-truth）</td><td>K=3，失败触发 QA</td><td><strong>目前没有</strong>——只有报告分数反馈，无「领域专家方向性指导」层</td></tr>
-      <tr><td><strong>b4 skill-creator</strong></td><td>无，但遵守 Claude 官方 skill-creator 结构化流程</td><td>单轮</td><td>OptimizerPolicyVersion + 结构化 Patch</td></tr>
+      <tr><td><strong>b4 skill-creator</strong></td><td>无，但遵守 claude 官方 skill-creator 结构化流程</td><td>单轮</td><td>OptimizerPolicyVersion + 结构化 Patch</td></tr>
     </tbody>
   </table>
   </div>

@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from pydantic import BaseModel
@@ -16,6 +16,33 @@ from analystbench.evaluation.direct import evaluate_direct
 from analystbench.scoring.reporting import render_markdown
 
 router = APIRouter(tags=["direct-results"])
+
+
+def _safe_result_directory(root: Path, relative: str) -> Path:
+    candidate = (root / relative).resolve()
+    resolved_root = root.resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise AnalystBenchError(
+            "result_path_invalid", "评测结果路径越界。", status_code=400
+        ) from exc
+    return candidate
+
+
+def _safe_result_segment(value: str, field: str) -> str:
+    normalized = value.strip()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+        or "\x00" in normalized
+    ):
+        raise AnalystBenchError(
+            "result_path_invalid", f"评测结果目标字段无效：{field}。", status_code=400
+        )
+    return normalized
 
 
 def results_dirs(request: Request) -> tuple[Path, Path]:
@@ -188,6 +215,8 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             except (json.JSONDecodeError, OSError):
                 continue
             if data.get("mode") != "direct_file":
+                continue
+            if data.get("result_purpose") == "skill_optimization":
                 continue
             if data.get("included_in_statistics", True) is False:
                 continue
@@ -474,6 +503,8 @@ def list_direct_results(request: Request) -> list[dict[str, Any]]:
                 continue
             if data.get("mode") != "direct_file":
                 continue
+            if data.get("result_purpose") == "skill_optimization":
+                continue
             rel_path = json_file.relative_to(formal_dir)
             items.append(_extract_result_meta(data, rel_path, "formal"))
 
@@ -486,6 +517,8 @@ def list_direct_results(request: Request) -> list[dict[str, Any]]:
             except (json.JSONDecodeError, OSError):
                 continue
             if data.get("mode") != "direct_file":
+                continue
+            if data.get("result_purpose") == "skill_optimization":
                 continue
             legacy_id = data.get("id", json_file.stem)
             if legacy_id not in seen_ids:
@@ -500,6 +533,8 @@ def list_direct_results(request: Request) -> list[dict[str, Any]]:
             except (json.JSONDecodeError, OSError):
                 continue
             if data.get("mode") != "direct_file":
+                continue
+            if data.get("result_purpose") == "skill_optimization":
                 continue
             rel_path = json_file.relative_to(tmp_dir)
             items.append(_extract_result_meta(data, rel_path, "tmp"))
@@ -521,21 +556,21 @@ def get_direct_result(result_id: str, request: Request) -> dict[str, Any]:
     if result_id.startswith("tmp/"):
         # Tmp result: result_id = "tmp/{case_key}/{timestamp}"
         clean_id = result_id.removeprefix("tmp/")
-        candidate = tmp_dir / clean_id / "result.json"
+        candidate = _safe_result_directory(tmp_dir, clean_id) / "result.json"
         if candidate.is_file():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
-                raise AnalystBenchError("result_file_corrupt", f"评测结果文件无法解析。")
+                raise AnalystBenchError("result_file_corrupt", "评测结果文件无法解析。") from None
             return _migrate_summary(data)
     else:
         # Formal result: result_id = "{test_set}/{category}/{case_dir}/{timestamp}"
-        candidate = formal_dir / result_id / "result.json"
+        candidate = _safe_result_directory(formal_dir, result_id) / "result.json"
         if candidate.is_file():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
-                raise AnalystBenchError("result_file_corrupt", f"评测结果文件无法解析。")
+                raise AnalystBenchError("result_file_corrupt", "评测结果文件无法解析。") from None
             return _migrate_summary(data)
 
     # Fallback: try both directories
@@ -568,6 +603,19 @@ class ResultVisibilityPayload(BaseModel):
     included_in_statistics: bool
 
 
+def _reject_optimization_result(result_json: Path) -> None:
+    try:
+        data = json.loads(result_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if data.get("result_purpose") == "skill_optimization":
+        raise AnalystBenchError(
+            "optimization_result_managed_by_experiment",
+            "Skill 优化结果是 Experiment 证据，不能通过普通结果接口移动或删除。",
+            status_code=409,
+        )
+
+
 @router.post("/direct-results/{result_id:path}/promote")
 def promote_direct_result(
     result_id: str, payload: PromotePayload, request: Request
@@ -579,15 +627,16 @@ def promote_direct_result(
         raise AnalystBenchError("result_not_tmp", "只能归档临时结果（ID 以 tmp/ 开头）。")
 
     clean_id = result_id.removeprefix("tmp/")
-    src_dir = tmp_dir / clean_id
+    src_dir = _safe_result_directory(tmp_dir, clean_id)
     result_json = src_dir / "result.json"
 
     if not result_json.is_file():
         raise AnalystBenchError("result_not_found", f"找不到临时评测结果 {result_id}。")
+    _reject_optimization_result(result_json)
 
-    test_set = payload.test_set
-    category = payload.category
-    case_dir = payload.case_dir
+    test_set = _safe_result_segment(payload.test_set, "test_set")
+    category = _safe_result_segment(payload.category, "category")
+    case_dir = _safe_result_segment(payload.case_dir, "case_dir")
     timestamp = clean_id.split("/")[-1] if "/" in clean_id else ""
 
     dest_dir = formal_dir / test_set / category / case_dir / "runs" / timestamp
@@ -639,13 +688,14 @@ def move_direct_result(result_id: str, payload: PromotePayload, request: Request
     """Move formal result files to a different test_set/category/case_dir."""
     tmp_dir, formal_dir = results_dirs(request)
 
-    src_dir = formal_dir / result_id
+    src_dir = _safe_result_directory(formal_dir, result_id)
     if not (src_dir / "result.json").is_file():
         raise AnalystBenchError("result_not_found", f"找不到正式评测结果 {result_id}。")
+    _reject_optimization_result(src_dir / "result.json")
 
-    test_set = payload.test_set
-    category = payload.category
-    case_dir = payload.case_dir
+    test_set = _safe_result_segment(payload.test_set, "test_set")
+    category = _safe_result_segment(payload.category, "category")
+    case_dir = _safe_result_segment(payload.case_dir, "case_dir")
     timestamp = src_dir.name  # Last part of result_id is the timestamp
 
     dest_parent = formal_dir / test_set / category / case_dir
@@ -702,7 +752,7 @@ def set_direct_result_visibility(
     """Show or hide a formal result in benchmark statistics."""
     _, formal_dir = results_dirs(request)
     result_json: Path | None = None
-    direct_candidate = formal_dir / result_id / "result.json"
+    direct_candidate = _safe_result_directory(formal_dir, result_id) / "result.json"
     try:
         direct_candidate.resolve().relative_to(formal_dir.resolve())
     except ValueError:
@@ -734,6 +784,13 @@ def set_direct_result_visibility(
     except (json.JSONDecodeError, OSError):
         raise AnalystBenchError("result_file_corrupt", "评测结果文件无法解析。") from None
 
+    if data.get("result_purpose") == "skill_optimization":
+        raise AnalystBenchError(
+            "optimization_result_managed_by_experiment",
+            "Skill 优化结果由 Experiment 管理，不能修改普通统计可见性。",
+            status_code=409,
+        )
+
     data["included_in_statistics"] = payload.included_in_statistics
     pending_json = result_json.with_name(f".{result_json.name}.visibility.tmp")
     pending_json.write_text(
@@ -755,8 +812,9 @@ def delete_direct_result(result_id: str, request: Request) -> None:
     if result_id.startswith("tmp/"):
         # Delete tmp result
         clean_id = result_id.removeprefix("tmp/")
-        target_dir = tmp_dir / clean_id
+        target_dir = _safe_result_directory(tmp_dir, clean_id)
         if target_dir.is_dir():
+            _reject_optimization_result(target_dir / "result.json")
             shutil.rmtree(target_dir)
             # Clean up empty parent dirs
             parent = target_dir.parent
@@ -772,8 +830,9 @@ def delete_direct_result(result_id: str, request: Request) -> None:
             return
 
     # Delete formal result (timestamp directory)
-    target_dir = formal_dir / result_id
+    target_dir = _safe_result_directory(formal_dir, result_id)
     if target_dir.is_dir():
+        _reject_optimization_result(target_dir / "result.json")
         shutil.rmtree(target_dir)
         # Clean up empty parent dirs
         parent = target_dir.parent
@@ -812,10 +871,10 @@ def _migrate_summary(data: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/evaluate-direct")
 async def evaluate_local_case(
+    request: Request,
+    reports: Annotated[list[UploadFile], File()],
     case_path: str = Form(...),
     judge: str = Form("lexical"),
-    reports: list[UploadFile] = File(...),
-    request: Request = None,
 ) -> dict[str, Any]:
     """Evaluate uploaded report files against a local Case JSON asynchronously.
 
@@ -841,7 +900,7 @@ async def evaluate_local_case(
     try:
         case_payload = json.loads(case_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        raise AnalystBenchError("case_file_corrupt", "Case 文件无法解析。")
+        raise AnalystBenchError("case_file_corrupt", "Case 文件无法解析。") from None
 
     if not isinstance(case_payload, dict):
         raise AnalystBenchError("direct_case_invalid", "Case JSON 顶层必须是 JSON 对象。")
@@ -862,7 +921,7 @@ async def evaluate_local_case(
         except UnicodeDecodeError:
             raise AnalystBenchError(
                 "report_invalid", f"报告文件 {filename} 不是有效的 UTF-8 文本。"
-            )
+            ) from None
         if not text.strip():
             raise AnalystBenchError("report_invalid", f"报告文件 {filename} 为空。")
 

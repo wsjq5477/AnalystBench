@@ -13,6 +13,7 @@ from analystbench.catalog.case_library import CaseLibraryService
 from analystbench.config import Settings, get_settings
 from analystbench.db.models import Job
 from analystbench.db.session import create_database_engine, create_session_factory
+from analystbench.errors import AnalystBenchError
 from analystbench.evaluation.benchmark import BenchmarkService
 from analystbench.evaluation.schedule import EvaluationScheduleService
 from analystbench.evaluation.submission import (
@@ -152,7 +153,23 @@ class LocalWorker:
             )
             logger.warning("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         except Exception as exc:
-            if job.kind == "skill_optimization_advance":
+            feature_disabled = (
+                job.kind == "skill_optimization_advance"
+                and isinstance(exc, AnalystBenchError)
+                and exc.code == "skill_optimization_disabled"
+            )
+            job_failed = self.jobs.fail(
+                job.id,
+                str(exc),
+                retryable=not feature_disabled,
+                worker_id=self.worker_id,
+            )
+            if (
+                job.kind == "skill_optimization_advance"
+                and job.attempts >= 2
+                and job_failed
+                and not feature_disabled
+            ):
                 try:
                     self.skill_optimization.fail(
                         str(payload["experiment_id"]), exc
@@ -162,12 +179,6 @@ class LocalWorker:
                         "skill_optimization_failure_persist_failed",
                         extra={"job_id": job.id},
                     )
-            self.jobs.fail(
-                job.id,
-                str(exc),
-                retryable=True,
-                worker_id=self.worker_id,
-            )
             logger.exception("job_failed", extra={"job_id": job.id, "attempt": job.attempts})
         else:
             self.jobs.complete(job.id, worker_id=self.worker_id)

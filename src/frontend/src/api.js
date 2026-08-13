@@ -324,6 +324,16 @@ export const analystBenchApi = {
   listSkillVersions(skillId) {
     return request({ url: `/skills/${skillId}/versions`, method: "get" });
   },
+  listSkillBindings(skillId) {
+    return request({ url: `/skills/${skillId}/bindings`, method: "get" });
+  },
+  listSkillBindingHistory(skillId, params = {}) {
+    return request({
+      url: `/skills/${skillId}/binding-history`,
+      method: "get",
+      params,
+    });
+  },
   listExecutionProfiles() {
     return request({ url: "/execution-profiles", method: "get" });
   },
@@ -385,10 +395,32 @@ export const analystBenchApi = {
       data,
     });
   },
-  getOptimizationExperimentDetail(experimentId) {
+  getOptimizationExperimentDetail(experimentId, params = {}) {
     return request({
       url: `/skill-optimization/experiments/${experimentId}/detail`,
       method: "get",
+      params,
+    });
+  },
+  getOptimizationLedger(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}/ledger`,
+      method: "get",
+    });
+  },
+  exportOptimizationLedger(experimentId, format) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}/export`,
+      method: "get",
+      params: { format },
+      responseType: "blob",
+    });
+  },
+  runOptimizationPreflight(data = {}) {
+    return request({
+      url: "/skill-optimization/preflight",
+      method: "post",
+      data,
     });
   },
   getOptimizationEvents(experimentId) {
@@ -419,6 +451,20 @@ export const analystBenchApi = {
     return request({
       url: `/skill-optimization/candidates/${candidateId}`,
       method: "get",
+    });
+  },
+  exportSkillVersion(skillId, versionId) {
+    return request({
+      url: `/skills/${skillId}/versions/${versionId}/export`,
+      method: "get",
+      responseType: "blob",
+    });
+  },
+  rollbackSkillVersion(skillId, targetId, data) {
+    return request({
+      url: `/skills/${skillId}/bindings/${targetId}/rollback`,
+      method: "post",
+      data,
     });
   },
   evaluateLocalCase(casePath, judge, files) {

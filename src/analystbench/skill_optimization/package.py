@@ -11,6 +11,21 @@ from pathlib import Path, PurePosixPath
 from analystbench.errors import AnalystBenchError
 from analystbench.storage.content import canonical_json, content_hash
 
+IGNORED_DIRECTORY_NAMES = frozenset(
+    {
+        ".git",
+        ".svn",
+        ".hg",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "node_modules",
+    }
+)
+IGNORED_FILE_NAMES = frozenset({".DS_Store"})
+IGNORED_FILE_SUFFIXES = (".pyc", ".pyo", ".swp", ".swo", ".tmp", "~")
+
 
 @dataclass(frozen=True, slots=True)
 class PackageLimits:
@@ -51,7 +66,9 @@ def validate_install_path(value: str, *, skill_key: str) -> str:
     return relative.as_posix()
 
 
-def inspect_package(source: Path, limits: PackageLimits) -> PackageSnapshot:
+def inspect_package(
+    source: Path, limits: PackageLimits, *, include_modes: bool = True
+) -> PackageSnapshot:
     root = source.expanduser().resolve()
     if not root.is_dir() or root.is_symlink():
         raise AnalystBenchError(
@@ -69,10 +86,10 @@ def inspect_package(source: Path, limits: PackageLimits) -> PackageSnapshot:
                     "skill_symlink_forbidden",
                     f"Skill 不允许包含符号链接：{child.relative_to(root).as_posix()}",
                 )
-            if name in {".git", "__pycache__"}:
+            if name in IGNORED_DIRECTORY_NAMES:
                 directory_names.remove(name)
         for name in sorted(file_names):
-            if name in {".DS_Store"} or name.endswith((".pyc", ".pyo")):
+            if name in IGNORED_FILE_NAMES or name.endswith(IGNORED_FILE_SUFFIXES):
                 continue
             child = directory_path / name
             relative = child.relative_to(root).as_posix()
@@ -81,15 +98,43 @@ def inspect_package(source: Path, limits: PackageLimits) -> PackageSnapshot:
                 raise AnalystBenchError(
                     "skill_file_invalid", f"Skill 只允许普通文件：{relative}"
                 )
-            size = child.stat().st_size
+            stat_result = child.stat()
+            size = stat_result.st_size
+            mode = stat_result.st_mode & 0o7777
+            if mode & 0o6000:
+                raise AnalystBenchError(
+                    "skill_file_mode_forbidden",
+                    f"Skill 文件不允许 setuid/setgid 权限：{relative}",
+                )
+            contents = child.read_bytes()
+            # DrvFS and some shared filesystems report every regular file as
+            # executable even when the source has no executable intent.  Only
+            # preserve the bit for a directly executable script/binary; this
+            # keeps package hashes stable across Linux and Windows/WSL while
+            # still retaining runnable Skill helpers.
+            executable_content = (
+                contents.startswith(b"#!")
+                or contents.startswith(b"\x7fELF")
+                or contents.startswith(b"MZ")
+            )
+            normalized_mode = (
+                0o755 if mode & 0o111 and executable_content else 0o644
+            )
             if size > limits.max_single_file_bytes:
                 raise AnalystBenchError(
                     "skill_package_too_large",
                     f"Skill 文件超过单文件上限：{relative}",
                 )
             total_bytes += size
-            digest = hashlib.sha256(child.read_bytes()).hexdigest()
-            entries.append({"path": relative, "size_bytes": size, "sha256": digest})
+            digest = hashlib.sha256(contents).hexdigest()
+            entry: dict[str, object] = {
+                "path": relative,
+                "size_bytes": size,
+                "sha256": digest,
+            }
+            if include_modes:
+                entry["mode"] = normalized_mode
+            entries.append(entry)
     entries.sort(key=lambda item: str(item["path"]))
     if not any(item["path"] == "SKILL.md" for item in entries):
         raise AnalystBenchError("skill_manifest_missing", "Skill 根目录必须包含 SKILL.md。")
@@ -107,11 +152,21 @@ def inspect_package(source: Path, limits: PackageLimits) -> PackageSnapshot:
             ],
         )
     manifest: dict[str, object] = {
-        "format": "analystbench.skill-package.v1",
+        "format": (
+            "analystbench.skill-package.v2"
+            if include_modes
+            else "analystbench.skill-package.v1"
+        ),
         "file_count": len(entries),
         "total_bytes": total_bytes,
         "files": entries,
     }
+    if include_modes:
+        manifest["ignored_paths"] = {
+            "directory_names": sorted(IGNORED_DIRECTORY_NAMES),
+            "file_names": sorted(IGNORED_FILE_NAMES),
+            "file_suffixes": list(IGNORED_FILE_SUFFIXES),
+        }
     digest = content_hash(canonical_json(manifest).encode("utf-8"))
     return PackageSnapshot(root=root, package_hash=digest, manifest=manifest)
 
@@ -131,9 +186,13 @@ def copy_package(snapshot: PackageSnapshot, destination: Path) -> None:
         target = destination.joinpath(*relative.parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target, follow_symlinks=False)
+        target.chmod(int(entry.get("mode", 0o644)))
 
 
 def make_package_read_only(root: Path) -> None:
     for item in root.rglob("*"):
-        item.chmod(0o555 if item.is_dir() else 0o444)
+        if item.is_dir():
+            item.chmod(0o555)
+        else:
+            item.chmod(0o555 if item.stat().st_mode & 0o111 else 0o444)
     root.chmod(0o555)

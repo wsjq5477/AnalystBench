@@ -25,6 +25,9 @@ def evaluate_gate(
     max_repeats: int = 7,
     critical_dimension_min_delta: float = 0.0,
     critical_family_max_regression: float = -2.0,
+    require_token_usage: bool = False,
+    min_candidate_win_probability: float = 0.0,
+    require_bootstrap_lower_bound_positive: bool = True,
 ) -> dict[str, Any]:
     hard_reasons: list[dict[str, Any]] = []
     quality_reasons: list[dict[str, Any]] = []
@@ -32,6 +35,18 @@ def evaluate_gate(
     pairs = comparison.get("pairs", [])
     if not isinstance(pairs, list) or not pairs:
         hard_reasons.append({"code": "no_paired_results"})
+    if (
+        mode == "independent_validation"
+        and isinstance(pairs, list)
+        and len(pairs) < minimum_independent_validation_cases
+    ):
+        hard_reasons.append(
+            {
+                "code": "independent_validation_cases_insufficient",
+                "observed": len(pairs),
+                "required": minimum_independent_validation_cases,
+            }
+        )
     if overall_delta is None:
         hard_reasons.append({"code": "overall_delta_missing"})
     elif float(overall_delta) < min_overall_delta:
@@ -46,6 +61,51 @@ def evaluate_gate(
         comparison.get("baseline_failure_count", 0)
     ):
         hard_reasons.append({"code": "candidate_failures_increased"})
+    for outcome in comparison.get("case_outcomes") or []:
+        if not isinstance(outcome, dict):
+            continue
+        case_path = outcome.get("case_path")
+        if int(outcome.get("candidate_failure_count", 0)) > int(
+            outcome.get("baseline_failure_count", 0)
+        ):
+            hard_reasons.append(
+                {
+                    "code": "candidate_case_failures_increased",
+                    "case_path": case_path,
+                    "baseline": int(outcome.get("baseline_failure_count", 0)),
+                    "candidate": int(outcome.get("candidate_failure_count", 0)),
+                }
+            )
+        new_tags = sorted(
+            str(tag) for tag in outcome.get("new_failure_tags") or [] if str(tag)
+        )
+        if new_tags:
+            hard_reasons.append(
+                {
+                    "code": "candidate_new_failure_type",
+                    "case_path": case_path,
+                    "failure_tags": new_tags,
+                }
+            )
+        for name, increase in sorted(
+            (outcome.get("guardrail_metric_increases") or {}).items()
+        ):
+            if name not in {"forbidden_hit_count", "missing_chain_count"}:
+                continue
+            hard_reasons.append(
+                {
+                    "code": "candidate_guardrail_metric_increased",
+                    "case_path": case_path,
+                    "metric": name,
+                    "increase": float(increase),
+                    "baseline": (outcome.get("baseline_guardrail_metrics") or {}).get(
+                        name
+                    ),
+                    "candidate": (outcome.get("candidate_guardrail_metrics") or {}).get(
+                        name
+                    ),
+                }
+            )
     for name, value in (comparison.get("dimension_deltas") or {}).items():
         if name in {"root_cause", "classification"} and float(value) < critical_dimension_min_delta:
             hard_reasons.append(
@@ -96,7 +156,14 @@ def evaluate_gate(
         if item.get("candidate_tokens") is not None
     ]
     token_growth = _growth(candidate_tokens, baseline_tokens)
-    if token_growth is not None and token_growth > max_token_growth:
+    token_usage_complete = bool(pairs) and all(
+        item.get("baseline_tokens") is not None
+        and item.get("candidate_tokens") is not None
+        for item in pairs
+    )
+    if require_token_usage and not token_usage_complete:
+        hard_reasons.append({"code": "token_usage_missing"})
+    elif token_growth is not None and token_growth > max_token_growth:
         hard_reasons.append(
             {
                 "code": "token_growth_exceeded",
@@ -107,6 +174,17 @@ def evaluate_gate(
     repeats = int(current_repeats or comparison.get("repeat_count") or 0)
     interval = comparison.get("bootstrap_interval")
     win_probability = comparison.get("candidate_win_probability")
+    if (
+        win_probability is not None
+        and float(win_probability) < min_candidate_win_probability
+    ):
+        quality_reasons.append(
+            {
+                "code": "candidate_win_probability_below_minimum",
+                "observed": float(win_probability),
+                "required": min_candidate_win_probability,
+            }
+        )
     statistical_gray = (
         mode == "independent_validation"
         and isinstance(interval, list)
@@ -148,8 +226,16 @@ def evaluate_gate(
         verdict = "reject"
         active_level = None
         reasons = quality_reasons
-    elif mode == "independent_validation" and len(pairs) >= minimum_independent_validation_cases:
-        if isinstance(interval, list) and len(interval) == 2 and float(interval[0]) > 0:
+    elif mode == "independent_validation":
+        interval_passes = (
+            isinstance(interval, list)
+            and len(interval) == 2
+            and (
+                not require_bootstrap_lower_bound_positive
+                or float(interval[0]) > 0
+            )
+        )
+        if interval_passes:
             verdict = "pass"
             active_level = "validated"
             reasons = []
@@ -190,8 +276,13 @@ def evaluate_gate(
             "repeat_count": repeats,
             "candidate_win_probability": win_probability,
             "bootstrap_interval": interval,
+            "bootstrap_seed": comparison.get("bootstrap_seed"),
             "dimension_deltas": comparison.get("dimension_deltas", {}),
             "family_deltas": comparison.get("family_deltas", {}),
+            "guardrail_metric_deltas": comparison.get(
+                "guardrail_metric_deltas", {}
+            ),
+            "token_usage_complete": token_usage_complete,
         },
     }
 
@@ -219,6 +310,39 @@ def evaluate_screening(
         comparison.get("baseline_failure_count", 0)
     ):
         reasons.append({"code": "candidate_failures_increased"})
+    for outcome in comparison.get("case_outcomes") or []:
+        if not isinstance(outcome, dict):
+            continue
+        if int(outcome.get("candidate_failure_count", 0)) > int(
+            outcome.get("baseline_failure_count", 0)
+        ):
+            reasons.append(
+                {
+                    "code": "candidate_case_failures_increased",
+                    "case_path": outcome.get("case_path"),
+                }
+            )
+        if outcome.get("new_failure_tags"):
+            reasons.append(
+                {
+                    "code": "candidate_new_failure_type",
+                    "case_path": outcome.get("case_path"),
+                    "failure_tags": sorted(outcome["new_failure_tags"]),
+                }
+            )
+        for name, increase in sorted(
+            (outcome.get("guardrail_metric_increases") or {}).items()
+        ):
+            if name not in {"forbidden_hit_count", "missing_chain_count"}:
+                continue
+            reasons.append(
+                {
+                    "code": "candidate_guardrail_metric_increased",
+                    "case_path": outcome.get("case_path"),
+                    "metric": name,
+                    "increase": float(increase),
+                }
+            )
     for name, value in (comparison.get("dimension_deltas") or {}).items():
         if name in {"root_cause", "classification"} and float(value) < critical_dimension_min_delta:
             reasons.append(

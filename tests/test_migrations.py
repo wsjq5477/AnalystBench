@@ -130,3 +130,72 @@ def test_runner_name_is_normalized_during_upgrade(tmp_path: Path) -> None:
         assert runner == "claude"
     finally:
         engine.dispose()
+
+
+def test_skill_optimization_idempotency_migration_round_trip(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'analystbench.db').as_posix()}"
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "0017_skill_optimization_ledger")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO evaluation_submissions
+                    (
+                        id, dataset_key, run_timestamp, status, purpose,
+                        optimization_context_json, manifest_json,
+                        summary_json, error_json
+                    )
+                VALUES
+                    (
+                        'existing', 'kdiag', '20260812010101', 'completed',
+                        'normal', '{}', '{}', '{}', '{}'
+                    )
+                """
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        assert "idempotency_key" in {
+            column["name"]
+            for column in inspector.get_columns("evaluation_submissions")
+        }
+        assert ["idempotency_key"] in [
+            item["column_names"]
+            for item in inspector.get_unique_constraints("evaluation_submissions")
+        ]
+        assert ["experiment_id", "run_config_hash"] in [
+            item["column_names"]
+            for item in inspector.get_unique_constraints("optimization_run_groups")
+        ]
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text(
+                    "SELECT id FROM evaluation_submissions WHERE id = 'existing'"
+                )
+            ) == "existing"
+    finally:
+        engine.dispose()
+
+    command.downgrade(config, "0017_skill_optimization_ledger")
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        assert "idempotency_key" not in {
+            column["name"]
+            for column in inspector.get_columns("evaluation_submissions")
+        }
+        assert ("experiment_id", "run_config_hash") not in {
+            tuple(item["column_names"])
+            for item in inspector.get_unique_constraints("optimization_run_groups")
+        }
+    finally:
+        engine.dispose()

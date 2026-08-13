@@ -2,10 +2,12 @@
 
 import json
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from analystbench.execution.isolation import isolated_process_environment
 from analystbench.execution.resolver import resolve_executable
 
 
@@ -96,17 +98,22 @@ class CommandAgentRunner:
         timeout_seconds = int(configuration.get("timeout_seconds", 1800))
         max_output_bytes = int(configuration.get("max_output_bytes", 10 * 1024 * 1024))
         try:
-            process = subprocess.run(
-                command,
-                cwd=workspace,
-                input=prompt if self.runner_id == "claude" else None,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
-                shell=False,
-            )
+            with tempfile.TemporaryDirectory(
+                prefix="analystbench-agent-home-",
+                dir=workspace.parent,
+            ) as isolated_home:
+                process = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    env=isolated_process_environment(Path(isolated_home)),
+                    input=prompt if self.runner_id == "claude" else None,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout_seconds,
+                    shell=False,
+                )
         except FileNotFoundError as exc:
             raise AgentRunnerError("runner_unavailable", str(exc)) from exc
         except subprocess.TimeoutExpired as exc:

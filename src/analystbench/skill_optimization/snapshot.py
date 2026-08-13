@@ -153,3 +153,43 @@ def build_snapshot_manifest(
             path: item["eval_spec_hash"] for path, item in sorted(inspected.items())
         },
     }
+
+
+def verify_snapshot_manifest(
+    settings: Settings,
+    *,
+    dataset_key: str,
+    mode: str,
+    train_cases: list[str],
+    validation_cases: list[str],
+    hidden_test_cases: list[str],
+    prospective_holdout_cases: list[str],
+    expected_case_input_hashes: dict[str, Any],
+    expected_eval_spec_hashes: dict[str, str],
+) -> None:
+    """Reject a run when any frozen Case input or Eval Spec has drifted."""
+
+    if not expected_case_input_hashes or not expected_eval_spec_hashes:
+        raise AnalystBenchError(
+            "optimization_snapshot_legacy_unfrozen",
+            "该 Snapshot 没有内容哈希，不能继续运行；请重新创建实验。",
+        )
+    observed = build_snapshot_manifest(
+        settings,
+        dataset_key=dataset_key,
+        mode=mode,
+        train_cases=train_cases,
+        validation_cases=validation_cases,
+        hidden_test_cases=hidden_test_cases,
+        prospective_holdout_cases=prospective_holdout_cases,
+    )
+    if observed["case_input_hashes"] != expected_case_input_hashes:
+        raise AnalystBenchError(
+            "optimization_case_input_drift",
+            "冻结 Snapshot 的 Case 输入或日志已发生变化。",
+        )
+    if observed["eval_spec_hashes"] != expected_eval_spec_hashes:
+        raise AnalystBenchError(
+            "optimization_eval_spec_drift",
+            "冻结 Snapshot 的 Eval Spec 已发生变化。",
+        )

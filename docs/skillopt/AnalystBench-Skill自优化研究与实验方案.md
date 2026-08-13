@@ -1,9 +1,9 @@
 # AnalystBench 面向内核日志分析的 Skill 自优化方法研究与实验方案
 
-> 文档类型：研究论文 / 技术白皮书  
-> 文档状态：方案修订完成，实验结果待系统实现后补充  
-> 版本：v1.1  
-> 日期：2026-07-31  
+> 文档类型：研究论文 / 技术白皮书
+> 文档状态：V1 本地代码已实现，真实私有实验结果待补充
+> 版本：v1.2
+> 日期：2026-08-12
 > 适用系统：AnalystBench、内核日志分析 Agent、claude Skill Harness
 > 文献口径：截至 2026-07-31，以引用论文的最新公开版本为准
 
@@ -17,7 +17,9 @@ Agent Skill 通过可移植的指令、脚本、参考资料和输出约束，�
 
 本文调研 SkillOpt、Trace2Skill、CoEvoSkills（其 arXiv 条目也使用 EvoSkills 名称）、SkillMOO、MUSE-Autoskill、SkillOS、SkillHone、MetaSkill-Evolve 等 2026 年 Skill 自优化工作，并结合 AnalystBench 当前已具备的 Harness、Model、EvaluationTarget、Benchmark、Eval Spec 和独立评分能力，提出一种面向内核日志分析的 Skill Training Engine。该方案将完整 Skill 包视为不可变、可训练的外部状态，通过冻结评测环境、批量结果归纳、结构化失败信号、受限文本修改、多候选搜索、分级验证、配对门禁、失败编辑记忆和原子发布，实现 Skill 的自动优化、回归控制和持续维护。
 
-本文同时给出实验问题、基线、数据切分、评价指标、消融实验和结果表格模板。系统实现完成后，可直接补充实验数据，形成可用于项目评审、技术汇报或论文投稿的完整研究报告。
+本文同时给出实验问题、基线、数据切分、评价指标、消融实验和结果表格模板。
+当前仓库已具备本地代码闭环，但真实 claude、用户私有 Case、成本和 Holdout 结果必须
+由用户在私有环境据实运行后再填入；确定性替身测试不能代替这部分证据。
 
 **关键词：** Agent Skill；SkillOpt；自优化 Agent；内核日志分析；文本空间优化；LLM-as-a-Judge；Benchmark；持续学习
 
@@ -234,6 +236,11 @@ EXECUTION_FAILURE
 - 用户源目录只作为导入源，不作为候选运行目录；
 - Skill 版本保存在 AnalystBench 自己管理的内部 Git 仓库，和用户项目、AnalystBench 项目的 Git 历史完全隔离；
 - 每次运行将冻结版本物化到该次 Harness 工作区的项目级 Skill 目录，例如 `.claude/skills/<skill-name>`。
+- 晋升或回滚只改变 Skill × Target Binding；后续按 Target 发起的普通评测冻结
+  当时 Active Variant/Version，历史 Run 不随 Binding 变化；
+- V1 一个 Evaluation Target 最多绑定一个 Active Skill，不对多 Skill 做隐式选择；
+- 可回滚目标仅限同一 Binding 上曾经 Active 的版本，并需要乐观锁与审计原因；任意
+  不可变版本可导出 ZIP 供人工审核，但导出不会改变 Active 或写回源 Skill。
 
 ### 5.2 总体架构
 
@@ -255,7 +262,7 @@ EXECUTION_FAILURE
                                ▼
                     ┌─────────────────────┐
                     │ Candidate Sandbox   │
-                    │ isolated HOME/root  │
+                    │ temp HOME/workspace │
                     └──────────┬──────────┘
                                ▼
                     ┌─────────────────────┐
@@ -287,8 +294,7 @@ OptimizationExperiment
   ├── base_skill_version_id
   ├── optimizer_policy_version_id
   ├── verifier_bundle_version_id
-  ├── benchmark_snapshot_id
-  └── split_snapshot_id
+  └── data_snapshot_id
 
 OptimizationEpoch
   ├── evidence_batch
@@ -303,7 +309,16 @@ DecisionRecord
   └── outcome
 ```
 
+`data_snapshot_id` 指向同时冻结 Benchmark 内容身份和
+Train/Validation/Hidden/Prospective 切分的 `OptimizationDataSnapshot`；早期分开的
+`benchmark_snapshot_id`/`split_snapshot_id` 不是当前实现字段。
+
 `package_hash` 是跨存储实现的制品身份，内部 Git commit 用于 Diff、父子关系、导出和回滚。两者都必须保存，但不能只用 commit hash 代替规范化包哈希。内部 Git 仓库位于 AnalystBench Managed Root 下，不嵌套在用户 Skill 源目录或 AnalystBench 源码仓库中。
+新导入的 v2 package manifest 还把每个文件归一为 `0644`/`0755` 的执行语义
+以及固定 `ignored_paths` 规则纳入哈希，拒绝 setuid/setgid。运行物化后
+整包只读，但保留非执行 `0444`与可执行
+`0555` 的区别。旧 v1 manifest 仅为已存制品保留兼容复核，新导入不再生成
+v1。
 
 ### 5.4 Skill 发现与隔离物化
 
@@ -311,7 +326,7 @@ DecisionRecord
 
 ```json
 {
-  "source_path": "/user/project/.claude/skills/kernel-log-analysis",
+  "source_path": "<frozen-harness.skill_base_dir>/skills/kernel-log-analysis",
   "invoke_as": "/kernel-log-analysis",
   "install_relative_path": ".claude/skills/kernel-log-analysis",
   "harness_key": "claude-skill"
@@ -332,6 +347,10 @@ DecisionRecord
 ```
 
 `install_relative_path` 必须是受限相对路径，并由 Harness Adapter 校验是否属于该 Harness 允许的项目级 Skill 根。系统只复制目标 Skill；不得复制用户完整的 `.claude/`、全局 HOME、settings、hooks、plugins、认证文件或其他未声明 Skill。若一个 Skill 依赖其他 Skill，依赖项必须显式登记并分别冻结。
+普通产品流程不让用户自由手填上述路径：`source_path` 由与 Target 兼容的
+冻结 Harness `skill_base_dir` 和 Skill Key 派生，`invoke_as=/<skill-key>`，安装路径
+派生为 `.claude/skills/<skill-key>`。运行目标命令还会收到实际冻结的
+`ANALYSTBENCH_SKILL_VERSION_ID`；权威运行身份同时持久化在 Submission/Variant 中。
 
 ### 5.5 OptimizationSignal
 
@@ -355,11 +374,29 @@ DecisionRecord
 
 ### 5.6 批量结果与轨迹归纳
 
-每个 Epoch 执行四类分析：Failure Analyst 提取重复失败；Success Analyst 保护有效规则；Generalization Analyst 识别案例专属修补；Simplification Analyst 识别重复、冲突和无效内容。V1 的必需证据是冻结的 Candidate Report、评分明细、生成状态、耗时以及 stdout/stderr 审计摘要；只有 Harness 能稳定导出结构化 Tool Trace 时才把 Trace 作为附加证据。分析结果先在同类内部去重，再进行成功保护、失败修复和裁剪建议的冲突消解。
+当前 V1 每个 Epoch 已使用同一个冻结 claude Optimizer Profile
+依次执行四类显式版本分析：Failure Analyst 提取重复失败；Success
+Analyst 保护有效规则；Generalization Analyst 识别案例专属修补；Simplification
+Analyst 识别重复、冲突和无效内容。
+
+当前 V1 实现中，持久化评测可保留 Candidate Report、评分 artifact、生成状态和耗时，
+但优化器 Prompt 实际只接收经过去敏与聚合的 Train/Development 信号：Case path、
+Family、Overall/Dimension score 和 Failure Tags，以及同实验 Rejected History。它不直接
+获得原始日志全文、完整 Candidate Report、stdout/stderr 或逐 Claim 评分明细。因此
+“从完整轨迹归纳”仍是后续研究扩展，不应写成当前已实现能力。只有 Harness 能稳定
+导出结构化 Tool Trace 时，Trace 才可作为未来附加证据。
+每个角色的输出使用严格 JSON envelope 和 `structured_skill_patch.v1`。
+非法 JSON 仅允许同 Runner 格式修复一次；`AgentRunnerError` 最多尝试
+三次，两次退避为 1/2 秒。各角色提案按固定角色顺序 round-robin，
+只按 canonical patch hash 去重；当前不做语义相似度合并。
 
 ### 5.7 受限候选
 
-V1 每轮生成两个候选：纠错型，以及证据强化或裁剪型。后续扩展工具增强型。
+V1 默认每轮从四角色提案中取两个 canonical-hash 去重候选。
+候选意图可为纠错、证据强化、精简或工具增强，不强制候选序号与
+意图类型一一对应。`structured_skill_patch.v1` 只支持
+`append`、`insert_after`、`replace`、`delete`；`create`、
+`old_text`、schema 外字段、unified diff 和 shell 命令会被拒绝。
 
 ```yaml
 edit_budget:
@@ -375,7 +412,10 @@ edit_budget:
 
 ### 5.8 分级验证
 
-**第一级：确定性静态检查。** 检查目录、Schema、editable paths、凭据、绝对路径、案例泄漏、引用文件、包内测试、文件与 Token 限制。
+**第一级：确定性静态检查。** 检查目录、Schema、editable paths、凭据、绝对路径、案例泄漏、引用文件、包内测试、文件与 Token 限制。包内测试不根据
+`tests/` 目录隐式运行；必须由 `manifest.json` 声明 `package_tests.argv`，并在
+bubblewrap 只读、无网络 namespace 中执行。未声明时记录 `not_configured`；已声明
+但 `bwrap`/namespace 不可用时静态拒绝候选。
 
 **第二级：诊断验证。** V1 复用确定性规则和现有结构化评分信号，诊断格式、Claim—Evidence 绑定、时间线、根因与触发者混淆、无依据结论和明显回归。V2 可增加与优化器隔离的独立 Surrogate Verifier；它只提供诊断，不决定发布。
 
@@ -394,11 +434,13 @@ edit_budget:
 - 平均配对质量分提升不少于 `+1.0`；
 - 配对 Bootstrap 单侧 95% 下界大于 0，或候选优于基线概率不低于 0.95；
 - 错误类型和根因准确率不得下降；
-- Unsupported Claim Rate 不得上升；
+- 每个 Case 的 `forbidden_hit_count` 与 `missing_chain_count` 重复中位数均不得上升；
 - 关键故障家族最大退化不超过 2 分；
 - 不得新增超时、空报告或执行失败；
 - 成功生成率不得下降；
-- 中位耗时和 Token 增长不超过 20%。
+- 中位耗时和输出报告规模增长不超过 20%。当前 `token_count` 是
+  `ceil(最终 stdout 字符数/4)` 的确定性估算，不是 provider 总 Token；Full Gate
+  要求基线/候选每个配对都有值，缺失或超阈值都硬拒绝。
 
 运行次数采用自适应策略：筛选一次；正常验证三次；灰区在 Validation 上增加到五至七次。Hidden Test 不参与灰区增采样，也不参与任何 Epoch 的接受/拒绝；最终版本和实验方案冻结后，才按预注册的固定次数运行一次正式测试。
 
@@ -406,7 +448,9 @@ edit_budget:
 
 “拆分”是把不同 Case 按用途隔离，而不是把同一个 Case 的三次运行拆开：
 
-- **Train**：优化器可以读取日志、报告、评分明细和失败原因，用于提出 Patch；
+- **Train**：当前优化器可读取去敏聚合的 Case path、Family、Overall/Dimension
+  score 和 Failure Tags，用于提出 Patch；原始日志、完整报告和逐 Claim 明细
+  未直接进入 V1 Optimizer Prompt；
 - **Validation**：优化器不能读取标准答案和逐 Case 修复细节，只由系统用于选择候选和决定是否提升；
 - **Hidden Test**：优化过程中完全不运行，只在最终版本冻结后衡量泛化。
 
@@ -417,12 +461,31 @@ edit_budget:
 1. 将现有 4 个 Case 标记为 `development_regression` 集，允许优化器读取并用于生成候选；
 2. 基线和候选各运行三次，门禁只表示“在当前已知四题上的样本内提升与回归保护”，不得写成泛化结论；
 3. 自动提升只更新 Managed Active，并标记 `provisional=true`，可立即回滚；
-4. 后续新增的 Case 默认进入 `prospective_holdout`，在最终候选冻结前不向优化器暴露；
+4. 后续新增的 Case 不会由系统自动分配；用户在新 Snapshot 中可显式将其放入
+   `prospective_holdout`，在最终候选冻结前不向优化器暴露；
 5. Case 数和故障家族足够后，冻结正式 Train/Validation/Hidden Test Snapshot，并停止用开发集结果替代论文主实验。
 
-可配置的统计门禁应保存 `minimum_independent_validation_cases`。独立 Validation Case 数不足时，Bootstrap 区间和 Wilcoxon 检验只作为描述性结果，不作为“显著提升”的证据。
+可配置的统计门禁保存 `minimum_independent_validation_cases`。当前 API 在创建
+`independent_validation` Snapshot 时就强制 Validation Case 数达到该值；数量不足
+会拒绝创建，不会先运行一个只具描述性的独立实验。
+
+此外，`independent_validation` 在前端锁定、后端强制仅一个 Epoch，且同一
+Snapshot 只能被一个已启动 Experiment 原子消费。如果根据该 Validation 结果继续修改 Skill，
+它已经成为调参信号；下一次“独立验证”必须使用新的、未参与先前决策的数据
+冻结新 Snapshot。Hidden/Prospective 只冻结和隔离，当前优化闭环不自动运行。
 
 ### 5.11 持续决策历史
+
+当前实现不只保存“最后成功版本”。每个终态 Epoch 都冻结：父版本、所有
+候选及拒绝原因、选中候选的 rationale/目标失败簇、实际修改文件与操作/增删
+Token/Patch hash、静态检查、Baseline/Candidate/配对 Delta、逐
+Case/Family/Dimension 变化、Gate 与 Active 决策。JSON 总账保留候选全量结构，
+Markdown/CSV 提供一轮一行的主路径摘要。
+
+总账中 `ACTIVE PATH SCORE` 定义为“初始基线分 + 仅已晋升 Epoch 的配对 Delta
+之和”；拒绝/保留轮不进入累计。它是 Active 版本链的审计量，不是对最终版本
+新做的 Holdout 绝对分，也不保证等于最后一轮 Candidate Score。论文应展示每轮
+配对分数与独立 Hidden Test，不用该链式量代替泛化证据。
 
 ```json
 {
@@ -489,20 +552,23 @@ edit_budget:
 - RQ4：离线优化成本与线上成本如何变化？
 - RQ5：文本学习率、门禁、成功保护、拒绝缓冲和代理验证各自贡献多少？
 - RQ6：优化 Skill 能否跨模型和 Harness 迁移？
-- RQ7：连续多个 Epoch 后是否出现膨胀、遗忘或验证集过拟合？
+- RQ7：Development Regression 的连续多 Epoch 是否出现膨胀或遗忘？跨不同、未重用的
+  Independent Validation Snapshot 时如何监测验证过拟合？
 
 ### 7.2 数据集
 
 | 拆分 | 案例数 | 故障家族数 | 优化器可见信息 | 用途 |
 |---|---:|---:|---|---|
-| Train | [待补] | [待补] | 完整日志、输出、评分明细 | 候选生成 |
+| Train | [待补] | [待补] | V1：去敏的 path/Family/分数/Failure Tags 聚合 | 候选生成 |
 | Validation | [待补] | [待补] | 维度汇总与门禁 | 接受/拒绝 |
 | Hidden Test | [待补] | [待补] | 完全不可见 | 最终报告 |
 | Transfer Test | [待补] | [待补] | 完全不可见 | 迁移实验 |
 
-同一原始事件的不同裁剪不得跨集合；相同设备和故障签名尽量放同一集合；所有切分生成不可变 `split_snapshot_id`。
+同一原始事件的不同裁剪不得跨集合；相同设备和故障签名尽量放同一集合；所有
+切分与 Case/日志/Eval Spec 哈希一起冻结为不可变 `OptimizationDataSnapshot`，
+Experiment 保存 `data_snapshot_id`。独立 Snapshot 不得被第二个 Experiment 成功启动。
 
-在当前 4 Case 阶段，论文主结果表保持 `[待补]`，只允许增加“开发集先导实验”小节。先导实验应明确四个 Case 均参与了候选生成，因此只能用于验证系统闭环、观察样本内变化和估算运行方差，不能回答 RQ1、RQ3 或声称隐藏集泛化。后续新增 Case 应优先保留为前瞻性 Hidden Test，而不是立即加入优化器上下文。
+在当前 4 Case 阶段，论文主结果表保持 `[待补]`，只允许增加“开发集先导实验”小节。先导实验应明确四个 Case 均参与了候选生成，因此只能用于验证系统闭环、观察样本内变化和估算运行方差，不能回答 RQ1、RQ3 或声称隐藏集泛化。后续新增 Case 应由用户在新 Snapshot 中显式保留为前瞻性 Hidden/Prospective Holdout，而不是立即加入优化器上下文。系统当前不自动为新 Case 分配 split。
 
 ### 7.3 对照基线
 
@@ -521,7 +587,9 @@ edit_budget:
 
 质量：Overall Quality、Error Type Accuracy、Root Cause Accuracy、Responsible Component Accuracy、Evidence Precision/Recall、Claim-Evidence Binding、Timeline Consistency、Unsupported Claim Rate、Critical Omission Rate。
 
-运行：Generation Success、Timeout、Empty Report、Schema Valid、Median/P95 Latency、Input/Output Tokens、单案例成本。
+运行：Generation Success、Timeout、Empty Report、Schema Valid、Median/P95 Latency、输出报告
+字符近似 Token、单案例成本。若私有 CLI/provider 另外提供可审计 Input/Output usage，
+在研究数据中另列字段，不与当前 Gate 的 `approximate_output_characters` 混为一个指标。
 
 优化过程：Candidate Acceptance、Accepted Gain per Epoch、Repeated Rejected Mutation、Skill Token Size、Optimization Cost、Oracle Invocation、Surrogate Catch Rate、Rollback Count。
 
@@ -562,7 +630,7 @@ edit_budget:
 
 ### 7.8 统计方法
 
-报告案例级配对 Delta、均值、中位数、标准差、配对 Bootstrap 95% 区间、候选胜率和故障家族最大退化。Bootstrap 以独立 Case 为重采样单元，不以三次 trial 为独立样本。仅在独立非零配对数足够时报告 Wilcoxon signed-rank test；多候选、多 Epoch 或多维重复检验使用 Holm 校正。当前 4 Case 先导实验只报告每个 Case 的原始三次结果、配对 Delta 和描述性区间，不报告“统计显著”。
+报告案例级配对 Delta、均值、中位数、标准差、配对 Bootstrap 95% 区间、候选胜率和故障家族最大退化。Bootstrap 以独立 Case 为重采样单元，不以三次 trial 为独立样本。当前实现默认 2000 次，样本数/置信度冻结在 Verifier，根据 Experiment/Epoch/Candidate 和实际 Case Delta 导出稳定 Seed 并持久化。仅在独立非零配对数足够时报告 Wilcoxon signed-rank test；多候选、多 Epoch 或多维重复检验使用 Holm 校正。当前 4 Case 先导实验只报告每个 Case 的原始三次结果、配对 Delta 和描述性区间，不报告“统计显著”。
 
 ### 7.9 成本收益
 
@@ -601,7 +669,11 @@ edit_budget:
 
 ### 8.4 越权和数据安全
 
-采用 `editable_paths` 白名单、独立 HOME、只读 Benchmark、网络限制、凭据扫描、最小权限、Patch 审计和可选人工审批。
+采用 `editable_paths` 白名单、临时 HOME/XDG、凭据扫描、最小权限、Patch 审计和可选人工
+审批。需要明确实现边界：Optimizer、Target 和 Judge 的 HOME 重定向只是进程环境/用户状态
+隔离，不是 mount namespace，不自动阻断绝对路径访问或网络。当前只有 manifest
+声明的 Skill 包内测试使用 bubblewrap 只读、无网络 namespace；私有宿主必须证明
+`bwrap` 可创建 namespace，不得用“独立 HOME”代替沙箱验收。
 
 ### 8.5 环境漂移
 
@@ -617,20 +689,38 @@ edit_budget:
 
 ### V1：SkillOpt-Lite 原生闭环
 
-用户可配置 Skill 源目录和项目级安装路径、内部 Git 版本库、完整包快照、单 Harness/Model/Skill、成功/失败结果分析、结构化 Patch、文本学习率、不可变 Split Snapshot、Rejected Buffer、三次配对验证、Managed Active 提升、回滚和 Decision History。当前四 Case 使用带 `provisional` 标记的开发集回归模式。
+普通 UI 由冻结 Harness `skill_base_dir` + Skill Key 派生源目录、调用名和项目级
+安装路径。当前 V1 已实现内部 Git 不可变包、受限 Patch、四角色
+Train-only Optimizer pipeline、每轮默认两个去重候选、
+Screening、三次完整配对验证、灰区 5/7 次增采样、聚合 Failure
+Family/Dimension/Tag Evidence、Rejected History、Run Group 恢复复用、Early
+Stop、原子 Active、回滚、逐 Epoch 总账与 JSON/Markdown/CSV/ZIP 导出。
 
-截至 2026-07-31，工程侧已实现每轮两个候选、Screening、三次完整验证、
-灰区 5/7 次增采样、Failure Family/Dimension Evidence、Rejected History、
-Run Group 恢复复用、Early Stop 和前端复盘，并通过两个冻结 Skill 版本的
-确定性 `/skill` 并发隔离 E2E。真实 claude 二进制测试会自动发现 PATH，
-也可通过环境变量显式指定，
-但当前开发环境没有可发现的 `claude`，所以不得把确定性命令契约 E2E
-写成“真实 claude 实验已完成”。四 Case 先导结果和独立 Holdout 主实验
-仍按本文件第 6 节保持 `[待补]`。
+前端已支持 `development_regression` 和带 Train/Validation/Hidden/Prospective 切分编辑器的
+`independent_validation`。独立模式强制单 Epoch，且单 Snapshot 只能被一个已启动 Experiment 消费；
+Hidden/Prospective 只冻结与隔离，不自动运行。普通 Target 评测会冻结当时 Active
+Variant/Version，历史 Run 不随晋升/回滚改变。
+
+当前 Full Gate 强制完整的输出字符近似 Token usage，缺失或超阈值硬拒绝；逐 Case
+的 `forbidden_hit_count`/`missing_chain_count` 重复中位数任一上升也硬拒绝。
+Verifier 冻结 Judge 与 Bootstrap 策略，稳定 Seed 用于 Bootstrap 和基线/候选交错调度。
+具体地，Bootstrap Seed 随实际 Case Delta 进入比较结果；每个 Validation
+repeat 另以 Experiment/Epoch/Candidate/Repeat 生成 `pair_seed`，决定
+baseline→candidate 或 candidate→baseline 顺序，并将 Seed/位置纳入冻结
+run config hash 和 Submission context。
+优化结果强制排除普通统计/列表，底层 Submission 取消与删除由 Experiment 状态机
+保护；Submission idempotency key 与 Run Group hash 共同覆盖崩溃恢复。
+
+仓库已通过两个冻结 Skill 版本的确定性 `/skill` 并发隔离 E2E。真实 claude
+二进制 E2E 和 bubblewrap namespace E2E 都需在用户私有宿主显式运行；临时 HOME
+不自动继承交互式 CLI 登录。四 Case 先导结果和独立 Holdout 主实验仍按本文件第 6
+节保持 `[待补]`，不得把确定性契约测试写成真实效果。
 
 ### V2：生产级生命周期
 
-代理验证器、更大规模多候选、跨实验 Skill 记忆、前瞻性 Validation/Hidden Test、跨模型联合门禁、质量/成本 Pareto 搜索和可选的显式 Git 源仓库同步。任何源仓库同步都必须是单独授权的发布动作。
+代理验证器、更大规模多候选、跨实验 Skill 记忆、Hidden/Prospective 的独立发布工作流、
+暴露登记与数据更换、跨模型联合门禁、质量/成本 Pareto 搜索和可选的显式 Git 源仓库
+同步。任何源仓库同步都必须是单独授权的发布动作。
 
 ### V3：多 Skill 与数据扩充
 
@@ -646,7 +736,12 @@ Analyzer、Proposer、Retriever 和候选分配策略的慢速自优化。
 
 Agent Skill 是连接冻结大模型和企业领域流程的重要适配层，但其价值取决于真实任务验证，而不是是否由专家或大模型编写。现有研究揭示了稳定规律：一次性自生成和无约束重写不可靠；批量轨迹归纳优于对单个失败做局部反应；小步修改、验证门禁和失败记忆是稳定优化关键；删除与替换往往比持续新增更有效；代理验证提供诊断但不能取代权威门禁；长期 Skill 必须保留版本和决策历史。
 
-AnalystBench 已具备 Benchmark、执行 Harness、版本冻结和独立评分基础，适合建设 Skill Training Engine。该能力不是增加一个“自动重写”按钮，而是将 AnalystBench 升级为覆盖 Skill 训练、评估、优化、发布和回滚的完整控制面。系统完成后，可使用本文定义的主实验、消融实验和迁移实验，量化其相对人工 Skill、一次性生成和 SkillOpt-style 基线的真实收益。
+AnalystBench 已具备 Benchmark、执行 Harness、版本冻结和独立评分基础，
+并已完成 Skill Training Engine 的 V1 本地代码闭环。该能力不是增加一个
+“自动重写”按钮，而是覆盖 Skill 训练、评估、优化、发布和回滚的控制面。
+用户在私有环境完成真实 claude 与私有数据实验后，才能用本文定义的
+主实验、消融实验和迁移实验量化其相对人工 Skill、一次性生成和
+SkillOpt-style 基线的真实收益。
 
 ---
 

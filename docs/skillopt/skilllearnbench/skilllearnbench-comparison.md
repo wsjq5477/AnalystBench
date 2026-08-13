@@ -24,7 +24,7 @@ SkillLearnBench 与 AnalystBench 在「Skill」一词上指向不同抽象，但
 | 评分是确定性的吗 | 任务成功=是（二值 reward）；Skill/Trajectory 质量=否（GPT-5-mini judge + key-point 对齐） | 是（LLM 只判 match/partial/missing/contradiction，计分由确定性引擎） |
 | 任务领域 | 20 个真实任务，跨 6 类（软件工程、信息检索、生产力、数据分析、内容、工具） | 首个官方套件 KDiag（内核/OS 分析），Core 领域无关 |
 
-**关键差异**：SkillLearnBench 的 Skill 是「给 agent 看的领域知识文档」，AnalystBench 的 Skill 是「给 agent 看的 AnalystBench 操作包」（调 CLI、准备输入）。二者都符合 Claude `SKILL.md` 格式，但**语义层不同**——一个承载领域 know-how，一个承载工具流程。这决定了借鉴时哪些可平移、哪些需转译。
+**关键差异**：SkillLearnBench 的 Skill 是「给 agent 看的领域知识文档」，AnalystBench 的 Skill 是「给 agent 看的 AnalystBench 操作包」（调 CLI、准备输入）。二者都符合 claude `SKILL.md` 格式，但**语义层不同**——一个承载领域 know-how，一个承载工具流程。这决定了借鉴时哪些可平移、哪些需转译。
 
 ---
 
@@ -68,7 +68,7 @@ README 把评测明确拆成三个正交维度，每个维度有独立指标和�
 | **b1 one-shot** | 无 | 单轮 | AnalystBench 的「Optimizer 生成候选 Patch」单次 |
 | **b2 self-feedback** | agent 自评轨迹 | K=2 | AnalystBench 的 Evidence Builder + Mutation Generator（失败信号→patch） |
 | **b3 teacher-feedback** | 外部 teacher LLM 给方向性建议（不露 ground-truth） | K=3，失败触发 QA | AnalystBench **目前没有**——只有 report 分数反馈，没有「领域专家方向性指导」层 |
-| **b4 skill-creator** | 无，但遵守 Claude 官方 skill-creator 结构化流程 | 单轮 | AnalystBench 的 OptimizerPolicyVersion + 结构化 Patch |
+| **b4 skill-creator** | 无，但遵守 claude 官方 skill-creator 结构化流程 | 单轮 | AnalystBench 的 OptimizerPolicyVersion + 结构化 Patch |
 
 **b3 teacher-feedback 最值得借鉴**。AnalystBench 的 Evidence Builder 现在只从**评分结果**抽信号（wrong_claim / missing_evidence 等失败 tag）。b3 引入了一个**独立的 teacher 角色**，它**看得到 ground-truth skill**，但只给「修改建议」不给答案——`_B3_TEACHER_SYSTEM` prompt 明确写「Give modification suggestions only. Do NOT provide the full solution」。
 
@@ -95,7 +95,7 @@ tasks/<task>/<task>-N/
 **关键工程细节值得抄**：
 - **Oracle skill 防泄漏**：构建上下文用 `ignore_patterns("skills")` 排除 oracle skill，`_prepare_build_env` 注释明确写「prevent oracle skill leakage into no_skill or generated containers」。AnalystBench 的 Skill 自优化也有「prospective holdout 不进入优化器输入」的原则，但 SkillLearnBench 在**构建层**就物理隔离了，更稳。
 - **预构建镜像 + 运行时注入**：`_inject_skills_runtime` 在已构建的 base image 上用 `docker cp` 注入候选 skill，避免每次 trial 重建镜像。AnalystBench 的隔离 workspace 也是运行时安装 skill，思路一致，但 SkillLearnBench 的 `_parse_skill_copies` 从 Dockerfile 的 `COPY skills ...` 指令自动推导注入路径，**比硬编码路径更鲁棒**。
-- **token 用量抽取**：`_extract_token_usage` 从 agent tee 日志的最后一行 JSON 抽 token，按 agent 类型（codex `turn.completed` / claude-code `result`）区分。AnalystBench 的 P19 设计把 token/耗时列为非目标，但这套抽取逻辑很轻，可作为 Phase 2 成本核算的参考。
+- **token 用量抽取**：`_extract_token_usage` 从 agent tee 日志的最后一行 JSON 抽 token，按 agent 类型（codex `turn.completed` / claude CLI `result`）区分。AnalystBench 的 P19 设计把 token/耗时列为非目标，但这套抽取逻辑很轻，可作为 Phase 2 成本核算的参考。
 
 ### 2.5 方法插件契约（method.py）
 

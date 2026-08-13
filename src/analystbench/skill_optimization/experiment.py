@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,8 @@ from analystbench.db.models import (
     OptimizationRunGroup,
     OptimizationSignal,
     OptimizerPolicyVersion,
+    SkillBindingHistory,
+    SkillPackageVersion,
     SkillTargetBinding,
     VerifierBundleVersion,
 )
@@ -45,10 +49,349 @@ from analystbench.skill_optimization.gate import evaluate_gate, evaluate_screeni
 from analystbench.skill_optimization.patch import StructuredPatchApplier
 from analystbench.skill_optimization.promotion import PromotionService
 from analystbench.skill_optimization.registry import SkillRegistryService
+from analystbench.skill_optimization.reporting import build_optimization_ledger
+from analystbench.skill_optimization.snapshot import (
+    build_snapshot_manifest,
+    verify_snapshot_manifest,
+)
+from analystbench.skill_optimization.static_validation import StaticSkillValidator
 from analystbench.skill_optimization.statistics import RunObservation, compare_paired
 from analystbench.storage.content import canonical_json, content_hash
 
 TERMINAL_SUBMISSION_STATES = {"completed", "completed_with_errors", "failed", "cancelled"}
+
+OPTIMIZER_OUTPUT_SCHEMA_VERSION = "structured_skill_patch.v1"
+OPTIMIZER_ROLE_SPECS: tuple[dict[str, str], ...] = (
+    {
+        "role": "failure_analyst",
+        "prompt_version": "skill_optimizer.failure_analyst.v1",
+        "mission": (
+            "Find recurring failures, low-scoring dimensions, and failure-tag clusters; "
+            "propose small corrective patches."
+        ),
+    },
+    {
+        "role": "success_analyst",
+        "prompt_version": "skill_optimizer.success_analyst.v1",
+        "mission": (
+            "Find repeatable success patterns and protected behaviors; propose patches "
+            "that preserve or generalize them."
+        ),
+    },
+    {
+        "role": "generalization_analyst",
+        "prompt_version": "skill_optimizer.generalization_analyst.v1",
+        "mission": (
+            "Find narrow or brittle instructions and propose general rules grounded only "
+            "in the supplied Train evidence."
+        ),
+    },
+    {
+        "role": "simplification_analyst",
+        "prompt_version": "skill_optimizer.simplification_analyst.v1",
+        "mission": (
+            "Find redundant or conflicting instructions and propose the smallest safe "
+            "simplification while preserving successful behavior."
+        ),
+    },
+)
+
+STRUCTURED_PATCH_SCHEMA_TEXT = (
+    '{"rationale":"...","intent":{"change_type":"corrective|simplification|'
+    'evidence_strengthening|tool_enhancement","target_failure_families":["..."],'
+    '"target_dimensions":["..."],"target_failure_tags":["..."],'
+    '"protected_behaviors":["..."]},"operations":['
+    '{"op":"replace","path":"SKILL.md","old":"exact unique text",'
+    '"new":"replacement"}|'
+    '{"op":"insert_after","path":"SKILL.md","anchor":"exact unique text",'
+    '"content":"inserted text"}|'
+    '{"op":"append","path":"SKILL.md","content":"appended text"}|'
+    '{"op":"delete","path":"obsolete-file.md"}]}'
+)
+
+
+class _OptimizerJSONDecodeError(ValueError):
+    pass
+
+
+def _decode_optimizer_json(value: str) -> dict[str, Any]:
+    stripped = value.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
+    candidate = fenced.group(1) if fenced else stripped
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise _OptimizerJSONDecodeError("Optimizer output is not valid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise AnalystBenchError(
+            "optimizer_output_invalid", "Optimizer JSON 顶层必须是对象。"
+        )
+    return parsed
+
+
+def _normalize_patch(value: Mapping[str, Any]) -> dict[str, Any]:
+    allowed_top_level = {"rationale", "intent", "operations"}
+    unexpected_top_level = sorted(set(value) - allowed_top_level)
+    if unexpected_top_level:
+        raise AnalystBenchError(
+            "optimizer_output_invalid",
+            "Optimizer Patch 包含 schema 外字段。",
+            [{"unexpected_fields": unexpected_top_level}],
+        )
+    rationale = value.get("rationale", "")
+    if not isinstance(rationale, str):
+        raise AnalystBenchError(
+            "optimizer_output_invalid", "Optimizer Patch rationale 必须是字符串。"
+        )
+    raw_intent = value.get("intent", {})
+    if not isinstance(raw_intent, dict):
+        raise AnalystBenchError(
+            "optimizer_output_invalid", "Optimizer Patch intent 必须是对象。"
+        )
+    allowed_intent = {
+        "change_type",
+        "target_failure_families",
+        "target_dimensions",
+        "target_failure_tags",
+        "protected_behaviors",
+    }
+    unexpected_intent = sorted(set(raw_intent) - allowed_intent)
+    if unexpected_intent:
+        raise AnalystBenchError(
+            "optimizer_output_invalid",
+            "Optimizer Patch intent 包含 schema 外字段。",
+            [{"unexpected_fields": unexpected_intent}],
+        )
+    normalized_intent: dict[str, Any] = {}
+    if "change_type" in raw_intent:
+        if not isinstance(raw_intent["change_type"], str) or raw_intent[
+            "change_type"
+        ] not in (
+            "corrective",
+            "simplification",
+            "evidence_strengthening",
+            "tool_enhancement",
+        ):
+            raise AnalystBenchError(
+                "optimizer_output_invalid", "intent.change_type 不属于 schema 枚举。"
+            )
+        normalized_intent["change_type"] = raw_intent["change_type"]
+    for key in sorted(allowed_intent - {"change_type"}):
+        if key not in raw_intent:
+            continue
+        items = raw_intent[key]
+        if not isinstance(items, list) or any(
+            not isinstance(item, str) for item in items
+        ):
+            raise AnalystBenchError(
+                "optimizer_output_invalid", f"intent.{key} 必须是字符串数组。"
+            )
+        normalized_intent[key] = items
+
+    operations = value.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise AnalystBenchError(
+            "optimizer_output_invalid", "Optimizer JSON 缺少 operations。"
+        )
+    operation_fields = {
+        "replace": {"op", "path", "old", "new"},
+        "insert_after": {"op", "path", "anchor", "content"},
+        "append": {"op", "path", "content"},
+        "delete": {"op", "path"},
+    }
+    normalized_operations: list[dict[str, str]] = []
+    for operation_index, raw_operation in enumerate(operations):
+        if not isinstance(raw_operation, dict):
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer Patch operation 必须是对象。",
+                [{"operation_index": operation_index}],
+            )
+        if "old_text" in raw_operation:
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "replace 只接受精确 old/new，不接受易漂移的 old_text。",
+                [{"operation_index": operation_index}],
+            )
+        operation = raw_operation.get("op")
+        if operation not in operation_fields:
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer Patch operation 类型无效。",
+                [{"operation_index": operation_index, "operation": operation}],
+            )
+        expected_fields = operation_fields[str(operation)]
+        if set(raw_operation) != expected_fields:
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer Patch operation 字段与 schema 不匹配。",
+                [
+                    {
+                        "operation_index": operation_index,
+                        "expected_fields": sorted(expected_fields),
+                        "observed_fields": sorted(raw_operation),
+                    }
+                ],
+            )
+        normalized_operation: dict[str, str] = {}
+        for key in sorted(expected_fields):
+            item = raw_operation[key]
+            if not isinstance(item, str):
+                raise AnalystBenchError(
+                    "optimizer_output_invalid",
+                    "Optimizer Patch operation 字段必须是字符串。",
+                    [{"operation_index": operation_index, "field": key}],
+                )
+            if key in {"op", "path", "old", "anchor"} and not item:
+                raise AnalystBenchError(
+                    "optimizer_output_invalid",
+                    "Optimizer Patch 的操作类型、路径和锚点不能为空。",
+                    [{"operation_index": operation_index, "field": key}],
+                )
+            normalized_operation[key] = item
+        normalized_operations.append(normalized_operation)
+
+    normalized: dict[str, Any] = {"rationale": rationale}
+    if normalized_intent:
+        normalized["intent"] = normalized_intent
+    normalized["operations"] = normalized_operations
+    return normalized
+
+
+def _parse_role_output(
+    parsed: Mapping[str, Any],
+    *,
+    role: str,
+    prompt_version: str,
+    candidate_count: int,
+) -> dict[str, Any]:
+    # Compatibility for existing test and local runners that return one patch
+    # directly instead of the role envelope introduced in V1.
+    if "operations" in parsed:
+        return {
+            "role": role,
+            "prompt_version": prompt_version,
+            "findings": [],
+            "patches": [_normalize_patch(parsed)],
+            "legacy_output": True,
+        }
+    unexpected_envelope_fields = sorted(
+        set(parsed) - {"role", "prompt_version", "findings", "patches"}
+    )
+    if unexpected_envelope_fields:
+        raise AnalystBenchError(
+            "optimizer_output_invalid",
+            "Optimizer role envelope 包含 schema 外字段。",
+            [{"unexpected_fields": unexpected_envelope_fields}],
+        )
+    if parsed.get("role") != role or parsed.get("prompt_version") != prompt_version:
+        raise AnalystBenchError(
+            "optimizer_output_invalid",
+            "Optimizer role 或 prompt_version 与请求不一致。",
+        )
+    findings = parsed.get("findings", [])
+    patches = parsed.get("patches")
+    if not isinstance(findings, list) or not isinstance(patches, list):
+        raise AnalystBenchError(
+            "optimizer_output_invalid",
+            "Optimizer role 输出必须包含 findings 和 patches 数组。",
+        )
+    if any(not isinstance(item, dict) for item in patches[:candidate_count]):
+        raise AnalystBenchError(
+            "optimizer_output_invalid",
+            "Optimizer role 的每个 patch 都必须是对象。",
+        )
+    normalized_findings: list[dict[str, Any]] = []
+    for finding_index, finding in enumerate(findings[:16]):
+        if not isinstance(finding, dict) or set(finding) - {
+            "summary",
+            "evidence_refs",
+            "confidence",
+        }:
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer finding 字段与 schema 不匹配。",
+                [{"finding_index": finding_index}],
+            )
+        summary = finding.get("summary", "")
+        evidence_refs = finding.get("evidence_refs", [])
+        confidence = finding.get("confidence", 0.0)
+        if (
+            not isinstance(summary, str)
+            or not isinstance(evidence_refs, list)
+            or any(not isinstance(item, str) for item in evidence_refs)
+            or isinstance(confidence, bool)
+        ):
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer finding 类型与 schema 不匹配。",
+                [{"finding_index": finding_index}],
+            )
+        try:
+            confidence_number = float(confidence)
+        except (TypeError, ValueError) as exc:
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer finding confidence 必须是 0 到 1。",
+                [{"finding_index": finding_index}],
+            ) from exc
+        if not 0.0 <= confidence_number <= 1.0:
+            raise AnalystBenchError(
+                "optimizer_output_invalid",
+                "Optimizer finding confidence 必须是 0 到 1。",
+                [{"finding_index": finding_index}],
+            )
+        normalized_findings.append(
+            {
+                "summary": summary[:1000],
+                "evidence_refs": evidence_refs[:16],
+                "confidence": confidence_number,
+            }
+        )
+    return {
+        "role": role,
+        "prompt_version": prompt_version,
+        "findings": normalized_findings,
+        "patches": [
+            _normalize_patch(item)
+            for item in patches[:candidate_count]
+        ],
+        "legacy_output": False,
+    }
+
+
+def _merge_role_patches(
+    role_outputs: list[dict[str, Any]], candidate_count: int
+) -> list[dict[str, Any]]:
+    """Deterministically round-robin unique proposals across fixed role order."""
+
+    selected: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    maximum_patches = max(
+        (len(output.get("patches") or []) for output in role_outputs), default=0
+    )
+    for patch_index in range(maximum_patches):
+        for output in role_outputs:
+            patches = output.get("patches") or []
+            if patch_index >= len(patches):
+                continue
+            patch = patches[patch_index]
+            patch_hash = content_hash(canonical_json(patch).encode("utf-8"))
+            if patch_hash in seen_hashes:
+                continue
+            seen_hashes.add(patch_hash)
+            selected.append(
+                {
+                    "patch": patch,
+                    "patch_hash": patch_hash,
+                    "role": output["role"],
+                    "prompt_version": output["prompt_version"],
+                    "role_patch_index": patch_index,
+                }
+            )
+            if len(selected) >= candidate_count:
+                return selected
+    return selected
 
 
 class OptimizationExperimentService:
@@ -58,14 +401,17 @@ class OptimizationExperimentService:
         settings: Settings,
         registry: SkillRegistryService,
         submissions: EvaluationSubmissionService,
+        optimizer_backoff: Callable[[float], None] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.settings = settings
         self.registry = registry
         self.submissions = submissions
         self.patches = StructuredPatchApplier(registry)
+        self.static_validator = StaticSkillValidator()
         self.promotions = PromotionService(session_factory)
         self.jobs = JobQueue(session_factory)
+        self._optimizer_backoff = optimizer_backoff or time.sleep
 
     def create_policy(
         self,
@@ -81,6 +427,56 @@ class OptimizationExperimentService:
             if profile is None or profile.status != "frozen":
                 raise AnalystBenchError(
                     "optimizer_policy_invalid", "Optimizer 执行配置必须存在且已冻结。"
+                )
+            if profile.runner != "claude":
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid",
+                    "Skill 自优化 Optimizer 公开契约只支持 claude。",
+                )
+            try:
+                profile_config = json.loads(profile.configuration_json or "{}")
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid", "Optimizer 执行配置无法解析。"
+                ) from exc
+            if not isinstance(profile_config, dict):
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid", "Optimizer 执行配置必须是对象。"
+                )
+            allowed_tools = profile_config.get(
+                "allowed_tools", ["Read", "Grep", "Glob"]
+            )
+            if (
+                not isinstance(allowed_tools, list)
+                or not allowed_tools
+                or not all(isinstance(tool, str) for tool in allowed_tools)
+                or not set(allowed_tools).issubset({"Read", "Grep", "Glob"})
+            ):
+                raise AnalystBenchError(
+                    "optimizer_policy_unsafe_tools",
+                    "Optimizer 只允许 Read/Grep/Glob，不能启用 Bash/Write。",
+                )
+            extra_args = profile_config.get("extra_args", [])
+            if not isinstance(extra_args, list) or not all(
+                isinstance(argument, str) for argument in extra_args
+            ):
+                raise AnalystBenchError(
+                    "optimizer_policy_unsafe_arguments",
+                    "Optimizer extra_args 必须是字符串数组。",
+                )
+            forbidden_args = {
+                "--dangerously-skip-permissions",
+                "--permission-mode",
+                "--allowedTools",
+                "--add-dir",
+            }
+            if any(
+                argument.split("=", 1)[0] in forbidden_args
+                for argument in extra_args
+            ):
+                raise AnalystBenchError(
+                    "optimizer_policy_unsafe_arguments",
+                    "Optimizer 执行参数不能改写工具权限或增加可读目录。",
                 )
             version_number = int(
                 session.scalar(
@@ -124,6 +520,50 @@ class OptimizationExperimentService:
         judge_config: dict[str, Any] | None = None,
     ) -> VerifierBundleVersion:
         self.registry._require_enabled()
+        resolved_static = dict(static_policy or {})
+        nested_static = resolved_static.get("static_validation", resolved_static)
+        if not isinstance(nested_static, dict):
+            raise AnalystBenchError(
+                "optimization_verifier_invalid", "static_policy 必须是对象。"
+            )
+        for required_check in (
+            "content_security_scan",
+            "case_leak_scan",
+            "referenced_file_check",
+            "script_syntax",
+        ):
+            check = nested_static.get(required_check, {})
+            disabled = check is False or (
+                isinstance(check, dict) and check.get("enabled") is False
+            )
+            if disabled:
+                raise AnalystBenchError(
+                    "optimization_verifier_critical_check_disabled",
+                    f"Verifier 不能关闭关键静态检查 {required_check}。",
+                )
+        resolved_judge = dict(judge_config or {})
+        judge_runner = str(resolved_judge.get("runner") or "claude")
+        if judge_runner not in {"claude", "lexical"}:
+            raise AnalystBenchError(
+                "optimization_verifier_runner_unsupported",
+                "Skill 自优化 Verifier 只支持 claude；lexical 仅用于开发调试。",
+            )
+        resolved_judge["runner"] = judge_runner
+        resolved_gate = dict(gate_policy or {})
+        bootstrap_samples = int(resolved_gate.get("bootstrap_samples", 2000))
+        confidence = float(resolved_gate.get("bootstrap_confidence", 0.95))
+        win_probability = float(
+            resolved_gate.get("min_candidate_win_probability", 0.0)
+        )
+        if (
+            not 0 <= bootstrap_samples <= 100_000
+            or not 0.5 < confidence < 1
+            or not 0 <= win_probability <= 1
+        ):
+            raise AnalystBenchError(
+                "optimization_verifier_statistics_invalid",
+                "Verifier Bootstrap/Gate 统计配置超出可用范围。",
+            )
         with transaction(self.session_factory) as session:
             version_number = int(
                 session.scalar(
@@ -136,17 +576,17 @@ class OptimizationExperimentService:
             manifest = {
                 "bundle_key": bundle_key,
                 "version_number": version_number,
-                "static_policy": static_policy or {},
-                "gate_policy": gate_policy or {},
-                "judge_config": judge_config or {},
+                "static_policy": resolved_static,
+                "gate_policy": resolved_gate,
+                "judge_config": resolved_judge,
             }
             item = VerifierBundleVersion(
                 id=str(uuid4()),
                 bundle_key=bundle_key,
                 version_number=version_number,
-                static_policy_json=canonical_json(static_policy or {}),
-                gate_policy_json=canonical_json(gate_policy or {}),
-                judge_config_json=canonical_json(judge_config or {}),
+                static_policy_json=canonical_json(resolved_static),
+                gate_policy_json=canonical_json(resolved_gate),
+                judge_config_json=canonical_json(resolved_judge),
                 content_hash=content_hash(canonical_json(manifest).encode("utf-8")),
             )
             session.add(item)
@@ -167,19 +607,41 @@ class OptimizationExperimentService:
         self.registry._require_enabled()
         if mode not in {"development_regression", "independent_validation"}:
             raise AnalystBenchError("optimization_snapshot_invalid", "数据快照模式无效。")
+        train = list(dict.fromkeys(train_case_paths or []))
         validation = list(dict.fromkeys(validation_case_paths))
+        hidden = list(dict.fromkeys(hidden_test_case_paths or []))
+        prospective = list(dict.fromkeys(prospective_holdout_case_paths or []))
         if not validation:
             raise AnalystBenchError(
                 "optimization_snapshot_invalid", "至少需要一个验证 Case。"
             )
-        manifest = {
-            "dataset_key": dataset_key,
-            "mode": mode,
-            "train_cases": train_case_paths or [],
-            "validation_cases": validation,
-            "hidden_test_cases": hidden_test_case_paths or [],
-            "prospective_holdout_cases": prospective_holdout_case_paths or [],
-        }
+        if mode == "independent_validation":
+            if not train:
+                raise AnalystBenchError(
+                    "optimization_train_cases_missing",
+                    "独立验证模式至少需要一个 Train Case。",
+                )
+            required = self.settings.skill_optimization_minimum_independent_validation_cases
+            if len(validation) < required:
+                raise AnalystBenchError(
+                    "optimization_validation_cases_insufficient",
+                    "独立验证 Case 数不足，不能产生 validated 结果。",
+                    [{"observed": len(validation), "required": required}],
+                )
+        elif train:
+            raise AnalystBenchError(
+                "optimization_snapshot_invalid",
+                "development_regression 模式不单独接受 Train Case。",
+            )
+        manifest = build_snapshot_manifest(
+            self.settings,
+            dataset_key=dataset_key,
+            mode=mode,
+            train_cases=train,
+            validation_cases=validation,
+            hidden_test_cases=hidden,
+            prospective_holdout_cases=prospective,
+        )
         digest = content_hash(canonical_json(manifest).encode("utf-8"))
         with transaction(self.session_factory) as session:
             existing = session.scalar(
@@ -194,16 +656,12 @@ class OptimizationExperimentService:
                 id=str(uuid4()),
                 dataset_key=dataset_key,
                 mode=mode,
-                train_cases_json=canonical_json(train_case_paths or []),
+                train_cases_json=canonical_json(train),
                 validation_cases_json=canonical_json(validation),
-                hidden_test_cases_json=canonical_json(
-                    hidden_test_case_paths or []
-                ),
-                prospective_holdout_cases_json=canonical_json(
-                    prospective_holdout_case_paths or []
-                ),
-                case_input_hashes_json="{}",
-                eval_spec_hashes_json="{}",
+                hidden_test_cases_json=canonical_json(hidden),
+                prospective_holdout_cases_json=canonical_json(prospective),
+                case_input_hashes_json=canonical_json(manifest["case_input_hashes"]),
+                eval_spec_hashes_json=canonical_json(manifest["eval_spec_hashes"]),
                 content_hash=digest,
             )
             session.add(item)
@@ -230,19 +688,29 @@ class OptimizationExperimentService:
             raise AnalystBenchError(
                 "optimization_experiment_invalid", "基线版本不属于指定 Skill。"
             )
+        binding = self.registry.find_binding(
+            skill_id=skill_id, evaluation_target_id=evaluation_target_id
+        )
+        if binding is not None and binding.active_version_id != base_skill_version_id:
+            raise AnalystBenchError(
+                "optimization_base_not_active",
+                "新实验必须从当前 Active Skill 版本开始；请先显式回滚。",
+                [
+                    {
+                        "active_version_id": binding.active_version_id,
+                        "requested_version_id": base_skill_version_id,
+                    }
+                ],
+            )
         self.registry.freeze_variant(
             evaluation_target_id=evaluation_target_id,
             version_id=base_skill_version_id,
         )
         with transaction(self.session_factory) as session:
-            if any(
-                session.get(model, identifier) is None
-                for model, identifier in (
-                    (OptimizationDataSnapshot, data_snapshot_id),
-                    (OptimizerPolicyVersion, optimizer_policy_version_id),
-                    (VerifierBundleVersion, verifier_bundle_version_id),
-                )
-            ):
+            snapshot = session.get(OptimizationDataSnapshot, data_snapshot_id)
+            policy = session.get(OptimizerPolicyVersion, optimizer_policy_version_id)
+            verifier = session.get(VerifierBundleVersion, verifier_bundle_version_id)
+            if snapshot is None or policy is None or verifier is None:
                 raise AnalystBenchError(
                     "optimization_experiment_invalid",
                     "数据快照、Optimizer Policy 或 Verifier 不存在。",
@@ -251,6 +719,12 @@ class OptimizationExperimentService:
             if not 1 <= epochs <= self.settings.skill_optimization_max_epochs:
                 raise AnalystBenchError(
                     "optimization_experiment_invalid", "实验 Epoch 数超过系统上限。"
+                )
+            if snapshot.mode == "independent_validation" and epochs != 1:
+                raise AnalystBenchError(
+                    "optimization_independent_validation_epoch_limit",
+                    "独立验证模式只能运行一个 Epoch，避免通过晋升结果反复适配 Validation。",
+                    [{"observed": epochs, "required": 1}],
                 )
             item = OptimizationExperiment(
                 id=str(uuid4()),
@@ -274,22 +748,36 @@ class OptimizationExperimentService:
                         "max_repeats": self.settings.skill_optimization_max_repeats,
                         "early_stop_patience": self.settings.skill_optimization_early_stop_patience,
                         "min_overall_delta": self.settings.skill_optimization_min_overall_delta,
+                        "minimum_independent_validation_cases": (
+                            self.settings.skill_optimization_minimum_independent_validation_cases
+                        ),
+                        "max_latency_growth": (
+                            self.settings.skill_optimization_max_latency_growth
+                        ),
+                        "max_token_growth": (
+                            self.settings.skill_optimization_max_token_growth
+                        ),
                     }
                 ),
             )
             session.add(item)
             session.flush()
             session.expunge(item)
-        self.registry.bind(
-            skill_id=skill_id,
-            evaluation_target_id=evaluation_target_id,
-            version_id=base_skill_version_id,
-            active_level="provisional",
-        )
+        if binding is None:
+            self.registry.bind(
+                skill_id=skill_id,
+                evaluation_target_id=evaluation_target_id,
+                version_id=base_skill_version_id,
+                active_level="provisional",
+            )
         return item
 
     def start(self, experiment_id: str) -> OptimizationExperiment:
+        self.registry._require_enabled()
+        self._verify_snapshot(experiment_id)
         with transaction(self.session_factory) as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             item = session.get(OptimizationExperiment, experiment_id)
             if item is None:
                 raise AnalystBenchError(
@@ -299,6 +787,12 @@ class OptimizationExperimentService:
                 raise AnalystBenchError(
                     "optimization_experiment_state_invalid", "实验不能重复启动。"
                 )
+            snapshot = session.get(
+                OptimizationDataSnapshot, item.data_snapshot_id, with_for_update=True
+            )
+            assert snapshot is not None
+            self._assert_independent_snapshot_unused(session, item, snapshot)
+            self._assert_active_parent(session, item, None)
             item.status = "running"
             item.started_at = datetime.now(UTC)
             self.jobs.enqueue(
@@ -308,22 +802,298 @@ class OptimizationExperimentService:
             session.expunge(item)
             return item
 
+    def _verify_snapshot(self, experiment_id: str) -> None:
+        with transaction(self.session_factory) as session:
+            experiment = session.get(OptimizationExperiment, experiment_id)
+            if experiment is None:
+                raise AnalystBenchError(
+                    "optimization_experiment_not_found", "找不到实验。", status_code=404
+                )
+            snapshot = session.get(
+                OptimizationDataSnapshot, experiment.data_snapshot_id
+            )
+            if snapshot is None:
+                raise AnalystBenchError(
+                    "optimization_snapshot_invalid", "实验数据快照不存在。"
+                )
+            values = {
+                "dataset_key": snapshot.dataset_key,
+                "mode": snapshot.mode,
+                "train_cases": json.loads(snapshot.train_cases_json or "[]"),
+                "validation_cases": json.loads(
+                    snapshot.validation_cases_json or "[]"
+                ),
+                "hidden_test_cases": json.loads(
+                    snapshot.hidden_test_cases_json or "[]"
+                ),
+                "prospective_holdout_cases": json.loads(
+                    snapshot.prospective_holdout_cases_json or "[]"
+                ),
+                "expected_case_input_hashes": json.loads(
+                    snapshot.case_input_hashes_json or "{}"
+                ),
+                "expected_eval_spec_hashes": json.loads(
+                    snapshot.eval_spec_hashes_json or "{}"
+                ),
+            }
+        verify_snapshot_manifest(self.settings, **values)
+
+    @staticmethod
+    def _assert_independent_snapshot_unused(
+        session: Session,
+        experiment: OptimizationExperiment,
+        snapshot: OptimizationDataSnapshot,
+    ) -> None:
+        if snapshot.mode != "independent_validation":
+            return
+        consumed = session.scalar(
+            select(OptimizationExperiment.id)
+            .where(
+                OptimizationExperiment.data_snapshot_id == snapshot.id,
+                OptimizationExperiment.id != experiment.id,
+                OptimizationExperiment.status != "created",
+            )
+            .limit(1)
+        )
+        if consumed is not None:
+            raise AnalystBenchError(
+                "optimization_independent_snapshot_consumed",
+                "Independent Validation Snapshot 已被另一实验启动过，不能重复用于选择候选。",
+                status_code=409,
+                details=[{"consuming_experiment_id": consumed}],
+            )
+
+    @staticmethod
+    def _assert_active_parent(
+        session: Session,
+        experiment: OptimizationExperiment,
+        epoch: OptimizationEpoch | None,
+    ) -> None:
+        binding = session.scalar(
+            select(SkillTargetBinding).where(
+                SkillTargetBinding.skill_id == experiment.skill_id,
+                SkillTargetBinding.evaluation_target_id
+                == experiment.evaluation_target_id,
+            )
+        )
+        if binding is None:
+            raise AnalystBenchError(
+                "skill_binding_conflict",
+                "实验的 Skill Active 绑定不存在。",
+                status_code=409,
+            )
+        expected_version_id = experiment.base_skill_version_id
+        allowed_recovery_version_id: str | None = None
+        if epoch is not None:
+            expected_version_id = epoch.parent_skill_version_id
+            if epoch.status == "completed":
+                expected_version_id = (
+                    epoch.best_candidate_version_id
+                    or epoch.parent_skill_version_id
+                )
+            else:
+                history_rows = list(
+                    session.scalars(
+                        select(SkillBindingHistory).where(
+                            SkillBindingHistory.binding_id == binding.id,
+                            SkillBindingHistory.action == "promotion",
+                        )
+                    )
+                )
+                for history in history_rows:
+                    try:
+                        metadata = json.loads(history.metadata_json or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if (
+                        metadata.get("experiment_id") == experiment.id
+                        and metadata.get("epoch_id") == epoch.id
+                    ):
+                        allowed_recovery_version_id = history.active_version_id
+                        break
+        if binding.active_version_id not in {
+            expected_version_id,
+            allowed_recovery_version_id,
+        }:
+            raise AnalystBenchError(
+                "skill_binding_conflict",
+                "Skill Active 已不再是本实验当前 Epoch 的父版本，拒绝继续覆盖。",
+                status_code=409,
+                details=[
+                    {
+                        "expected_active_version_id": expected_version_id,
+                        "actual_active_version_id": binding.active_version_id,
+                    }
+                ],
+            )
+
     @staticmethod
     def _parse_patch(value: str) -> dict[str, Any]:
-        stripped = value.strip()
-        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
-        candidate = fenced.group(1) if fenced else stripped
         try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError as exc:
+            parsed = _decode_optimizer_json(value)
+        except _OptimizerJSONDecodeError as exc:
             raise AnalystBenchError(
                 "optimizer_output_invalid", "Optimizer 未返回有效 JSON Patch。"
             ) from exc
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("operations"), list):
-            raise AnalystBenchError(
-                "optimizer_output_invalid", "Optimizer JSON 缺少 operations。"
+        return _normalize_patch(parsed)
+
+    def _execute_optimizer_runner(
+        self,
+        runner: Any,
+        runner_config: dict[str, Any],
+        workspace: Path,
+        prompt: str,
+    ) -> Any:
+        """Run one prompt with three total attempts and exponential backoff."""
+
+        for attempt in range(3):
+            try:
+                return runner.execute(runner_config, workspace, prompt)
+            except AgentRunnerError:
+                if attempt == 2:
+                    raise
+                self._optimizer_backoff(float(2**attempt))
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _role_prompt(
+        *,
+        instruction: str,
+        role_spec: Mapping[str, str],
+        role_index: int,
+        candidate_count: int,
+        skill_root: Path,
+        train_evidence: dict[str, Any],
+    ) -> str:
+        role = role_spec["role"]
+        prompt_version = role_spec["prompt_version"]
+        role_output_schema = (
+            '{"role":"'
+            + role
+            + '","prompt_version":"'
+            + prompt_version
+            + '","findings":[{"summary":"...","evidence_refs":['
+            '"failure_tags:...|dimensions:...|claim_findings:..."],'
+            '"confidence":0.0}],"patches":['
+            + STRUCTURED_PATCH_SCHEMA_TEXT
+            + "]}"
+        )
+        return (
+            f"{instruction}\n\n"
+            f"Optimizer role: {role}.\n"
+            f"Prompt version: {prompt_version}.\n"
+            f"Role mission: {role_spec['mission']}\n"
+            # Kept for backward compatibility with local Fake runners while
+            # the V1 role name/version are the authoritative identity.
+            f"Candidate index: {role_index}.\n"
+            f"Return at most {candidate_count} independent small-scope patches.\n"
+            f"Skill directory: {skill_root}\n"
+            "Evidence scope: Train-only optimizer-visible aggregate evidence. "
+            "Do not infer or request Validation, Hidden, Holdout, Case source, "
+            "standard-answer text, or report text.\n"
+            f"Train evidence JSON: {canonical_json(train_evidence)}\n\n"
+            f"Output schema version: {OPTIMIZER_OUTPUT_SCHEMA_VERSION}.\n"
+            f"Output schema: {role_output_schema}\n"
+            "Operation schema is exact: replace uses old/new; insert_after uses "
+            "anchor/content; append uses content; delete removes the named file. "
+            "Never emit old_text, create, unified diff, shell commands, or prose "
+            "outside the JSON object."
+        )
+
+    def _run_optimizer_role(
+        self,
+        *,
+        runner: Any,
+        runner_config: dict[str, Any],
+        workspace: Path,
+        prompt: str,
+        role: str,
+        prompt_version: str,
+        candidate_count: int,
+    ) -> dict[str, Any]:
+        result = self._execute_optimizer_runner(
+            runner, runner_config, workspace, prompt
+        )
+        try:
+            parsed = _decode_optimizer_json(result.final_report)
+        except _OptimizerJSONDecodeError:
+            repair_prompt = (
+                f"Format-repair request for role {role}, prompt version "
+                f"{prompt_version}. Preserve the proposed meaning, but return one "
+                "valid JSON object only. Do not add prose. The accepted direct patch "
+                f"schema is {STRUCTURED_PATCH_SCHEMA_TEXT}; the accepted role envelope "
+                "contains the exact role, prompt_version, findings array, and patches "
+                "array. Invalid output (bounded):\n"
+                f"{result.final_report[:8000]}"
             )
-        return parsed
+            repaired = self._execute_optimizer_runner(
+                runner, runner_config, workspace, repair_prompt
+            )
+            try:
+                parsed = _decode_optimizer_json(repaired.final_report)
+            except _OptimizerJSONDecodeError as exc:
+                raise AnalystBenchError(
+                    "optimizer_output_invalid",
+                    "Optimizer 格式修复后仍未返回有效 JSON。",
+                ) from exc
+        return _parse_role_output(
+            parsed,
+            role=role,
+            prompt_version=prompt_version,
+            candidate_count=candidate_count,
+        )
+
+    def _run_optimizer_analysts(
+        self,
+        *,
+        runner: Any,
+        runner_config: dict[str, Any],
+        workspace: Path,
+        instruction: str,
+        skill_root: Path,
+        train_evidence: dict[str, Any],
+        candidate_count: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        role_outputs: list[dict[str, Any]] = []
+        role_errors: list[dict[str, str]] = []
+        for role_index, role_spec in enumerate(OPTIMIZER_ROLE_SPECS, start=1):
+            prompt = self._role_prompt(
+                instruction=instruction,
+                role_spec=role_spec,
+                role_index=role_index,
+                candidate_count=candidate_count,
+                skill_root=skill_root,
+                train_evidence=train_evidence,
+            )
+            try:
+                role_outputs.append(
+                    self._run_optimizer_role(
+                        runner=runner,
+                        runner_config=runner_config,
+                        workspace=workspace,
+                        prompt=prompt,
+                        role=role_spec["role"],
+                        prompt_version=role_spec["prompt_version"],
+                        candidate_count=candidate_count,
+                    )
+                )
+            except AgentRunnerError as exc:
+                role_errors.append(
+                    {
+                        "role": role_spec["role"],
+                        "code": "optimizer_execution_failed",
+                        "message": f"{exc.code}: {exc}"[:1000],
+                    }
+                )
+            except AnalystBenchError as exc:
+                role_errors.append(
+                    {
+                        "role": role_spec["role"],
+                        "code": exc.code,
+                        "message": exc.message[:1000],
+                    }
+                )
+        return role_outputs, role_errors
 
     def _record_rejected_candidate(
         self,
@@ -335,6 +1105,7 @@ class OptimizationExperimentService:
         rejection_message: str,
         structured_patch: dict[str, Any] | None = None,
         raw_output: str = "",
+        rejection_details: list[dict[str, Any]] | None = None,
     ) -> CandidateMutation:
         patch = structured_patch or {}
         patch_hash = content_hash(
@@ -353,13 +1124,22 @@ class OptimizationExperimentService:
             structured_patch_json=canonical_json(patch),
             patch_hash=patch_hash,
             rationale=str(patch.get("rationale", "")),
+            intended_failure_clusters_json=canonical_json(
+                self._candidate_intent(patch).get("target_failure_families", [])
+            ),
+            intent_json=canonical_json(self._candidate_intent(patch)),
+            change_stats_json="{}",
             evidence_refs_json=canonical_json(
                 {"epoch_id": epoch.id, "candidate_index": candidate_index}
             ),
             status="rejected",
             rejection_code=rejection_code,
             rejection_detail_json=canonical_json(
-                {"code": rejection_code, "message": rejection_message}
+                {
+                    "code": rejection_code,
+                    "message": rejection_message,
+                    "details": rejection_details or [],
+                }
             ),
         )
         with transaction(self.session_factory) as session:
@@ -378,6 +1158,44 @@ class OptimizationExperimentService:
             session.expunge(mutation)
         return mutation
 
+    @staticmethod
+    def _candidate_intent(patch: dict[str, Any]) -> dict[str, Any]:
+        """Normalize optimizer-declared intent without trusting it as evidence."""
+
+        raw = patch.get("intent")
+        source = raw if isinstance(raw, dict) else {}
+
+        def strings(*keys: str) -> list[str]:
+            for key in keys:
+                value = source.get(key, patch.get(key))
+                if isinstance(value, list):
+                    return sorted(
+                        {
+                            str(item).strip()
+                            for item in value
+                            if str(item).strip()
+                        }
+                    )
+            return []
+
+        return {
+            "change_type": str(
+                source.get("change_type")
+                or patch.get("candidate_direction")
+                or "unspecified"
+            ).strip(),
+            "target_failure_families": strings(
+                "target_failure_families", "intended_failure_clusters"
+            ),
+            "target_dimensions": strings(
+                "target_dimensions", "expected_dimensions"
+            ),
+            "target_failure_tags": strings(
+                "target_failure_tags", "improve_tags"
+            ),
+            "protected_behaviors": strings("protected_behaviors"),
+        }
+
     def _rejected_history(
         self,
         experiment_id: str,
@@ -385,6 +1203,42 @@ class OptimizationExperimentService:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         with transaction(self.session_factory) as session:
+            experiment = session.get(OptimizationExperiment, experiment_id)
+            snapshot = (
+                session.get(OptimizationDataSnapshot, experiment.data_snapshot_id)
+                if experiment is not None
+                else None
+            )
+            if experiment is None or snapshot is None:
+                raise AnalystBenchError(
+                    "optimization_experiment_not_found",
+                    "找不到实验或其数据快照。",
+                    status_code=404,
+                )
+            conditions = [
+                OptimizationEpoch.experiment_id == experiment_id,
+                CandidateMutation.status == "rejected",
+            ]
+            # Validation is an authoritative gate, never optimizer feedback.
+            # This applies in both modes: development_regression is explicitly
+            # provisional, but its later gate outcome must still not enter a
+            # future role prompt through rejected_history.
+            validation_comparison = (
+                select(CandidateComparison.id)
+                .where(
+                    CandidateComparison.candidate_mutation_id
+                    == CandidateMutation.id,
+                    CandidateComparison.comparison_type.in_(
+                        (
+                            "paired_repeated_validation",
+                            "full_validation",
+                            "validation",
+                        )
+                    ),
+                )
+                .exists()
+            )
+            conditions.append(~validation_comparison)
             rows = list(
                 session.execute(
                     select(CandidateMutation, OptimizationEpoch)
@@ -392,10 +1246,7 @@ class OptimizationExperimentService:
                         OptimizationEpoch,
                         OptimizationEpoch.id == CandidateMutation.epoch_id,
                     )
-                    .where(
-                        OptimizationEpoch.experiment_id == experiment_id,
-                        CandidateMutation.status == "rejected",
-                    )
+                    .where(*conditions)
                     .order_by(CandidateMutation.created_at.desc())
                     .limit(limit)
                 )
@@ -404,21 +1255,48 @@ class OptimizationExperimentService:
             {
                 "epoch": epoch.epoch_number,
                 "candidate_type": mutation.candidate_type,
-                "rationale": mutation.rationale,
                 "rejection_code": mutation.rejection_code,
-                "rejection_detail": json.loads(
-                    mutation.rejection_detail_json or "{}"
-                ),
+                "intent": json.loads(mutation.intent_json or "{}"),
             }
             for mutation, epoch in rows
         ]
 
-    def _generate_candidate(
+    def _snapshot_forbidden_tokens(
+        self, experiment: OptimizationExperiment
+    ) -> tuple[str, ...]:
+        """Return frozen Case identifiers only; never load hidden answers."""
+
+        with transaction(self.session_factory) as session:
+            snapshot = session.get(
+                OptimizationDataSnapshot, experiment.data_snapshot_id
+            )
+            if snapshot is None:
+                raise AnalystBenchError(
+                    "optimization_snapshot_invalid", "实验数据快照不存在。"
+                )
+            paths = {
+                path
+                for value in (
+                    snapshot.train_cases_json,
+                    snapshot.validation_cases_json,
+                    snapshot.hidden_test_cases_json,
+                    snapshot.prospective_holdout_cases_json,
+                )
+                for path in json.loads(value or "[]")
+            }
+        identifiers = set(paths)
+        identifiers.update(
+            Path(path).name for path in paths if len(Path(path).name) >= 8
+        )
+        return tuple(sorted(identifiers))
+
+    def _optimizer_pipeline(
         self,
         experiment: OptimizationExperiment,
         epoch: OptimizationEpoch,
-        candidate_index: int,
-    ) -> CandidateMutation:
+        *,
+        candidate_count: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         with transaction(self.session_factory) as session:
             policy = session.get(
                 OptimizerPolicyVersion, experiment.optimizer_policy_version_id
@@ -428,7 +1306,15 @@ class OptimizationExperimentService:
                 if policy
                 else None
             )
-            if policy is None or profile is None or profile.status != "frozen":
+            verifier = session.get(
+                VerifierBundleVersion, experiment.verifier_bundle_version_id
+            )
+            if (
+                policy is None
+                or profile is None
+                or profile.status != "frozen"
+                or verifier is None
+            ):
                 raise AnalystBenchError(
                     "optimizer_policy_invalid", "Optimizer Policy 不可执行。"
                 )
@@ -439,56 +1325,96 @@ class OptimizationExperimentService:
             workspace = Path(temporary)
             skill_root = workspace / "skill"
             self.registry.materialize_version(epoch.parent_skill_version_id, skill_root)
-            evidence = {
+            train_evidence = {
+                "evidence_scope": "train_only",
+                "schema_version": "optimizer_train_input.v1",
                 "current_epoch": json.loads(epoch.evidence_summary_json or "{}"),
-                "rejected_history": self._rejected_history(experiment.id),
+                "rejected_train_history": self._rejected_history(experiment.id),
             }
             instruction = str(
                 policy_config.get("prompt_bundle", {}).get(
                     "instruction",
-                    "Improve the Skill using the evidence. Return only a structured JSON patch.",
+                    "Improve the Skill using only the supplied Train evidence.",
                 )
             )
-            prompt = (
-                f"{instruction}\n\n"
-                f"Candidate index: {candidate_index}. Produce an independent, "
-                "small-scope approach that is meaningfully different from other candidates.\n"
-                f"Skill directory: {skill_root}\n"
-                f"Evidence JSON: {canonical_json(evidence)}\n\n"
-                "Output schema: "
-                '{"rationale":"...",'
-                '"operations":[{"op":"replace|insert_after|append|create|delete",'
-                '"path":"SKILL.md", "...":"..."}]}'
+            runner = create_runner(runner_id)
+            role_outputs, role_errors = self._run_optimizer_analysts(
+                runner=runner,
+                runner_config=runner_config,
+                workspace=workspace,
+                instruction=instruction,
+                skill_root=skill_root,
+                train_evidence=train_evidence,
+                candidate_count=candidate_count,
             )
-            try:
-                result = create_runner(runner_id).execute(
-                    runner_config, workspace, prompt
+        selected = _merge_role_patches(role_outputs, candidate_count)
+        with transaction(self.session_factory) as session:
+            session.add(
+                OptimizationEvent(
+                    id=str(uuid4()),
+                    experiment_id=experiment.id,
+                    epoch_id=epoch.id,
+                    event_type="optimizer_pipeline_completed",
+                    payload_json=canonical_json(
+                        {
+                            "pipeline_version": "four_role_optimizer.v1",
+                            "roles": [
+                                {
+                                    "role": output["role"],
+                                    "prompt_version": output["prompt_version"],
+                                    "finding_count": len(output["findings"]),
+                                    "patch_count": len(output["patches"]),
+                                }
+                                for output in role_outputs
+                            ],
+                            "errors": role_errors,
+                            "selected_patch_hashes": [
+                                proposal["patch_hash"] for proposal in selected
+                            ],
+                        }
+                    ),
                 )
-            except AgentRunnerError as exc:
-                return self._record_rejected_candidate(
-                    experiment,
-                    epoch,
-                    candidate_index,
-                    rejection_code="optimizer_execution_failed",
-                    rejection_message=f"{exc.code}: {exc}",
+            )
+        return selected, role_errors
+
+    def _generate_candidate(
+        self,
+        experiment: OptimizationExperiment,
+        epoch: OptimizationEpoch,
+        candidate_index: int,
+        *,
+        structured_patch: dict[str, Any],
+        provenance: Mapping[str, Any] | None = None,
+    ) -> CandidateMutation:
+        with transaction(self.session_factory) as session:
+            policy = session.get(
+                OptimizerPolicyVersion, experiment.optimizer_policy_version_id
+            )
+            verifier = session.get(
+                VerifierBundleVersion, experiment.verifier_bundle_version_id
+            )
+            if policy is None or verifier is None:
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid", "Optimizer Policy 不可执行。"
                 )
-            try:
-                structured_patch = self._parse_patch(result.final_report)
-            except AnalystBenchError as exc:
-                return self._record_rejected_candidate(
-                    experiment,
-                    epoch,
-                    candidate_index,
-                    rejection_code=exc.code,
-                    rejection_message=exc.message,
-                    raw_output=result.final_report,
-                )
+            static_policy = json.loads(verifier.static_policy_json or "{}")
         try:
-            version, patch_hash = self.patches.apply(
+            patch_result = self.patches.apply(
                 parent_version_id=epoch.parent_skill_version_id,
                 structured_patch=structured_patch,
                 created_by=f"optimizer:{policy.id}",
+                policy=static_policy,
+                epoch_number=epoch.epoch_number,
+                candidate_validator=lambda root: self.static_validator.validate(
+                    root,
+                    static_policy,
+                    forbidden_case_tokens=self._snapshot_forbidden_tokens(
+                        experiment
+                    ),
+                ),
             )
+            version = patch_result.version
+            patch_hash = patch_result.patch_hash
         except AnalystBenchError as exc:
             return self._record_rejected_candidate(
                 experiment,
@@ -497,7 +1423,10 @@ class OptimizationExperimentService:
                 rejection_code=exc.code,
                 rejection_message=exc.message,
                 structured_patch=structured_patch,
+                rejection_details=exc.details,
             )
+        change_stats = patch_result.stats.as_dict()
+        change_stats["static_validation"] = patch_result.validation
         with transaction(self.session_factory) as session:
             mutation = CandidateMutation(
                 id=str(uuid4()),
@@ -508,10 +1437,24 @@ class OptimizationExperimentService:
                 structured_patch_json=canonical_json(structured_patch),
                 patch_hash=patch_hash,
                 rationale=str(structured_patch.get("rationale", "")),
+                intended_failure_clusters_json=canonical_json(
+                    self._candidate_intent(structured_patch).get(
+                        "target_failure_families", []
+                    )
+                ),
+                intent_json=canonical_json(
+                    self._candidate_intent(structured_patch)
+                ),
+                change_stats_json=canonical_json(change_stats),
                 evidence_refs_json=canonical_json(
                     {
                         "epoch_id": epoch.id,
                         "candidate_index": candidate_index,
+                        "optimizer_role": (provenance or {}).get("role"),
+                        "prompt_version": (provenance or {}).get(
+                            "prompt_version"
+                        ),
+                        "output_schema_version": OPTIMIZER_OUTPUT_SCHEMA_VERSION,
                     }
                 ),
                 status="validated_static",
@@ -529,6 +1472,8 @@ class OptimizationExperimentService:
                             "candidate_version_id": version.id,
                             "candidate_index": candidate_index,
                             "patch_hash": patch_hash,
+                            "intent": self._candidate_intent(structured_patch),
+                            "change_stats": change_stats,
                         }
                     ),
                 )
@@ -553,20 +1498,43 @@ class OptimizationExperimentService:
                     "optimization_snapshot_invalid",
                     "实验数据快照或 Verifier 不存在。",
                 )
-            case_paths = sorted(json.loads(snapshot.validation_cases_json))
+            validation_paths = sorted(json.loads(snapshot.validation_cases_json))
+            train_paths = sorted(json.loads(snapshot.train_cases_json or "[]"))
             judge = json.loads(verifier.judge_config_json or "{}")
             judge_runner = str(judge.get("runner") or "claude")
-            screening_paths = (
-                case_paths
+            optimization_paths = (
+                validation_paths
                 if snapshot.mode == "development_regression"
-                else case_paths[
-                    : min(
-                        len(case_paths),
-                        self.settings.skill_optimization_screening_case_count,
-                    )
-                ]
+                else train_paths
             )
-            return snapshot.dataset_key, case_paths, screening_paths, judge_runner
+            config = self._experiment_config(experiment)
+            screening_count = int(
+                config.get(
+                    "screening_case_count",
+                    self.settings.skill_optimization_screening_case_count,
+                )
+            )
+            screening_paths = (
+                optimization_paths
+                if snapshot.mode == "development_regression"
+                else optimization_paths[:screening_count]
+            )
+            return (
+                snapshot.dataset_key,
+                validation_paths,
+                screening_paths,
+                judge_runner,
+            )
+
+    @staticmethod
+    def _experiment_config(experiment: OptimizationExperiment) -> dict[str, Any]:
+        try:
+            config = json.loads(
+                getattr(experiment, "config_snapshot_json", "{}") or "{}"
+            )
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return config if isinstance(config, dict) else {}
 
     def _ensure_run_groups(
         self,
@@ -579,8 +1547,27 @@ class OptimizationExperimentService:
         candidate_mutation_id: str | None,
         repeat_indices: range,
         case_paths: list[str],
+        pair_seed: str | None = None,
+        pair_position: int | None = None,
     ) -> None:
         dataset_key, _, _, judge_runner = self._snapshot_inputs(experiment)
+        with transaction(self.session_factory) as session:
+            verifier = session.get(
+                VerifierBundleVersion, experiment.verifier_bundle_version_id
+            )
+            assert verifier is not None
+            raw_judge_configuration = json.loads(
+                verifier.judge_config_json or "{}"
+            )
+        if not isinstance(raw_judge_configuration, dict):
+            raise AnalystBenchError(
+                "optimization_verifier_invalid", "Verifier Judge 配置必须是对象。"
+            )
+        judge_configuration = {
+            key: value
+            for key, value in raw_judge_configuration.items()
+            if key != "runner"
+        }
         variant = self.registry.freeze_variant(
             evaluation_target_id=experiment.evaluation_target_id,
             version_id=version_id,
@@ -591,10 +1578,13 @@ class OptimizationExperimentService:
                 "case_paths": case_paths,
                 "method_id": variant.materialized_method_id,
                 "judge_runner": judge_runner,
+                "judge_configuration": judge_configuration,
                 "split_role": split_role,
                 "arm": arm,
                 "repeat_index": repeat_index,
                 "version_id": version_id,
+                "pair_seed": pair_seed,
+                "pair_position": pair_position,
             }
             run_hash = content_hash(canonical_json(manifest).encode("utf-8"))
             with transaction(self.session_factory) as session:
@@ -634,7 +1624,11 @@ class OptimizationExperimentService:
                     "split_role": split_role,
                     "arm": arm,
                     "repeat_index": repeat_index,
+                    "pair_seed": pair_seed,
+                    "pair_position": pair_position,
                 },
+                idempotency_key=f"skillopt:{run_hash}",
+                judge_configuration=judge_configuration,
             )
             with transaction(self.session_factory) as session:
                 session.add(
@@ -651,6 +1645,50 @@ class OptimizationExperimentService:
                         status="queued",
                         run_config_hash=run_hash,
                     )
+                )
+
+    def _ensure_paired_validation_groups(
+        self,
+        experiment: OptimizationExperiment,
+        epoch: OptimizationEpoch,
+        mutation: CandidateMutation,
+        *,
+        repeats: int,
+        case_paths: list[str],
+    ) -> None:
+        assert mutation.candidate_skill_version_id
+        for repeat_index in range(repeats):
+            pair_seed = content_hash(
+                canonical_json(
+                    {
+                        "experiment_id": experiment.id,
+                        "epoch_id": epoch.id,
+                        "candidate_mutation_id": mutation.id,
+                        "repeat_index": repeat_index,
+                    }
+                ).encode("utf-8")
+            )
+            arm_order = (
+                ("baseline", "candidate")
+                if int(pair_seed.removeprefix("sha256:")[:8], 16) % 2 == 0
+                else ("candidate", "baseline")
+            )
+            for position, arm in enumerate(arm_order):
+                self._ensure_run_groups(
+                    experiment,
+                    epoch,
+                    split_role="validation",
+                    arm=arm,
+                    version_id=(
+                        epoch.parent_skill_version_id
+                        if arm == "baseline"
+                        else mutation.candidate_skill_version_id
+                    ),
+                    candidate_mutation_id=(None if arm == "baseline" else mutation.id),
+                    repeat_indices=range(repeat_index, repeat_index + 1),
+                    case_paths=case_paths,
+                    pair_seed=pair_seed,
+                    pair_position=position,
                 )
 
     def _selected_groups(
@@ -816,6 +1854,12 @@ class OptimizationExperimentService:
                         "dimensions": report_evidence["dimensions"],
                         "failure_tags": sorted(failure_tags),
                         "metrics": report_evidence["metrics"],
+                        "claim_findings": report_evidence.get(
+                            "claim_findings", []
+                        ),
+                        "success_patterns": report_evidence.get(
+                            "success_patterns", []
+                        ),
                         "trace_uri": artifact.get("trace_uri"),
                     }
                     observations.append(
@@ -830,6 +1874,17 @@ class OptimizationExperimentService:
                             succeeded=succeeded,
                             dimensions=report_evidence["dimensions"],
                             failure_tags=tuple(sorted(failure_tags)),
+                            guardrail_metrics={
+                                key: float(report_evidence["metrics"][key])
+                                for key in (
+                                    "forbidden_hit_count",
+                                    "missing_chain_count",
+                                )
+                                if isinstance(
+                                    report_evidence["metrics"].get(key),
+                                    (int, float),
+                                )
+                            },
                         )
                     )
                     signal_payloads.append(signal)
@@ -902,12 +1957,54 @@ class OptimizationExperimentService:
             )
             for candidate in candidates:
                 session.expunge(candidate)
-        while len(candidates) < self.settings.skill_optimization_candidate_count:
+        config = self._experiment_config(experiment)
+        candidate_count = int(
+            config.get(
+                "candidate_count",
+                self.settings.skill_optimization_candidate_count,
+            )
+        )
+        if len(candidates) >= candidate_count:
+            return candidates
+
+        proposals, role_errors = self._optimizer_pipeline(
+            experiment,
+            epoch,
+            candidate_count=candidate_count,
+        )
+        existing_hashes = {candidate.patch_hash for candidate in candidates}
+        for proposal in proposals:
+            if len(candidates) >= candidate_count:
+                break
+            if proposal["patch_hash"] in existing_hashes:
+                continue
             candidates.append(
                 self._generate_candidate(
                     experiment,
                     epoch,
                     len(candidates) + 1,
+                    structured_patch=proposal["patch"],
+                    provenance=proposal,
+                )
+            )
+            existing_hashes.add(proposal["patch_hash"])
+        while len(candidates) < candidate_count:
+            candidates.append(
+                self._record_rejected_candidate(
+                    experiment,
+                    epoch,
+                    len(candidates) + 1,
+                    rejection_code="optimizer_pipeline_insufficient_candidates",
+                    rejection_message=(
+                        "四角色 Optimizer 未产生足够的唯一合法 Patch。"
+                    ),
+                    raw_output=canonical_json(
+                        {
+                            "candidate_index": len(candidates) + 1,
+                            "role_errors": role_errors,
+                        }
+                    ),
+                    rejection_details=role_errors,
                 )
             )
         return candidates
@@ -1049,7 +2146,7 @@ class OptimizationExperimentService:
             split_role="validation",
             candidate_mutation_id=mutation.id,
         )
-        comparison = compare_paired(observations)
+        config = self._experiment_config(experiment)
         with transaction(self.session_factory) as session:
             snapshot = session.get(
                 OptimizationDataSnapshot, experiment.data_snapshot_id
@@ -1059,40 +2156,69 @@ class OptimizationExperimentService:
             )
             assert snapshot is not None and verifier is not None
             policy = json.loads(verifier.gate_policy_json or "{}")
+        comparison = compare_paired(
+            observations,
+            bootstrap_samples=int(policy.get("bootstrap_samples", 2000)),
+            confidence=float(policy.get("bootstrap_confidence", 0.95)),
+            bootstrap_seed=f"{experiment.id}:{epoch.id}:{mutation.id}",
+        )
         gate = evaluate_gate(
             comparison,
             min_overall_delta=float(
                 policy.get(
                     "min_overall_delta",
-                    self.settings.skill_optimization_min_overall_delta,
+                    config.get(
+                        "min_overall_delta",
+                        self.settings.skill_optimization_min_overall_delta,
+                    ),
                 )
             ),
             minimum_independent_validation_cases=int(
                 policy.get(
                     "minimum_independent_validation_cases",
-                    self.settings.skill_optimization_minimum_independent_validation_cases,
+                    config.get(
+                        "minimum_independent_validation_cases",
+                        self.settings.skill_optimization_minimum_independent_validation_cases,
+                    ),
                 )
             ),
             max_latency_growth=float(
                 policy.get(
                     "max_latency_growth",
-                    self.settings.skill_optimization_max_latency_growth,
+                    config.get(
+                        "max_latency_growth",
+                        self.settings.skill_optimization_max_latency_growth,
+                    ),
                 )
             ),
             max_token_growth=float(
                 policy.get(
                     "max_token_growth",
-                    self.settings.skill_optimization_max_token_growth,
+                    config.get(
+                        "max_token_growth",
+                        self.settings.skill_optimization_max_token_growth,
+                    ),
                 )
             ),
             mode=snapshot.mode,
             current_repeats=int(comparison.get("repeat_count") or 0),
-            max_repeats=self.settings.skill_optimization_max_repeats,
+            max_repeats=int(
+                config.get(
+                    "max_repeats", self.settings.skill_optimization_max_repeats
+                )
+            ),
             critical_dimension_min_delta=float(
                 policy.get("critical_dimension_min_delta", 0.0)
             ),
             critical_family_max_regression=float(
                 policy.get("critical_family_max_regression", -2.0)
+            ),
+            require_token_usage=True,
+            min_candidate_win_probability=float(
+                policy.get("min_candidate_win_probability", 0.0)
+            ),
+            require_bootstrap_lower_bound_positive=bool(
+                policy.get("require_bootstrap_lower_bound_positive", True)
             ),
         )
         self._save_comparison(
@@ -1175,28 +2301,90 @@ class OptimizationExperimentService:
         best_candidate_version_id: str | None = None,
     ) -> None:
         with transaction(self.session_factory) as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             stored_epoch = session.get(OptimizationEpoch, epoch.id)
             stored_experiment = session.get(OptimizationExperiment, experiment.id)
             assert stored_epoch is not None and stored_experiment is not None
-            stored_epoch.decision = decision
-            stored_epoch.best_candidate_version_id = best_candidate_version_id
-            stored_epoch.status = "completed"
-            stored_epoch.finished_at = datetime.now(UTC)
-            stored_experiment.status = "running"
-            session.add(
-                OptimizationEvent(
-                    id=str(uuid4()),
-                    experiment_id=experiment.id,
-                    epoch_id=epoch.id,
-                    event_type="epoch_completed",
-                    payload_json=canonical_json(
-                        {
-                            "decision": decision,
-                            "best_candidate_version_id": best_candidate_version_id,
-                        }
-                    ),
+            if stored_epoch.status == "completed":
+                if (
+                    stored_epoch.decision != decision
+                    or stored_epoch.best_candidate_version_id
+                    != best_candidate_version_id
+                ):
+                    raise AnalystBenchError(
+                        "optimization_epoch_completion_conflict",
+                        "Epoch 已以不同决策完成。",
+                        status_code=409,
+                    )
+                needs_summary = not json.loads(stored_epoch.summary_json or "{}")
+                session.expunge(stored_epoch)
+                session.expunge(stored_experiment)
+                if not needs_summary:
+                    return
+            else:
+                stored_epoch.decision = decision
+                stored_epoch.best_candidate_version_id = best_candidate_version_id
+                stored_epoch.status = "completed"
+                stored_epoch.finished_at = datetime.now(UTC)
+                stored_experiment.status = "running"
+                session.add(
+                    OptimizationEvent(
+                        id=str(uuid4()),
+                        experiment_id=experiment.id,
+                        epoch_id=epoch.id,
+                        event_type="epoch_completed",
+                        payload_json=canonical_json(
+                            {
+                                "decision": decision,
+                                "best_candidate_version_id": best_candidate_version_id,
+                            }
+                        ),
+                    )
+                )
+        self._persist_epoch_summary(experiment.id, epoch.id)
+
+    def _persist_epoch_summary(self, experiment_id: str, epoch_id: str) -> None:
+        """Freeze the deterministic, score-backed summary for a completed Epoch."""
+
+        ledger = build_optimization_ledger(self.detail(experiment_id))
+        summary = next(
+            (
+                item
+                for item in ledger["epochs"]
+                if item.get("epoch_id") == epoch_id
+            ),
+            None,
+        )
+        if summary is None:
+            raise AnalystBenchError(
+                "optimization_epoch_summary_missing",
+                "已完成 Epoch 无法生成优化总结。",
+            )
+        with transaction(self.session_factory) as session:
+            stored_epoch = session.get(OptimizationEpoch, epoch_id)
+            if stored_epoch is None:
+                raise AnalystBenchError(
+                    "optimization_epoch_not_found", "找不到 Epoch。", status_code=404
+                )
+            stored_epoch.summary_json = canonical_json(summary)
+            existing = session.scalar(
+                select(OptimizationEvent.id).where(
+                    OptimizationEvent.experiment_id == experiment_id,
+                    OptimizationEvent.epoch_id == epoch_id,
+                    OptimizationEvent.event_type == "epoch_summary_ready",
                 )
             )
+            if existing is None:
+                session.add(
+                    OptimizationEvent(
+                        id=str(uuid4()),
+                        experiment_id=experiment_id,
+                        epoch_id=epoch_id,
+                        event_type="epoch_summary_ready",
+                        payload_json=stored_epoch.summary_json,
+                    )
+                )
 
     def _early_stop_reason(
         self,
@@ -1217,7 +2405,13 @@ class OptimizationExperimentService:
             return None
         if epochs[0].epoch_number >= experiment.max_epochs:
             return "MAX_EPOCHS"
-        patience = self.settings.skill_optimization_early_stop_patience
+        config = self._experiment_config(experiment)
+        patience = int(
+            config.get(
+                "early_stop_patience",
+                self.settings.skill_optimization_early_stop_patience,
+            )
+        )
         recent = [item.decision for item in epochs[:patience]]
         if len(recent) >= patience and all(
             item == "no_screening_survivor" for item in recent
@@ -1249,6 +2443,7 @@ class OptimizationExperimentService:
             )
 
     def advance(self, experiment_id: str) -> None:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             if session.get_bind().dialect.name == "sqlite":
                 session.execute(text("BEGIN IMMEDIATE"))
@@ -1261,9 +2456,14 @@ class OptimizationExperimentService:
                 .order_by(OptimizationEpoch.epoch_number.desc())
                 .limit(1)
             )
+            self._assert_active_parent(session, experiment, epoch)
             for item in (experiment, epoch):
                 if item is not None:
                     session.expunge(item)
+        # Case files remain external to the managed Skill store. Re-hash them
+        # at every durable phase transition so one experiment cannot silently
+        # mix different Case or Eval Spec contents after its Snapshot freezes.
+        self._verify_snapshot(experiment_id)
         if epoch is None:
             epoch = self._create_epoch(
                 experiment,
@@ -1284,6 +2484,8 @@ class OptimizationExperimentService:
             self._requeue(experiment.id)
             return
         if epoch.status == "completed":
+            if not json.loads(epoch.summary_json or "{}"):
+                self._persist_epoch_summary(experiment.id, epoch.id)
             stop_reason = self._early_stop_reason(experiment)
             if stop_reason:
                 self._finish_experiment(experiment.id, stop_reason)
@@ -1392,25 +2594,18 @@ class OptimizationExperimentService:
                 return
             assert mutation.candidate_skill_version_id
             _, case_paths, _, _ = self._snapshot_inputs(experiment)
-            repeats = self.settings.skill_optimization_validation_repeats
-            self._ensure_run_groups(
-                experiment,
-                epoch,
-                split_role="validation",
-                arm="baseline",
-                version_id=epoch.parent_skill_version_id,
-                candidate_mutation_id=None,
-                repeat_indices=range(repeats),
-                case_paths=case_paths,
+            config = self._experiment_config(experiment)
+            repeats = int(
+                config.get(
+                    "validation_repeats",
+                    self.settings.skill_optimization_validation_repeats,
+                )
             )
-            self._ensure_run_groups(
+            self._ensure_paired_validation_groups(
                 experiment,
                 epoch,
-                split_role="validation",
-                arm="candidate",
-                version_id=mutation.candidate_skill_version_id,
-                candidate_mutation_id=mutation.id,
-                repeat_indices=range(repeats),
+                mutation,
+                repeats=repeats,
                 case_paths=case_paths,
             )
             self._requeue(experiment.id)
@@ -1464,31 +2659,23 @@ class OptimizationExperimentService:
                     if reason.get("next_repeats")
                 ),
                 min(
-                    self.settings.skill_optimization_max_repeats,
+                    int(
+                        self._experiment_config(experiment).get(
+                            "max_repeats",
+                            self.settings.skill_optimization_max_repeats,
+                        )
+                    ),
                     5
                     if int(comparison.get("repeat_count") or 0) < 5
                     else 7,
                 ),
             )
             _, case_paths, _, _ = self._snapshot_inputs(experiment)
-            self._ensure_run_groups(
+            self._ensure_paired_validation_groups(
                 experiment,
                 epoch,
-                split_role="validation",
-                arm="baseline",
-                version_id=epoch.parent_skill_version_id,
-                candidate_mutation_id=None,
-                repeat_indices=range(requested),
-                case_paths=case_paths,
-            )
-            self._ensure_run_groups(
-                experiment,
-                epoch,
-                split_role="validation",
-                arm="candidate",
-                version_id=mutation.candidate_skill_version_id,
-                candidate_mutation_id=mutation.id,
-                repeat_indices=range(requested),
+                mutation,
+                repeats=requested,
                 case_paths=case_paths,
             )
             with transaction(self.session_factory) as session:
@@ -1516,6 +2703,7 @@ class OptimizationExperimentService:
                 skill_id=experiment.skill_id,
                 evaluation_target_id=experiment.evaluation_target_id,
                 version_id=mutation.candidate_skill_version_id,
+                expected_active_version_id=epoch.parent_skill_version_id,
                 gate_result=gate,
                 expected_lock_version=lock_version,
                 evidence={"comparison_type": "paired_repeated_validation"},
@@ -1538,13 +2726,29 @@ class OptimizationExperimentService:
                 session, "skill_optimization_advance", {"experiment_id": experiment_id}
             )
 
-    def list_experiments(self) -> list[OptimizationExperiment]:
+    @staticmethod
+    def _page(query: Any, *, limit: int, offset: int) -> Any:
+        if limit < 1 or limit > 500 or offset < 0:
+            raise AnalystBenchError(
+                "optimization_pagination_invalid",
+                "分页参数无效；limit 必须为 1..500，offset 不能为负数。",
+            )
+        return query.offset(offset).limit(limit)
+
+    def list_experiments(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> list[OptimizationExperiment]:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             items = list(
                 session.scalars(
-                    select(OptimizationExperiment).order_by(
-                        OptimizationExperiment.created_at.desc(),
-                        OptimizationExperiment.id,
+                    self._page(
+                        select(OptimizationExperiment).order_by(
+                            OptimizationExperiment.created_at.desc(),
+                            OptimizationExperiment.id,
+                        ),
+                        limit=limit,
+                        offset=offset,
                     )
                 )
             )
@@ -1552,13 +2756,20 @@ class OptimizationExperimentService:
                 session.expunge(item)
             return items
 
-    def list_policies(self) -> list[OptimizerPolicyVersion]:
+    def list_policies(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> list[OptimizerPolicyVersion]:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             items = list(
                 session.scalars(
-                    select(OptimizerPolicyVersion).order_by(
-                        OptimizerPolicyVersion.created_at.desc(),
-                        OptimizerPolicyVersion.id,
+                    self._page(
+                        select(OptimizerPolicyVersion).order_by(
+                            OptimizerPolicyVersion.created_at.desc(),
+                            OptimizerPolicyVersion.id,
+                        ),
+                        limit=limit,
+                        offset=offset,
                     )
                 )
             )
@@ -1566,13 +2777,20 @@ class OptimizationExperimentService:
                 session.expunge(item)
             return items
 
-    def list_verifiers(self) -> list[VerifierBundleVersion]:
+    def list_verifiers(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> list[VerifierBundleVersion]:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             items = list(
                 session.scalars(
-                    select(VerifierBundleVersion).order_by(
-                        VerifierBundleVersion.created_at.desc(),
-                        VerifierBundleVersion.id,
+                    self._page(
+                        select(VerifierBundleVersion).order_by(
+                            VerifierBundleVersion.created_at.desc(),
+                            VerifierBundleVersion.id,
+                        ),
+                        limit=limit,
+                        offset=offset,
                     )
                 )
             )
@@ -1580,13 +2798,20 @@ class OptimizationExperimentService:
                 session.expunge(item)
             return items
 
-    def list_snapshots(self) -> list[OptimizationDataSnapshot]:
+    def list_snapshots(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> list[OptimizationDataSnapshot]:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             items = list(
                 session.scalars(
-                    select(OptimizationDataSnapshot).order_by(
-                        OptimizationDataSnapshot.created_at.desc(),
-                        OptimizationDataSnapshot.id,
+                    self._page(
+                        select(OptimizationDataSnapshot).order_by(
+                            OptimizationDataSnapshot.created_at.desc(),
+                            OptimizationDataSnapshot.id,
+                        ),
+                        limit=limit,
+                        offset=offset,
                     )
                 )
             )
@@ -1594,15 +2819,110 @@ class OptimizationExperimentService:
                 session.expunge(item)
             return items
 
-    def detail(self, experiment_id: str) -> dict[str, Any]:
+    def summary(self, experiment_id: str) -> dict[str, Any]:
+        """Return the compact aggregate from frozen Epoch summaries."""
+
+        self.registry._require_enabled()
+
         experiment = self.get(experiment_id)
         with transaction(self.session_factory) as session:
-            epochs = list(
-                session.scalars(
-                    select(OptimizationEpoch)
-                    .where(OptimizationEpoch.experiment_id == experiment_id)
+            rows = list(
+                session.execute(
+                    select(
+                        OptimizationEpoch.epoch_number,
+                        OptimizationEpoch.decision,
+                        OptimizationEpoch.summary_json,
+                    )
+                    .where(
+                        OptimizationEpoch.experiment_id == experiment_id,
+                        OptimizationEpoch.status == "completed",
+                    )
                     .order_by(OptimizationEpoch.epoch_number)
                 )
+            )
+        summaries = [
+            json.loads(value or "{}")
+            for _, _, value in rows
+            if value and value != "{}"
+        ]
+        if rows and len(summaries) != len(rows):
+            # 0017 cannot reconstruct historical summaries inside a schema
+            # migration. Rebuild the read model from immutable comparisons so
+            # upgraded completed experiments still have a useful ledger.
+            rebuilt = build_optimization_ledger(self.detail(experiment_id))["summary"]
+            return {
+                **rebuilt,
+                "stop_reason": experiment.stop_reason,
+            }
+        initial_score = next(
+            (
+                item.get("baseline_score")
+                for item in summaries
+                if item.get("baseline_score") is not None
+            ),
+            None,
+        )
+        cumulative_delta = (
+            summaries[-1].get("cumulative_delta") if summaries else None
+        )
+        final_score = (
+            float(initial_score) + float(cumulative_delta)
+            if initial_score is not None and cumulative_delta is not None
+            else None
+        )
+        decisions = [decision for _, decision, _ in rows]
+        return {
+            "initial_score": initial_score,
+            "final_score": final_score,
+            "active_path_score": final_score,
+            "score_semantics": "initial_score_plus_promoted_epoch_deltas",
+            "cumulative_delta": cumulative_delta,
+            "promoted_epochs": decisions.count("promote"),
+            "retained_epochs": sum(
+                decision in {"retain", "no_screening_survivor"}
+                for decision in decisions
+            ),
+            "stop_reason": experiment.stop_reason,
+        }
+
+    def detail(
+        self,
+        experiment_id: str,
+        *,
+        epoch_offset: int = 0,
+        epoch_limit: int | None = None,
+        newest_first: bool = False,
+    ) -> dict[str, Any]:
+        self.registry._require_enabled()
+        experiment = self.get(experiment_id)
+        if epoch_offset < 0 or epoch_limit is not None and epoch_limit < 1:
+            raise AnalystBenchError(
+                "optimization_pagination_invalid", "Epoch 分页参数无效。"
+            )
+        with transaction(self.session_factory) as session:
+            epoch_total = int(
+                session.scalar(
+                    select(func.count(OptimizationEpoch.id)).where(
+                        OptimizationEpoch.experiment_id == experiment_id
+                    )
+                )
+                or 0
+            )
+            order = (
+                OptimizationEpoch.epoch_number.desc()
+                if newest_first
+                else OptimizationEpoch.epoch_number
+            )
+            epoch_query = (
+                select(OptimizationEpoch)
+                .where(OptimizationEpoch.experiment_id == experiment_id)
+                .order_by(order)
+                .offset(epoch_offset)
+            )
+            if epoch_limit is not None:
+                epoch_query = epoch_query.limit(epoch_limit)
+            epochs = list(
+                session.scalars(epoch_query)
             )
             epoch_ids = [item.id for item in epochs]
             candidates = (
@@ -1641,6 +2961,31 @@ class OptimizationExperimentService:
                 if epoch_ids
                 else []
             )
+            version_ids = {
+                experiment.base_skill_version_id,
+                *(epoch.parent_skill_version_id for epoch in epochs),
+                *(
+                    epoch.best_candidate_version_id
+                    for epoch in epochs
+                    if epoch.best_candidate_version_id
+                ),
+                *(
+                    candidate.candidate_skill_version_id
+                    for candidate in candidates
+                    if candidate.candidate_skill_version_id
+                ),
+            }
+            versions = (
+                list(
+                    session.scalars(
+                        select(SkillPackageVersion).where(
+                            SkillPackageVersion.id.in_(version_ids)
+                        )
+                    )
+                )
+                if version_ids
+                else []
+            )
         comparison_by_candidate: dict[str, list[dict[str, Any]]] = {}
         for item in comparisons:
             comparison_by_candidate.setdefault(item.candidate_mutation_id, []).append(
@@ -1661,6 +3006,19 @@ class OptimizationExperimentService:
             candidates_by_epoch.setdefault(item.epoch_id, []).append(item)
         return {
             "experiment": experiment,
+            "epoch_total": epoch_total,
+            "version_metadata": {
+                version.id: {
+                    "id": version.id,
+                    "version_number": version.version_number,
+                    "package_hash": version.package_hash,
+                    "parent_version_id": version.parent_version_id,
+                    "source_type": version.source_type,
+                    "status": version.status,
+                    "created_at": version.created_at,
+                }
+                for version in versions
+            },
             "epochs": [
                 {
                     "id": epoch.id,
@@ -1670,6 +3028,7 @@ class OptimizationExperimentService:
                     "best_candidate_version_id": epoch.best_candidate_version_id,
                     "decision": epoch.decision,
                     "evidence": json.loads(epoch.evidence_summary_json or "{}"),
+                    "summary": json.loads(epoch.summary_json or "{}"),
                     "finished_at": epoch.finished_at,
                     "candidates": [
                         {
@@ -1683,6 +3042,13 @@ class OptimizationExperimentService:
                             ),
                             "patch_hash": candidate.patch_hash,
                             "rationale": candidate.rationale,
+                            "intended_failure_clusters": json.loads(
+                                candidate.intended_failure_clusters_json or "[]"
+                            ),
+                            "intent": json.loads(candidate.intent_json or "{}"),
+                            "change_stats": json.loads(
+                                candidate.change_stats_json or "{}"
+                            ),
                             "status": candidate.status,
                             "rejection_code": candidate.rejection_code,
                             "rejection_detail": json.loads(
@@ -1717,6 +3083,7 @@ class OptimizationExperimentService:
         }
 
     def candidate_detail(self, candidate_id: str) -> dict[str, Any]:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             candidate = session.get(CandidateMutation, candidate_id)
             if candidate is None:
@@ -1746,6 +3113,11 @@ class OptimizationExperimentService:
                 "patch": json.loads(candidate.structured_patch_json or "{}"),
                 "patch_hash": candidate.patch_hash,
                 "rationale": candidate.rationale,
+                "intended_failure_clusters": json.loads(
+                    candidate.intended_failure_clusters_json or "[]"
+                ),
+                "intent": json.loads(candidate.intent_json or "{}"),
+                "change_stats": json.loads(candidate.change_stats_json or "{}"),
                 "status": candidate.status,
                 "rejection_code": candidate.rejection_code,
                 "rejection_detail": json.loads(
@@ -1772,6 +3144,7 @@ class OptimizationExperimentService:
         return values
 
     def get(self, experiment_id: str) -> OptimizationExperiment:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             item = session.get(OptimizationExperiment, experiment_id)
             if item is None:
@@ -1782,7 +3155,11 @@ class OptimizationExperimentService:
             return item
 
     def resume(self, experiment_id: str) -> OptimizationExperiment:
+        self.registry._require_enabled()
+        self._verify_snapshot(experiment_id)
         with transaction(self.session_factory) as session:
+            if session.get_bind().dialect.name == "sqlite":
+                session.execute(text("BEGIN IMMEDIATE"))
             item = session.get(OptimizationExperiment, experiment_id)
             if item is None:
                 raise AnalystBenchError(
@@ -1795,6 +3172,18 @@ class OptimizationExperimentService:
                     "optimization_experiment_state_invalid",
                     "已完成或已取消的实验不能恢复。",
                 )
+            snapshot = session.get(
+                OptimizationDataSnapshot, item.data_snapshot_id, with_for_update=True
+            )
+            assert snapshot is not None
+            self._assert_independent_snapshot_unused(session, item, snapshot)
+            latest_epoch = session.scalar(
+                select(OptimizationEpoch)
+                .where(OptimizationEpoch.experiment_id == item.id)
+                .order_by(OptimizationEpoch.epoch_number.desc())
+                .limit(1)
+            )
+            self._assert_active_parent(session, item, latest_epoch)
             item.status = "running"
             item.stop_reason = None
             item.error_json = "{}"
@@ -1816,6 +3205,7 @@ class OptimizationExperimentService:
             return item
 
     def cancel(self, experiment_id: str) -> OptimizationExperiment:
+        self.registry._require_enabled()
         with transaction(self.session_factory) as session:
             item = session.get(OptimizationExperiment, experiment_id)
             if item is None:
@@ -1845,7 +3235,9 @@ class OptimizationExperimentService:
             )
         for submission_id in submission_ids:
             try:
-                self.submissions.cancel_submission(submission_id)
+                self.submissions.cancel_submission(
+                    submission_id, allow_optimization=True
+                )
             except AnalystBenchError:
                 # Cancellation is idempotent; already terminal submissions are
                 # retained as immutable evidence.
@@ -1875,14 +3267,21 @@ class OptimizationExperimentService:
                 )
             )
 
-    def events(self, experiment_id: str) -> list[OptimizationEvent]:
+    def events(
+        self, experiment_id: str, *, limit: int = 500, offset: int = 0
+    ) -> list[OptimizationEvent]:
+        self.registry._require_enabled()
         self.get(experiment_id)
         with transaction(self.session_factory) as session:
             items = list(
                 session.scalars(
-                    select(OptimizationEvent)
-                    .where(OptimizationEvent.experiment_id == experiment_id)
-                    .order_by(OptimizationEvent.created_at, OptimizationEvent.id)
+                    self._page(
+                        select(OptimizationEvent)
+                        .where(OptimizationEvent.experiment_id == experiment_id)
+                        .order_by(OptimizationEvent.created_at, OptimizationEvent.id),
+                        limit=limit,
+                        offset=offset,
+                    )
                 )
             )
             for item in items:

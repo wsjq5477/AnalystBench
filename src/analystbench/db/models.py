@@ -589,6 +589,43 @@ class SkillTargetBinding(TimestampedModel, Base):
     lock_version: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class SkillBindingHistory(Base):
+    """Append-only audit record for every active Skill binding transition."""
+
+    __tablename__ = "skill_binding_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "binding_id", "lock_version", name="uq_skill_binding_history_lock"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    binding_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_target_bindings.id", ondelete="RESTRICT"), index=True
+    )
+    skill_id: Mapped[str] = mapped_column(
+        ForeignKey("skills.id", ondelete="RESTRICT"), index=True
+    )
+    evaluation_target_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_targets.id", ondelete="RESTRICT"), index=True
+    )
+    previous_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    active_version_id: Mapped[str] = mapped_column(
+        ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), index=True
+    )
+    active_level: Mapped[str] = mapped_column(String(32))
+    lock_version: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class EvaluationVariant(TimestampedModel, Base):
     """A frozen EvaluationTarget x SkillPackageVersion executable variant."""
 
@@ -730,6 +767,7 @@ class OptimizationEpoch(TimestampedModel, Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="created", index=True)
     evidence_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
     best_candidate_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("skill_package_versions.id", ondelete="RESTRICT"), nullable=True
     )
@@ -759,6 +797,8 @@ class CandidateMutation(TimestampedModel, Base):
     patch_hash: Mapped[str] = mapped_column(String(71), index=True)
     rationale: Mapped[str] = mapped_column(Text, default="")
     intended_failure_clusters_json: Mapped[str] = mapped_column(Text, default="[]")
+    intent_json: Mapped[str] = mapped_column(Text, default="{}")
+    change_stats_json: Mapped[str] = mapped_column(Text, default="{}")
     evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
     status: Mapped[str] = mapped_column(String(32), default="proposed", index=True)
     rejection_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -801,6 +841,11 @@ class OptimizationRunGroup(TimestampedModel, Base):
             "arm",
             "repeat_index",
             name="uq_optimization_run_group",
+        ),
+        UniqueConstraint(
+            "experiment_id",
+            "run_config_hash",
+            name="uq_optimization_run_group_config",
         ),
     )
 
@@ -941,6 +986,9 @@ class EvaluationSubmission(TimestampedModel, Base):
     __tablename__ = "evaluation_submissions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True
+    )
     dataset_key: Mapped[str] = mapped_column(String(255), index=True)
     run_timestamp: Mapped[str] = mapped_column(String(14), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)

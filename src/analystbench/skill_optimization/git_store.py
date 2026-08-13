@@ -169,9 +169,9 @@ class ManagedGitStore:
                     continue
                 target = destination / child.name
                 if child.is_dir():
-                    shutil.copytree(child, target, symlinks=False)
+                    shutil.copytree(child, target, symlinks=False, copy_function=shutil.copy2)
                 else:
-                    shutil.copyfile(child, target, follow_symlinks=False)
+                    shutil.copy2(child, target, follow_symlinks=False)
 
     def diff(self, *, skill_id: str, old_commit: str, new_commit: str) -> str:
         repository = self.ensure_repository(skill_id)
@@ -190,3 +190,40 @@ class ManagedGitStore:
                 ],
                 home=home,
             )
+
+    def delete_version_ref(self, *, skill_id: str, version_id: str) -> None:
+        """Best-effort cleanup for a ref whose database transaction rolled back."""
+
+        repository = self._repo(skill_id)
+        if not repository.is_dir():
+            return
+        with tempfile.TemporaryDirectory(dir=self.tmp_root) as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            self._run(
+                [
+                    f"--git-dir={repository}",
+                    "update-ref",
+                    "-d",
+                    f"refs/analystbench/versions/{version_id}",
+                ],
+                home=home,
+            )
+
+    def delete_repository_if_unreferenced(self, skill_id: str) -> bool:
+        """Remove only an exact managed repository that has no retained refs."""
+
+        repository = self._repo(skill_id)
+        if not repository.is_dir():
+            return False
+        with tempfile.TemporaryDirectory(dir=self.tmp_root) as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            refs = self._run(
+                [f"--git-dir={repository}", "for-each-ref", "--format=%(refname)"],
+                home=home,
+            )
+        if refs.strip():
+            return False
+        shutil.rmtree(repository)
+        return True

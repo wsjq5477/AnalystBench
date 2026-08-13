@@ -2,10 +2,12 @@
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +27,7 @@ from analystbench.catalog.case_library import (
 )
 from analystbench.catalog.service import CatalogService
 from analystbench.catalog.suites import list_suites
-from analystbench.config import get_settings
+from analystbench.config import Settings, get_settings
 from analystbench.db.models import DatasetVersion
 from analystbench.db.session import create_database_engine, create_session_factory
 from analystbench.errors import AnalystBenchError, NotFoundError
@@ -38,6 +40,7 @@ from analystbench.evaluation.direct import (
 )
 from analystbench.evaluation.session import EvaluationSessionService
 from analystbench.evaluation.spec import EvalSpecService
+from analystbench.evaluation.submission import EvaluationSubmissionService
 from analystbench.runtime.service import (
     read_service_record,
     remove_service_record,
@@ -46,12 +49,26 @@ from analystbench.runtime.service import (
     stop_detached_service,
 )
 from analystbench.scoring.reporting import render_markdown
+from analystbench.skill_optimization.experiment import OptimizationExperimentService
+from analystbench.skill_optimization.preflight import SkillOptimizationPreflightService
+from analystbench.skill_optimization.registry import SkillRegistryService
+from analystbench.skill_optimization.reporting import (
+    build_optimization_ledger,
+    render_optimization_ledger_csv,
+    render_optimization_ledger_markdown,
+    serialize_optimization_ledger,
+)
 from analystbench.storage.content import ContentStore
 from analystbench.worker import LocalWorker
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 service_app = typer.Typer(no_args_is_help=True, help="Manage the detached local service.")
 app.add_typer(service_app, name="service")
+skill_opt_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect, export, preflight, and roll back Skill optimization state.",
+)
+app.add_typer(skill_opt_app, name="skill-opt")
 logger = logging.getLogger(__name__)
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -102,6 +119,27 @@ def evaluation_batch_service() -> EvaluationBatchService:
     return EvaluationBatchService(
         create_session_factory(engine), ContentStore(settings.content_store_path), settings
     )
+
+
+def _skill_optimization_components() -> tuple[
+    object,
+    Settings,
+    object,
+    SkillRegistryService,
+    OptimizationExperimentService,
+]:
+    settings = get_settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    registry = SkillRegistryService(session_factory, settings)
+    submissions = EvaluationSubmissionService(session_factory, settings)
+    experiments = OptimizationExperimentService(
+        session_factory,
+        settings,
+        registry,
+        submissions,
+    )
+    return engine, settings, session_factory, registry, experiments
 
 
 def _clear_sqlite_database(database: Path) -> None:
@@ -544,7 +582,10 @@ def case_import(
             if question.get("options") and "approved" in question.get("options", []):
                 value = "approved"
             typer.echo(f"自动确认 {question['field_path']}：{value}")
-            item = service.submit_answers(item.id, [{"question_id": question["id"], "value": value}])
+            item = service.submit_answers(
+                item.id,
+                [{"question_id": question["id"], "value": value}],
+            )
             continue
         typer.echo(f"需要确认 {question['field_path']}：")
         typer.echo(question["question"])
@@ -725,9 +766,7 @@ def evaluate_reports(
         list[Path],
         typer.Argument(help="一份或多份 AI 报告原文路径"),
     ],
-    judge: str = typer.Option(
-        "claude", "--judge", help="语义 Judge：claude、opencode 或 lexical"
-    ),
+    judge: str = typer.Option("claude", "--judge", help="语义 Judge：claude、opencode 或 lexical"),
 ) -> None:
     """用本地 Case JSON 或数据库 Case 分别评分多份报告，并自动对比。"""
     if not report_paths:
@@ -804,9 +843,7 @@ def score_with_alignment(
     if not case_path.is_file():
         raise AnalystBenchError("case_file_not_found", f"找不到本地 Case JSON：{case_path}")
     if not alignment_path.is_file():
-        raise AnalystBenchError(
-            "alignment_file_not_found", f"找不到对齐 JSON：{alignment_path}"
-        )
+        raise AnalystBenchError("alignment_file_not_found", f"找不到对齐 JSON：{alignment_path}")
     reports = [_read_report_input(path) for path in report_paths]
     case_key = case_path.stem
     case_payload = _read_json(case_path)
@@ -823,10 +860,7 @@ def score_with_alignment(
         raise typer.BadParameter(f"{exc.code}：{exc.message}{details}") from exc
     output_dir, result_id = _tmp_result_dir(case_payload, case_path)
     result["id"] = result_id
-    _write_structured_result(
-        result, output_dir, result_id, case_path, case_payload, report_paths
-    )
-
+    _write_structured_result(result, output_dir, result_id, case_path, case_payload, report_paths)
 
 
 @app.command("promote")
@@ -837,7 +871,13 @@ def promote_result(
     ],
     dest: Annotated[
         str | None,
-        typer.Option("--dest", help="指定目标路径，格式如 {test_set}/{category}/{case_dir}。不指定则从 result.json 自动读取。"),
+        typer.Option(
+            "--dest",
+            help=(
+                "指定目标路径，格式如 {test_set}/{category}/{case_dir}。"
+                "不指定则从 result.json 自动读取。"
+            ),
+        ),
     ] = None,
 ) -> None:
     """将临时评测结果归档到正式结果集目录。"""
@@ -852,7 +892,9 @@ def promote_result(
         alt_path = tmp_dir / result_id.removeprefix("tmp/") / "result.json"
         if alt_path.is_file():
             result_path = alt_path
-            result_id = result_id.removeprefix("tmp/") if not result_id.startswith("tmp/") else result_id
+            result_id = (
+                result_id.removeprefix("tmp/") if not result_id.startswith("tmp/") else result_id
+            )
         else:
             raise typer.BadParameter(f"找不到临时评测结果：{result_id}")
 
@@ -929,7 +971,7 @@ def promote_result(
 
     # Update the id in result.json
     result_data["id"] = new_result_id
-    formal_dest / "result.json" .write_text(
+    formal_dest / "result.json".write_text(
         json.dumps(result_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
 
@@ -1180,6 +1222,197 @@ def evaluation_session_process(session_id: str) -> None:
             default=str,
         )
     )
+
+
+def _validate_cli_artifact_destination(output: Path | None, *, overwrite: bool) -> Path | None:
+    if output is None:
+        return None
+    destination = output.expanduser().resolve()
+    if not destination.parent.is_dir():
+        raise typer.BadParameter(f"输出目录不存在：{destination.parent}")
+    if destination.is_dir():
+        raise typer.BadParameter(f"输出路径是目录：{destination}")
+    if destination.exists() and not overwrite:
+        raise typer.BadParameter(f"输出已存在：{destination}；如需覆盖请增加 --overwrite")
+    return destination
+
+
+def _write_cli_artifact(
+    output: Path | None,
+    content: str | bytes,
+    *,
+    overwrite: bool,
+) -> None:
+    if output is None:
+        if isinstance(content, bytes):
+            raise typer.BadParameter("二进制导出必须指定 --output")
+        typer.echo(content, nl=not content.endswith("\n"))
+        return
+    destination = _validate_cli_artifact_destination(output, overwrite=overwrite)
+    assert destination is not None
+    payload = content if isinstance(content, bytes) else content.encode("utf-8")
+    if not overwrite:
+        created = False
+        try:
+            with destination.open("xb") as stream:
+                created = True
+                stream.write(payload)
+        except FileExistsError as exc:
+            raise typer.BadParameter(
+                f"输出已存在：{destination}；如需覆盖请增加 --overwrite"
+            ) from exc
+        except Exception:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
+    else:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary_path = Path(stream.name)
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary_path.replace(destination)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+    typer.echo(str(destination))
+
+
+@skill_opt_app.command("preflight")
+def skill_opt_preflight(
+    skill_key: Annotated[str | None, typer.Option("--skill-key")] = None,
+    target_id: Annotated[str | None, typer.Option("--target-id")] = None,
+    profile_id: Annotated[str | None, typer.Option("--profile-id")] = None,
+    policy_id: Annotated[str | None, typer.Option("--policy-id")] = None,
+    verifier_id: Annotated[str | None, typer.Option("--verifier-id")] = None,
+    snapshot_id: Annotated[str | None, typer.Option("--snapshot-id")] = None,
+    case_path: Annotated[list[str] | None, typer.Option("--case-path")] = None,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Treat WARN as a non-zero result too.")
+    ] = False,
+) -> None:
+    """Check a private runtime without running an optimization experiment."""
+
+    engine, settings, session_factory, _, _ = _skill_optimization_components()
+    try:
+        result = SkillOptimizationPreflightService(session_factory, settings).run(
+            skill_key=skill_key,
+            evaluation_target_id=target_id,
+            execution_profile_id=profile_id,
+            optimizer_policy_version_id=policy_id,
+            verifier_bundle_version_id=verifier_id,
+            case_paths=case_path,
+            data_snapshot_id=snapshot_id,
+        )
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        if result["status"] == "FAIL" or strict and result["status"] == "WARN":
+            raise typer.Exit(code=1)
+    except AnalystBenchError as exc:
+        raise typer.BadParameter(f"{exc.code}：{exc.message}") from exc
+    finally:
+        engine.dispose()  # type: ignore[attr-defined]
+
+
+@skill_opt_app.command("ledger")
+def skill_opt_ledger(
+    experiment_id: str,
+    format: Annotated[str, typer.Option("--format")] = "json",
+    output: Annotated[Path | None, typer.Option("--output")] = None,
+    overwrite: Annotated[bool, typer.Option("--overwrite")] = False,
+) -> None:
+    """Export every Epoch change, score delta, Gate, and Active decision."""
+
+    normalized = format.lower()
+    if normalized not in {"json", "markdown", "csv"}:
+        raise typer.BadParameter("--format 只支持 json、markdown 或 csv")
+    _validate_cli_artifact_destination(output, overwrite=overwrite)
+    engine, _, _, _, experiments = _skill_optimization_components()
+    try:
+        ledger = build_optimization_ledger(experiments.detail(experiment_id))
+        content = {
+            "json": serialize_optimization_ledger,
+            "markdown": render_optimization_ledger_markdown,
+            "csv": render_optimization_ledger_csv,
+        }[normalized](ledger)
+        _write_cli_artifact(output, content, overwrite=overwrite)
+    except AnalystBenchError as exc:
+        raise typer.BadParameter(f"{exc.code}：{exc.message}") from exc
+    finally:
+        engine.dispose()  # type: ignore[attr-defined]
+
+
+@skill_opt_app.command("version-export")
+def skill_opt_version_export(
+    skill_id: str,
+    version_id: str,
+    output: Annotated[Path, typer.Option("--output")],
+    overwrite: Annotated[bool, typer.Option("--overwrite")] = False,
+) -> None:
+    """Export one immutable Managed Skill version as a self-describing ZIP."""
+
+    _validate_cli_artifact_destination(output, overwrite=overwrite)
+    engine, _, _, registry, _ = _skill_optimization_components()
+    try:
+        exported = registry.export_version_archive(
+            skill_id=skill_id,
+            version_id=version_id,
+        )
+        _write_cli_artifact(output, exported["content"], overwrite=overwrite)
+    except AnalystBenchError as exc:
+        raise typer.BadParameter(f"{exc.code}：{exc.message}") from exc
+    finally:
+        engine.dispose()  # type: ignore[attr-defined]
+
+
+@skill_opt_app.command("rollback")
+def skill_opt_rollback(
+    skill_id: str,
+    target_id: str,
+    version_id: str,
+    expected_lock_version: Annotated[int, typer.Option("--expected-lock-version", min=1)],
+    reason: Annotated[str, typer.Option("--reason")] = "manual_cli_rollback",
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm the Active change.")] = False,
+) -> None:
+    """Explicitly restore a version previously active on the same Target."""
+
+    if not yes:
+        raise typer.BadParameter("回滚会切换 Managed Active；确认后请增加 --yes")
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise typer.BadParameter("--reason 不能为空")
+    engine, _, _, registry, _ = _skill_optimization_components()
+    try:
+        binding = registry.rollback(
+            skill_id=skill_id,
+            evaluation_target_id=target_id,
+            version_id=version_id,
+            expected_lock_version=expected_lock_version,
+            reason=normalized_reason,
+        )
+        typer.echo(
+            json.dumps(
+                {
+                    "skill_id": binding.skill_id,
+                    "evaluation_target_id": binding.evaluation_target_id,
+                    "active_version_id": binding.active_version_id,
+                    "active_level": binding.active_level,
+                    "lock_version": binding.lock_version,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    except AnalystBenchError as exc:
+        raise typer.BadParameter(f"{exc.code}：{exc.message}") from exc
+    finally:
+        engine.dispose()  # type: ignore[attr-defined]
 
 
 @app.command("compare")

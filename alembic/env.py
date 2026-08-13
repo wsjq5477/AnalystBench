@@ -14,7 +14,11 @@ from analystbench.db.base import Base  # noqa: E402
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic may run inside the long-lived API process or a test process that
+    # already configured application loggers.  Disabling those loggers here
+    # makes later Judge/Worker audit events disappear depending on migration
+    # order.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -277,7 +277,10 @@ PATH 中的 `claude`，也可通过环境变量指定；这项环境验收和真
 
 ## 项目状态
 
-AnalystBench 当前处于 MVP 开发阶段。已完成的能力和运行方式以开发设计文档与下方命令为准；claude/OpenCode 的真实执行适配器将在后续阶段接入。
+AnalystBench 当前处于 MVP 开发阶段。已完成的能力和运行方式以当前代码、
+测试和运行手册为准。Skill 自优化的本地代码闭环已经实现；真实 claude
+二进制验收、用户私有 Case 实验和研究结论必须在用户自己的私有环境运行，
+仓库中的确定性测试不能替代这部分证据。
 
 ## 快速开始
 
@@ -327,8 +330,17 @@ API 文档位于 `http://127.0.0.1:8000/docs`，就绪探针位于 `/api/v1/heal
 
 ```dotenv
 ANALYSTBENCH_SKILL_OPTIMIZATION_ENABLED=true
-ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=./data/skill-optimization
+ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=/absolute/path/to/analystbench-skill-optimization
 ```
+
+`MANAGED_ROOT` 必须显式配置为已存在、可写的绝对路径；它保存 AnalystBench
+管理的不可变 Skill 版本和内部 Git，不要指向用户源 Skill 或 AnalystBench
+源码仓库。
+
+Linux/WSL 私有验收还需安装且允许 Worker 运行 `bubblewrap`；
+`preflight --strict` 会实际探测 namespace。Optimizer、Target 和 Judge 使用
+每次命令自己的临时 HOME/XDG 目录，因此普通用户 HOME 中的交互式 CLI
+登录不会自动复制；详细认证与沙箱边界见运行手册。
 
 再启动后端与前端：
 
@@ -339,16 +351,33 @@ cd src/frontend && npm install && npm run serve
 
 打开 `http://127.0.0.1:5173/skill-optimization`，通过三步向导配置：
 
-1. 已冻结且命令中包含 `/skill-name` 的 claude Evaluation Target；
-2. 本地 Skill 和初始不可变版本；
-3. 已冻结的 claude/OpenCode Optimizer Execution Profile；
-4. Optimizer Policy、Verifier、Case Snapshot 和 Experiment；
-5. 启动 Experiment，由 Worker 自动生成候选、重复评测并执行 Gate。
+1. **Skill**：从冻结 Harness 的
+   `skill_base_dir/skills/<skill-key>` 导入本地 Skill 和初始不可变版本；
+   调用名自动为 `/<skill-key>`；
+2. **Benchmark**：选择命令中包含 `/skill-key` 的冻结 Evaluation
+   Target，并选择 `development_regression` 或在页面划分
+   Train/Validation/Hidden/Prospective 的 `independent_validation`；
+3. **Gate**：创建冻结 Optimizer Profile、Policy 和 Verifier，设置门禁并启动
+   Experiment。`independent_validation` 固定只运行一个 Epoch；
+   Hidden/Prospective 只冻结和隔离，不由当前闭环自动运行。
+
+优化器不会直接编辑源 Skill。候选只在 Managed Root 中形成新的不可变副本；
+只有分数与硬约束 Gate 都通过的候选才会原子切换为该 Target 的 Active。
+之后按 Target 发起的普通评测会解析运行时 Active 并冻结到该 Submission；
+已完成的历史评测不会随 Active 切换或回滚而改变。
+当前 Optimizer 使用同一冻结 claude Profile 执行
+failure/success/generalization/simplification 四角色 Train-only 分析，
+只接受严格结构化、受编辑预算约束的 Patch，不直接修改任何源目录。
+每个 Epoch 的修改内容、基线/候选分数、正负 Delta、逐 Case/Family/Dimension
+变化、Gate 原因和 Active 决策都会进入持久化总账。
 
 开发模式下 4 个 Case 会全部参与 Evidence 和 Screening。两个候选中选出一个
-进入三次完整验证时，每个 Epoch 最多产生 36 次 claude 报告生成；灰区会
+进入三次完整验证时，每个 Epoch 最多产生 36 份目标 Agent 报告；Optimizer
+和每份报告的 Judge 调用另计。灰区会
 继续追加到 5/7 次。第一次建议设置 `max_epochs=1`。最短操作流程和结果判断见
 [快速上手：路径 C](docs/quickstart.md#skill-optimization-quickstart)。
+私有环境从配置、预检、运行、导出到回滚的完整步骤见
+[Skill 自优化运行手册](docs/skill-optimization-runbook.md)。
 
 ---
 
@@ -356,6 +385,7 @@ cd src/frontend && npm install && npm run serve
 
 - [文档导航](docs/README.md) — 用户文档与内部资料的目录边界
 - [快速上手](docs/quickstart.md) — 单次评分、数据库部署与 Skill 自优化指南
+- [Skill 自优化运行手册](docs/skill-optimization-runbook.md) — 私有环境配置、预检、运行、总账、导出、回滚与验收
 - [评分输入格式说明](docs/scoring-input.md) — Case JSON 字段、评分策略、AI 报告格式
 - [AnalystBench Skills 说明](docs/skills.md) — 4 个 claude Skill 说明
 - [命令行工作流](docs/cli-workflow.md) — 数据库模式完整 CLI 流程

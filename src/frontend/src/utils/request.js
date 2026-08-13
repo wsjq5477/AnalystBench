@@ -17,9 +17,21 @@ const service = axios.create({
 
 service.interceptors.response.use(
   (response) => response.data,
-  (error) => {
+  async (error) => {
     const response = error.response;
-    const payload = response && response.data;
+    let payload = response && response.data;
+    const contentType = String(response?.headers?.["content-type"] || "");
+    if (
+      typeof Blob !== "undefined" &&
+      payload instanceof Blob &&
+      contentType.includes("json")
+    ) {
+      try {
+        payload = JSON.parse(await payload.text());
+      } catch {
+        // Keep the original Blob and fall back to Axios' transport error.
+      }
+    }
     const validationMessage =
       payload && Array.isArray(payload.detail)
         ? payload.detail

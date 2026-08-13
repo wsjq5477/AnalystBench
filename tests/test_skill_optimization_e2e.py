@@ -298,6 +298,7 @@ def test_slash_skill_versions_are_installed_and_executed_concurrently(
     timings = tools / "timings.jsonl"
     (tools / "fake_claude.py").write_text(
         "import json\n"
+        "import os\n"
         "import sys\n"
         "import time\n"
         "from pathlib import Path\n"
@@ -310,7 +311,10 @@ def test_slash_skill_versions_are_installed_and_executed_concurrently(
         "start = time.monotonic()\n"
         "time.sleep(0.4)\n"
         "end = time.monotonic()\n"
-        "record = {'cwd': str(Path.cwd()), 'prompt': prompt, 'marker': marker, "
+        "record = {'cwd': str(Path.cwd()), 'home': os.environ['HOME'], "
+        "'isolated': os.environ.get('ANALYSTBENCH_ISOLATED_HOME'), "
+        "'skill_version_id': os.environ.get('ANALYSTBENCH_SKILL_VERSION_ID'), "
+        "'prompt': prompt, 'marker': marker, "
         "'start': start, 'end': end}\n"
         "with (Path(__file__).parent / 'timings.jsonl').open('a', encoding='utf-8') "
         "as stream:\n"
@@ -336,6 +340,15 @@ def test_slash_skill_versions_are_installed_and_executed_concurrently(
     ]
     assert {record["marker"] for record in records} == {"VERSION_A", "VERSION_B"}
     assert len({record["cwd"] for record in records}) == 2
+    assert len({record["home"] for record in records}) == 2
+    assert all(Path(record["home"]).name == "home" for record in records)
+    assert all(record["isolated"] == "1" for record in records)
+    assert len({record["skill_version_id"] for record in records}) == 2
+    assert all(record["skill_version_id"] for record in records)
+    assert all(
+        Path(record["home"]).parent == Path(record["cwd"]).parent
+        for record in records
+    )
     assert max(record["start"] for record in records) < min(
         record["end"] for record in records
     )
@@ -421,6 +434,7 @@ def test_full_optimization_state_machine_screens_two_candidates_and_promotes(
         bundle_key="lexical",
         gate_policy={
             "max_latency_growth": 10.0,
+            "max_token_growth": 10.0,
             "screening_max_latency_growth": 10.0,
         },
         judge_config={"runner": "lexical"},
@@ -520,6 +534,28 @@ def test_full_optimization_state_machine_screens_two_candidates_and_promotes(
     assert binding.active_version_id == accepted.candidate_skill_version_id
     assert stored_experiment is not None
     assert stored_experiment.current_epoch_number == 1
+
+    detail = optimization.detail(experiment.id)
+    assert len(detail["epochs"]) == 1
+    epoch_summary = detail["epochs"][0]["summary"]
+    assert epoch_summary["decision"]["action"] == "promote"
+    assert epoch_summary["decision"]["active_changed"] is True
+    assert epoch_summary["selected_candidate"]["intent"]["rationale"] == (
+        "BETTER_ONE"
+    )
+    assert epoch_summary["changes"]["files"] == ["SKILL.md"]
+    assert epoch_summary["changes"]["tokens_added"] > 0
+    assert epoch_summary["baseline_score"] is not None
+    assert epoch_summary["candidate_score"] is not None
+    assert epoch_summary["epoch_delta"] > 0
+    assert epoch_summary["cumulative_delta"] == epoch_summary["epoch_delta"]
+    aggregate = optimization.summary(experiment.id)
+    assert aggregate["initial_score"] == epoch_summary["baseline_score"]
+    assert aggregate["final_score"] == epoch_summary["candidate_score"]
+    assert aggregate["cumulative_delta"] == epoch_summary["epoch_delta"]
+    assert (source / "SKILL.md").read_text(encoding="utf-8") == (
+        "# Demo\n\nInitial instructions.\n"
+    )
 
 
 @pytest.mark.skipif(

@@ -169,6 +169,15 @@ export default {
       selectedOptimizationExperimentId: "",
       selectedOptimizationDetail: null,
       selectedOptimizationEvents: [],
+      selectedOptimizationVersions: [],
+      selectedOptimizationBinding: null,
+      selectedOptimizationBindingHistory: [],
+      optimizationPreflight: null,
+      optimizationPreflightRunning: false,
+      optimizationExportFormat: "",
+      optimizationVersionActionId: "",
+      optimizationEpochOffset: 0,
+      optimizationEpochLimit: 3,
       optimizationLoading: false,
       showOptimizationDialog: false,
       optimizationSaving: false,
@@ -181,7 +190,12 @@ export default {
         skill_key: "",
         harness_key: "",
         evaluation_target_id: "",
+        data_mode: "development_regression",
         case_paths: [],
+        train_case_paths: [],
+        validation_case_paths: [],
+        hidden_test_case_paths: [],
+        prospective_holdout_case_paths: [],
         optimizer_runner: "claude",
         optimizer_executable: "claude",
         optimizer_instruction:
@@ -629,6 +643,25 @@ export default {
         ),
       );
     },
+    optimizationSelectedCasePaths() {
+      if (this.optimizationForm.data_mode === "development_regression") {
+        return [...this.optimizationForm.case_paths];
+      }
+      return [
+        ...this.optimizationForm.train_case_paths,
+        ...this.optimizationForm.validation_case_paths,
+        ...this.optimizationForm.hidden_test_case_paths,
+        ...this.optimizationForm.prospective_holdout_case_paths,
+      ];
+    },
+    optimizationSplitCounts() {
+      return {
+        train: this.optimizationForm.train_case_paths.length,
+        validation: this.optimizationForm.validation_case_paths.length,
+        hidden: this.optimizationForm.hidden_test_case_paths.length,
+        prospective: this.optimizationForm.prospective_holdout_case_paths.length,
+      };
+    },
     frozenOptimizationTargets() {
       return this.evaluationTargets.filter(
         (item) => item.status === "frozen" && item.materialized_method_id,
@@ -698,6 +731,18 @@ export default {
           (item) => item.type === "skill_version_promoted",
         ).length,
       };
+    },
+    optimizationRollbackVersionIds() {
+      return new Set(
+        this.selectedOptimizationBindingHistory
+          .filter(
+            (item) =>
+              item.evaluation_target_id ===
+              this.selectedOptimizationDetail?.experiment?.evaluation_target_id,
+          )
+          .map((item) => item.active_version_id)
+          .filter(Boolean),
+      );
     },
   },
   watch: {
@@ -2171,12 +2216,19 @@ export default {
           )
         ) {
           this.selectedOptimizationExperimentId = experiments[0]?.id || "";
+          this.optimizationEpochOffset = 0;
+          this.optimizationPreflight = null;
         }
         if (this.selectedOptimizationExperimentId) {
           await this.refreshSelectedOptimization();
         } else {
           this.selectedOptimizationDetail = null;
           this.selectedOptimizationEvents = [];
+          this.selectedOptimizationVersions = [];
+          this.selectedOptimizationBinding = null;
+          this.selectedOptimizationBindingHistory = [];
+          this.optimizationPreflight = null;
+          this.optimizationEpochOffset = 0;
         }
       } catch (error) {
         this.connection = "offline";
@@ -2190,27 +2242,182 @@ export default {
     async selectOptimizationExperiment(experimentId) {
       this.selectedOptimizationExperimentId = experimentId;
       this.optimizationCandidateDetail = null;
+      this.optimizationPreflight = null;
+      this.optimizationEpochOffset = 0;
+      this.selectedOptimizationDetail = null;
+      this.selectedOptimizationEvents = [];
+      this.selectedOptimizationVersions = [];
+      this.selectedOptimizationBinding = null;
+      this.selectedOptimizationBindingHistory = [];
       await this.refreshSelectedOptimization();
     },
     async refreshSelectedOptimization() {
       if (!this.selectedOptimizationExperimentId) return;
+      const experimentId = this.selectedOptimizationExperimentId;
       try {
         const [detail, events, experiments] = await Promise.all([
           analystBenchApi.getOptimizationExperimentDetail(
-            this.selectedOptimizationExperimentId,
+            experimentId,
+            {
+              epoch_offset: this.optimizationEpochOffset,
+              epoch_limit: this.optimizationEpochLimit,
+            },
           ),
-          analystBenchApi.getOptimizationEvents(
-            this.selectedOptimizationExperimentId,
-          ),
+          analystBenchApi.getOptimizationEvents(experimentId),
           analystBenchApi.listOptimizationExperiments(),
         ]);
+        if (experimentId !== this.selectedOptimizationExperimentId) return;
+        const total = Number(detail.pagination?.total || 0);
+        if (total && this.optimizationEpochOffset >= total) {
+          this.optimizationEpochOffset =
+            Math.floor((total - 1) / this.optimizationEpochLimit) *
+            this.optimizationEpochLimit;
+          await this.refreshSelectedOptimization();
+          return;
+        }
+        const [versions, bindings, bindingHistory] = await Promise.all([
+          analystBenchApi.listSkillVersions(detail.experiment.skill_id),
+          analystBenchApi.listSkillBindings(detail.experiment.skill_id),
+          analystBenchApi.listSkillBindingHistory(detail.experiment.skill_id, {
+            evaluation_target_id: detail.experiment.evaluation_target_id,
+            limit: 500,
+          }),
+        ]);
+        if (experimentId !== this.selectedOptimizationExperimentId) return;
         this.selectedOptimizationDetail = detail;
         this.selectedOptimizationEvents = events;
         this.optimizationExperiments = experiments;
+        this.selectedOptimizationVersions = [...versions].sort(
+          (left, right) => right.version - left.version,
+        );
+        this.selectedOptimizationBinding =
+          bindings.find(
+            (item) =>
+              item.evaluation_target_id ===
+              detail.experiment.evaluation_target_id,
+          ) || null;
+        this.selectedOptimizationBindingHistory = bindingHistory;
       } catch (error) {
         this.showToast(
           error instanceof Error ? error.message : "刷新优化实验失败",
         );
+      }
+    },
+    async loadOptimizationEpochPage(offset) {
+      const total = this.selectedOptimizationDetail?.pagination?.total || 0;
+      const lastPageOffset = total
+        ? Math.floor((total - 1) / this.optimizationEpochLimit) *
+          this.optimizationEpochLimit
+        : 0;
+      this.optimizationEpochOffset = Math.max(
+        0,
+        Math.min(offset, lastPageOffset),
+      );
+      await this.refreshSelectedOptimization();
+    },
+    downloadBlob(blob, filename) {
+      if (typeof Blob === "undefined" || !(blob instanceof Blob)) {
+        throw new Error("服务端未返回可下载文件");
+      }
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    },
+    async exportOptimizationLedger(format) {
+      const experiment = this.selectedOptimizationDetail?.experiment;
+      if (!experiment || this.optimizationExportFormat) return;
+      this.optimizationExportFormat = format;
+      try {
+        const blob = await analystBenchApi.exportOptimizationLedger(
+          experiment.id,
+          format,
+        );
+        const suffix = format === "markdown" ? "md" : format;
+        this.downloadBlob(blob, `skill-optimization-${experiment.id}.${suffix}`);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "导出优化账本失败");
+      } finally {
+        this.optimizationExportFormat = "";
+      }
+    },
+    async runOptimizationPreflight() {
+      const experiment = this.selectedOptimizationDetail?.experiment;
+      if (!experiment || this.optimizationPreflightRunning) return;
+      const skill = this.skills.find((item) => item.id === experiment.skill_id);
+      this.optimizationPreflightRunning = true;
+      try {
+        this.optimizationPreflight = await analystBenchApi.runOptimizationPreflight({
+          skill_key: skill?.key || null,
+          evaluation_target_id: experiment.evaluation_target_id,
+          optimizer_policy_version_id: experiment.optimizer_policy_version_id,
+          verifier_bundle_version_id: experiment.verifier_bundle_version_id,
+          data_snapshot_id: experiment.data_snapshot_id,
+        });
+        this.showToast(`环境预检：${this.optimizationPreflight.status}`);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "环境预检失败");
+      } finally {
+        this.optimizationPreflightRunning = false;
+      }
+    },
+    async exportOptimizationVersion(version) {
+      const experiment = this.selectedOptimizationDetail?.experiment;
+      if (!experiment || this.optimizationVersionActionId) return;
+      this.optimizationVersionActionId = `export:${version.id}`;
+      try {
+        const blob = await analystBenchApi.exportSkillVersion(
+          experiment.skill_id,
+          version.id,
+        );
+        this.downloadBlob(blob, `skill-v${version.version}-${version.id}.zip`);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "导出 Skill 版本失败");
+      } finally {
+        this.optimizationVersionActionId = "";
+      }
+    },
+    async rollbackOptimizationVersion(version) {
+      const experiment = this.selectedOptimizationDetail?.experiment;
+      const binding = this.selectedOptimizationBinding;
+      if (
+        !experiment ||
+        !binding ||
+        binding.active_version_id === version.id ||
+        this.optimizationVersionActionId
+      ) {
+        return;
+      }
+      if (!this.optimizationRollbackVersionIds.has(version.id)) {
+        this.showToast("该版本从未在当前 Target 上激活，不能回滚");
+        return;
+      }
+      if (!window.confirm(`将 Active Skill 显式回滚到 v${version.version} 吗？`)) {
+        return;
+      }
+      this.optimizationVersionActionId = `rollback:${version.id}`;
+      try {
+        await analystBenchApi.rollbackSkillVersion(
+          experiment.skill_id,
+          experiment.evaluation_target_id,
+          {
+            version_id: version.id,
+            expected_lock_version: binding.lock_version,
+            reason: "manual_ui_rollback",
+          },
+        );
+        await this.refreshSelectedOptimization();
+        this.showToast(`已回滚到 Skill v${version.version}`);
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "回滚 Skill 失败");
+        await this.refreshSelectedOptimization();
+      } finally {
+        this.optimizationVersionActionId = "";
       }
     },
     openOptimizationDialog() {
@@ -2229,7 +2436,12 @@ export default {
         skill_key: "",
         harness_key: defaultHarness?.key || "",
         evaluation_target_id: defaultTarget?.id || "",
+        data_mode: "development_regression",
         case_paths: readyCases,
+        train_case_paths: [],
+        validation_case_paths: [],
+        hidden_test_case_paths: [],
+        prospective_holdout_case_paths: [],
         optimizer_runner: "claude",
         optimizer_executable: "claude",
         optimizer_instruction:
@@ -2247,6 +2459,43 @@ export default {
       if (selected.has(casePath)) selected.delete(casePath);
       else selected.add(casePath);
       this.optimizationForm.case_paths = [...selected];
+    },
+    optimizationCaseSplit(casePath) {
+      const splitKeys = [
+        "train_case_paths",
+        "validation_case_paths",
+        "hidden_test_case_paths",
+        "prospective_holdout_case_paths",
+      ];
+      return (
+        splitKeys.find((key) =>
+          this.optimizationForm[key].includes(casePath),
+        ) || ""
+      );
+    },
+    setOptimizationCaseSplit(casePath, splitKey) {
+      const splitKeys = [
+        "train_case_paths",
+        "validation_case_paths",
+        "hidden_test_case_paths",
+        "prospective_holdout_case_paths",
+      ];
+      splitKeys.forEach((key) => {
+        this.optimizationForm[key] = this.optimizationForm[key].filter(
+          (item) => item !== casePath,
+        );
+      });
+      if (splitKeys.includes(splitKey)) {
+        this.optimizationForm[splitKey] = [
+          ...this.optimizationForm[splitKey],
+          casePath,
+        ];
+      }
+    },
+    syncOptimizationDataMode() {
+      if (this.optimizationForm.data_mode === "independent_validation") {
+        this.optimizationForm.max_epochs = 1;
+      }
     },
     syncOptimizationHarnessKey() {
       const target = this.frozenOptimizationTargets.find(
@@ -2267,8 +2516,22 @@ export default {
     },
     async createOptimizationExperiment() {
       const form = this.optimizationForm;
-      if (!form.name || !form.evaluation_target_id || !form.case_paths.length) {
-        this.showToast("请填写实验名称，并选择 Target 和至少一个可用 Case");
+      if (!form.name || !form.evaluation_target_id) {
+        this.showToast("请填写实验名称并选择 Evaluation Target");
+        return;
+      }
+      if (
+        form.data_mode === "development_regression" &&
+        !form.case_paths.length
+      ) {
+        this.showToast("开发回归模式至少需要一个可用 Case");
+        return;
+      }
+      if (
+        form.data_mode === "independent_validation" &&
+        (!form.train_case_paths.length || !form.validation_case_paths.length)
+      ) {
+        this.showToast("独立验证模式必须同时选择 Train 和 Validation Case");
         return;
       }
       if (
@@ -2280,13 +2543,35 @@ export default {
         this.showToast("请填写 Skill Key，并选择已配置 Skill 目录的 Harness Key");
         return;
       }
-      const datasets = new Set(form.case_paths.map((item) => item.split("/")[0]));
+      const datasets = new Set(
+        this.optimizationSelectedCasePaths.map((item) => item.split("/")[0]),
+      );
       if (datasets.size !== 1) {
-        this.showToast("一次实验的 Case 必须属于同一个测试集");
+        this.showToast("所有 Split 的 Case 必须属于同一个测试集");
         return;
       }
       this.optimizationSaving = true;
       try {
+        const snapshot = await analystBenchApi.createOptimizationSnapshot({
+          dataset_key: [...datasets][0],
+          mode: form.data_mode,
+          validation_case_paths:
+            form.data_mode === "development_regression"
+              ? form.case_paths
+              : form.validation_case_paths,
+          train_case_paths:
+            form.data_mode === "independent_validation"
+              ? form.train_case_paths
+              : [],
+          hidden_test_case_paths:
+            form.data_mode === "independent_validation"
+              ? form.hidden_test_case_paths
+              : [],
+          prospective_holdout_case_paths:
+            form.data_mode === "independent_validation"
+              ? form.prospective_holdout_case_paths
+              : [],
+        });
         let skillId = form.skill_id;
         let baseVersionId = "";
         let skillKey = form.skill_key;
@@ -2310,13 +2595,21 @@ export default {
           skillKey = created.skill.key;
         } else {
           const skill = this.skills.find((item) => item.id === skillId);
-          const versions = await analystBenchApi.listSkillVersions(skillId);
-          if (!skill || !versions.length) {
-            throw new Error("所选 Skill 没有可用版本");
+          const [bindings, versions] = await Promise.all([
+            analystBenchApi.listSkillBindings(skillId),
+            analystBenchApi.listSkillVersions(skillId),
+          ]);
+          const binding = bindings.find(
+            (item) =>
+              item.evaluation_target_id === form.evaluation_target_id,
+          );
+          const initialVersion = [...versions]
+            .filter((item) => !item.parent_version_id)
+            .sort((left, right) => left.version - right.version)[0];
+          if (!skill || (!binding?.active_version_id && !initialVersion)) {
+            throw new Error("所选 Skill 没有可用的 Active 或初始版本");
           }
-          baseVersionId = [...versions].sort(
-            (left, right) => right.version - left.version,
-          )[0].id;
+          baseVersionId = binding?.active_version_id || initialVersion.id;
           skillKey = skill.key;
         }
         const profile = await analystBenchApi.createExecutionProfile({
@@ -2344,20 +2637,60 @@ export default {
         });
         const verifier = await analystBenchApi.createVerifierBundle({
           key: `${skillKey}-gate-${suffix}`,
-          static_policy: {},
+          static_policy: {
+            allowed_operations: [
+              "append",
+              "insert_after",
+              "replace",
+              "delete",
+            ],
+            edit_budget_schedule: [4, 4, 3, 2, 1],
+            max_changed_files: 2,
+            max_added_tokens: 600,
+            max_deleted_tokens: 300,
+            max_single_file_change_ratio: 0.25,
+            static_validation: {
+              content_security_scan: { enabled: true },
+              case_leak_scan: { enabled: true },
+              referenced_file_check: { enabled: true },
+              script_syntax: { enabled: true },
+              package_tests: { enabled: true, max_timeout_seconds: 30 },
+            },
+          },
           gate_policy: {
             min_overall_delta: Number(form.min_overall_delta),
             max_latency_growth: Number(form.max_latency_growth),
             max_token_growth: Number(form.max_token_growth),
-            minimum_independent_validation_cases: 8,
           },
           judge_config: { runner: form.judge_runner },
         });
-        const snapshot = await analystBenchApi.createOptimizationSnapshot({
-          dataset_key: [...datasets][0],
-          mode: "development_regression",
-          validation_case_paths: form.case_paths,
+        const preflight = await analystBenchApi.runOptimizationPreflight({
+          skill_key: skillKey,
+          evaluation_target_id: form.evaluation_target_id,
+          execution_profile_id: profile.id,
+          optimizer_policy_version_id: policy.id,
+          verifier_bundle_version_id: verifier.id,
+          case_paths:
+            form.data_mode === "independent_validation"
+              ? [
+                  ...form.train_case_paths,
+                  ...form.validation_case_paths,
+                  ...form.hidden_test_case_paths,
+                  ...form.prospective_holdout_case_paths,
+                ]
+              : form.case_paths,
+          data_snapshot_id: snapshot.id,
         });
+        if (preflight.status === "FAIL") {
+          const failedChecks = (preflight.checks || [])
+            .filter((check) => check.status === "FAIL")
+            .map((check) => check.code)
+            .join("、");
+          throw new Error(
+            `私有环境预检未通过${failedChecks ? `：${failedChecks}` : ""}`,
+          );
+        }
+        this.optimizationPreflight = preflight;
         const experiment = await analystBenchApi.createOptimizationExperiment({
           name: form.name,
           skill_id: skillId,
@@ -2366,7 +2699,10 @@ export default {
           data_snapshot_id: snapshot.id,
           optimizer_policy_version_id: policy.id,
           verifier_bundle_version_id: verifier.id,
-          max_epochs: Number(form.max_epochs),
+          max_epochs:
+            form.data_mode === "independent_validation"
+              ? 1
+              : Number(form.max_epochs),
         });
         await analystBenchApi.startOptimizationExperiment(experiment.id);
         this.showOptimizationDialog = false;
@@ -2417,6 +2753,52 @@ export default {
         this.showToast(error instanceof Error ? error.message : "读取候选 Diff 失败");
       }
     },
+    optimizationVersionTargetLabel(version) {
+      if (this.selectedOptimizationBinding?.active_version_id === version.id) {
+        return `ACTIVE · ${this.selectedOptimizationBinding.active_level}`;
+      }
+      const history = this.selectedOptimizationBindingHistory.find(
+        (item) =>
+          item.active_version_id === version.id &&
+          item.evaluation_target_id ===
+            this.selectedOptimizationDetail?.experiment?.evaluation_target_id,
+      );
+      if (history) return `曾 ACTIVE · ${history.active_level}`;
+      if (version.status === "active") return "其他 Target 已激活";
+      return this.optimizationStatusLabel(version.status);
+    },
+    hasOptimizationChangeStats(value) {
+      return Boolean(
+        value &&
+          typeof value === "object" &&
+          Object.keys(value).length,
+      );
+    },
+    optimizationTokenChanges(value) {
+      const added = value?.tokens_added ?? value?.added_tokens;
+      const removed = value?.tokens_removed ?? value?.deleted_tokens;
+      if (added === null || added === undefined) {
+        if (removed === null || removed === undefined) return "—";
+        return `+— / -${removed}`;
+      }
+      return `+${added} / -${removed ?? "—"}`;
+    },
+    optimizationReasonLabel(reason) {
+      if (typeof reason === "string") return reason;
+      if (!reason || typeof reason !== "object") return "未提供原因";
+      const code = reason.code || reason.rule || "gate_reason";
+      const observed = reason.observed ?? reason.actual;
+      const required = reason.required ?? reason.limit;
+      if (observed !== undefined || required !== undefined) {
+        return `${code}（observed ${observed ?? "—"} / required ${required ?? "—"}）`;
+      }
+      return reason.message ? `${code}：${reason.message}` : code;
+    },
+    optimizationRejectionMessage(value) {
+      const detail = value?.detail || value?.rejection_detail;
+      if (!detail || typeof detail !== "object") return "";
+      return detail.message || detail.reason || "";
+    },
     optimizationStatusClass(status) {
       if (
         ["completed", "accepted", "screening_selected", "pass"].includes(status)
@@ -2444,6 +2826,14 @@ export default {
         screening_selected: "筛选胜出",
         validating: "验证中",
         needs_more_runs: "灰区增采样",
+        validated_static: "静态校验通过",
+        candidate: "候选版本",
+        active: "已激活",
+        pass: "通过",
+        reject: "拒绝",
+        promote: "晋升",
+        retain: "保留基线",
+        no_screening_survivor: "无候选通过筛选",
       }[status] || status;
     },
     signedDelta(value) {

@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from sqlalchemy import and_, func, select, text
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from analystbench.catalog.case_library import report_payload_from_text
@@ -31,12 +31,17 @@ from analystbench.db.models import (
     EvaluationSubmissionCaseRun,
     EvaluationSubmissionMethodRun,
     EvaluationTarget,
+    EvaluationVariant,
     Job,
+    Skill,
+    SkillPackageVersion,
+    SkillTargetBinding,
 )
 from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
 from analystbench.evaluation.direct import evaluate_direct
 from analystbench.evaluation.target import EvaluationTargetService
+from analystbench.execution.isolation import isolated_process_environment
 from analystbench.execution.resolver import resolve_executable
 from analystbench.runtime.jobs import JobQueue
 from analystbench.scoring.reporting import render_markdown
@@ -468,6 +473,16 @@ class EvaluationMethodService:
                         "该执行方式由运行组合管理，不能通过旧测评方式接口删除。",
                         status_code=409,
                     )
+                if session.scalar(
+                    select(EvaluationVariant.id).where(
+                        EvaluationVariant.materialized_method_id == method_id
+                    )
+                ):
+                    raise AnalystBenchError(
+                        "evaluation_method_managed_by_skill_variant",
+                        "该执行方式属于冻结 Skill Variant，不能通过旧测评方式接口删除。",
+                        status_code=409,
+                    )
 
                 submission_ids = set(
                     session.scalars(
@@ -742,6 +757,99 @@ class EvaluationSubmissionService:
             candidate += timedelta(seconds=1)
         raise AnalystBenchError("run_directory_conflict", "无法分配不冲突的运行时间目录。")
 
+    def _resolve_active_target_methods(
+        self,
+        targets: list[EvaluationTarget],
+        snapshots: list[dict[str, Any]],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Freeze each normal Target selection to its current managed Active."""
+
+        if not self.settings.skill_optimization_enabled:
+            return (
+                [str(item.materialized_method_id) for item in targets],
+                snapshots,
+            )
+        resolved_methods: list[str] = []
+        resolved_snapshots: list[dict[str, Any]] = []
+        with transaction(self.session_factory) as session:
+            for target, snapshot in zip(targets, snapshots, strict=True):
+                rows = list(
+                    session.execute(
+                        select(
+                            SkillTargetBinding,
+                            EvaluationVariant,
+                            Skill,
+                            SkillPackageVersion,
+                        )
+                        .join(Skill, Skill.id == SkillTargetBinding.skill_id)
+                        .join(
+                            SkillPackageVersion,
+                            SkillPackageVersion.id
+                            == SkillTargetBinding.active_version_id,
+                        )
+                        .outerjoin(
+                            EvaluationVariant,
+                            and_(
+                                EvaluationVariant.evaluation_target_id
+                                == SkillTargetBinding.evaluation_target_id,
+                                EvaluationVariant.skill_package_version_id
+                                == SkillTargetBinding.active_version_id,
+                                EvaluationVariant.status == "frozen",
+                            ),
+                        )
+                        .where(
+                            SkillTargetBinding.evaluation_target_id == target.id,
+                            Skill.archived_at.is_(None),
+                        )
+                        .order_by(Skill.skill_key)
+                    )
+                )
+                if len(rows) > 1:
+                    raise AnalystBenchError(
+                        "evaluation_target_active_skill_ambiguous",
+                        "同一 Evaluation Target 绑定了多个 Active Skill，普通评测无法确定版本。",
+                        [{"evaluation_target_id": target.id, "count": len(rows)}],
+                    )
+                frozen_snapshot = dict(snapshot)
+                if not rows:
+                    resolved_methods.append(str(target.materialized_method_id))
+                    frozen_snapshot["skill_resolution"] = "legacy_harness"
+                else:
+                    binding, variant, skill, version = rows[0]
+                    if variant is None:
+                        raise AnalystBenchError(
+                            "evaluation_target_active_variant_missing",
+                            "Active Skill 没有对应的冻结 Evaluation Variant。",
+                            [
+                                {
+                                    "evaluation_target_id": target.id,
+                                    "skill_id": skill.id,
+                                    "skill_package_version_id": version.id,
+                                }
+                            ],
+                        )
+                    resolved_methods.append(variant.materialized_method_id)
+                    frozen_snapshot["base_materialized_method_id"] = str(
+                        target.materialized_method_id
+                    )
+                    frozen_snapshot["materialized_method_id"] = (
+                        variant.materialized_method_id
+                    )
+                    frozen_snapshot["skill_resolution"] = "target_binding_active"
+                    frozen_snapshot["active_skill"] = {
+                        "skill_id": skill.id,
+                        "skill_key": skill.skill_key,
+                        "skill_package_version_id": version.id,
+                        "version_number": version.version_number,
+                        "package_hash": version.package_hash,
+                        "binding_id": binding.id,
+                        "binding_lock_version": binding.lock_version,
+                        "active_level": binding.active_level,
+                        "evaluation_variant_id": variant.id,
+                    }
+                resolved_snapshots.append(frozen_snapshot)
+        return resolved_methods, resolved_snapshots
+
     def create_submission(
         self,
         dataset_key: str,
@@ -754,7 +862,28 @@ class EvaluationSubmissionService:
         schedule_run_id: str | None = None,
         purpose: str = "normal",
         optimization_context: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        judge_configuration: dict[str, Any] | None = None,
     ) -> EvaluationSubmission:
+        normalized_idempotency_key = (
+            idempotency_key.strip() if idempotency_key else None
+        )
+        if normalized_idempotency_key:
+            if len(normalized_idempotency_key) > 128:
+                raise AnalystBenchError(
+                    "evaluation_idempotency_key_invalid",
+                    "测评批次幂等键过长。",
+                )
+            with transaction(self.session_factory) as session:
+                existing = session.scalar(
+                    select(EvaluationSubmission).where(
+                        EvaluationSubmission.idempotency_key
+                        == normalized_idempotency_key
+                    )
+                )
+                if existing is not None:
+                    session.expunge(existing)
+                    return existing
         selection_modes = sum(
             bool(value) for value in (method_ids, target_ids, target_selections)
         )
@@ -768,12 +897,16 @@ class EvaluationSubmissionService:
             targets, target_snapshots = EvaluationTargetService(
                 self.session_factory, self.settings
             ).resolve_selections(target_selections)
-            method_ids = [str(item.materialized_method_id) for item in targets]
+            method_ids, target_snapshots = self._resolve_active_target_methods(
+                targets, target_snapshots
+            )
         elif target_ids:
             targets, target_snapshots = EvaluationTargetService(
                 self.session_factory, self.settings
             ).snapshots(target_ids)
-            method_ids = [str(item.materialized_method_id) for item in targets]
+            method_ids, target_snapshots = self._resolve_active_target_methods(
+                targets, target_snapshots
+            )
         assert method_ids
         if not method_ids:
             raise AnalystBenchError("evaluation_methods_missing", "至少选择一种测评方式。")
@@ -878,6 +1011,10 @@ class EvaluationSubmissionService:
             "dataset_key": dataset_key,
             "run_timestamp": timestamp,
             "judge_runner": judge_runner,
+            "judge_configuration": judge_configuration or {},
+            "judge_configuration_hash": content_hash(
+                canonical_json(judge_configuration or {}).encode("utf-8")
+            ),
             "schedule_run_id": schedule_run_id,
             "requested_case_paths": requested_case_paths,
             "selected_case_paths": [item["case_path"] for item in case_inputs],
@@ -916,6 +1053,7 @@ class EvaluationSubmissionService:
         with transaction(self.session_factory) as session:
             submission = EvaluationSubmission(
                 id=submission_id,
+                idempotency_key=normalized_idempotency_key,
                 dataset_key=dataset_key,
                 run_timestamp=timestamp,
                 status="queued",
@@ -994,11 +1132,16 @@ class EvaluationSubmissionService:
             session.expunge(item)
             return item
 
-    def list_submissions(self) -> list[EvaluationSubmission]:
+    def list_submissions(
+        self, *, include_optimization: bool = False
+    ) -> list[EvaluationSubmission]:
         with transaction(self.session_factory) as session:
+            query = select(EvaluationSubmission)
+            if not include_optimization:
+                query = query.where(EvaluationSubmission.purpose == "normal")
             items = list(
                 session.scalars(
-                    select(EvaluationSubmission).order_by(EvaluationSubmission.created_at.desc())
+                    query.order_by(EvaluationSubmission.created_at.desc())
                 )
             )
             for item in items:
@@ -1025,6 +1168,12 @@ class EvaluationSubmissionService:
                         "evaluation_submission_not_found",
                         "找不到测评批次。",
                         status_code=404,
+                    )
+                if submission.purpose == "skill_optimization":
+                    raise AnalystBenchError(
+                        "optimization_submission_managed_by_experiment",
+                        "Skill 优化评测由 Experiment 统一管理，不能从普通批次删除。",
+                        status_code=409,
                     )
                 if submission.status not in terminal_states:
                     raise AnalystBenchError(
@@ -1405,7 +1554,9 @@ class EvaluationSubmissionService:
                 output[key] = path.read_text(encoding="utf-8", errors="replace")
         return output
 
-    def cancel_submission(self, submission_id: str) -> EvaluationSubmission:
+    def cancel_submission(
+        self, submission_id: str, *, allow_optimization: bool = False
+    ) -> EvaluationSubmission:
         with transaction(self.session_factory) as session:
             submission = session.get(EvaluationSubmission, submission_id)
             if submission is None:
@@ -1413,6 +1564,12 @@ class EvaluationSubmissionService:
                     "evaluation_submission_not_found",
                     "找不到测评批次。",
                     status_code=404,
+                )
+            if submission.purpose == "skill_optimization" and not allow_optimization:
+                raise AnalystBenchError(
+                    "optimization_submission_managed_by_experiment",
+                    "Skill 优化评测由 Experiment 统一管理，请取消对应 Experiment。",
+                    status_code=409,
                 )
             terminal = {
                 "completed",
@@ -1559,13 +1716,15 @@ class EvaluationSubmissionService:
             self._update_submission(submission_id)
             return
 
-        workspace = (
+        run_root = (
             self.settings.workspace_root_path
             / "evaluation"
             / submission_id
             / method_run_id
             / f"attempt-{attempt}"
         )
+        workspace = run_root / "workspace"
+        isolated_home = run_root / "home"
         logs_workspace = workspace / "logs"
         logs_workspace.parent.mkdir(parents=True, exist_ok=True)
         (workspace / ".git").mkdir(exist_ok=True)
@@ -1594,10 +1753,30 @@ class EvaluationSubmissionService:
                         f"{exc.code}: {exc.message}",
                     ) from exc
             command = self._build_command(method_snapshot, workspace, primary, logs_workspace)
+            process_environment = isolated_process_environment(
+                isolated_home,
+                extra=(
+                    {
+                        "ANALYSTBENCH_SKILL_VERSION_ID": str(
+                            workspace_metadata["skill_package_version_id"]
+                        )
+                    }
+                    if workspace_metadata is not None
+                    and workspace_metadata.get("skill_package_version_id")
+                    else None
+                ),
+            )
+            # Persist the durable start marker before launching the process.
+            # Starting the child first lets SQLite lock contention delay this
+            # write while the child is already running (or even finished), and
+            # that unrelated database wait is then misreported as model latency.
+            self._persist_method_started(method_run_id)
+            monotonic_started = time.monotonic()
             try:
                 process = subprocess.Popen(
                     command,
                     cwd=workspace,
+                    env=process_environment,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -1614,8 +1793,6 @@ class EvaluationSubmissionService:
                     "process_start_failed",
                     f"命令启动失败：{exc}",
                 ) from exc
-            monotonic_started = time.monotonic()
-            self._persist_method_started(method_run_id)
             deadline = monotonic_started + int(method_snapshot["timeout_seconds"])
             while True:
                 remaining = deadline - time.monotonic()
@@ -1671,6 +1848,12 @@ class EvaluationSubmissionService:
                 "report_hash": content_hash(stdout.encode("utf-8")),
                 "exit_code": process.returncode,
                 "duration_ms": duration_ms,
+                # Harnesses emit the final report as plain text and do not all
+                # expose provider usage metadata.  Persist a deterministic
+                # output-size estimate so the optimization Gate never silently
+                # skips its Token-growth guardrail.
+                "token_count": (len(stdout) + 3) // 4,
+                "token_count_source": "approximate_output_characters",
             }
             if workspace_metadata is not None:
                 artifact["workspace_extension"] = workspace_metadata
@@ -1696,7 +1879,7 @@ class EvaluationSubmissionService:
             )
             self._write_case_state_by_method(method_run_id)
             self._schedule_scoring(method_run_id)
-            self._remove_workspace(workspace)
+            self._remove_workspace(run_root)
 
     @staticmethod
     def _as_text(value: str | bytes | None) -> str:
@@ -1882,7 +2065,16 @@ class EvaluationSubmissionService:
             run_directory = Path(case_run.run_directory)
             case_path = case_run.case_path
             case_key = case_run.case_key
-            judge_runner = json.loads(submission.manifest_json).get("judge_runner", "claude")
+            submission_manifest = json.loads(submission.manifest_json)
+            judge_runner = submission_manifest.get("judge_runner", "claude")
+            judge_configuration = submission_manifest.get(
+                "judge_configuration", {}
+            )
+            if not isinstance(judge_configuration, dict):
+                raise AnalystBenchError(
+                    "evaluation_judge_configuration_invalid",
+                    "冻结的 Judge 配置必须是对象。",
+                )
             all_method_rows = list(
                 session.execute(
                     select(EvaluationSubmissionMethodRun, EvaluationMethod)
@@ -1928,11 +2120,22 @@ class EvaluationSubmissionService:
                 self.settings,
                 str(judge_runner),
                 str(case_file.resolve()),
+                judge_configuration=judge_configuration,
             )
             result_id = f"{case_path}/runs/{run_directory.name}"
             result["id"] = result_id
             result["submission_id"] = self._submission_id_for_case(case_run_id)
             result["generation"] = generation
+            if submission.purpose == "skill_optimization":
+                # Optimization evidence is operational experiment data, not a
+                # formal benchmark result.  Keep it discoverable by the owning
+                # Experiment while excluding every baseline/candidate repeat
+                # from ordinary Dashboard statistics.
+                result["included_in_statistics"] = False
+                result["result_purpose"] = "skill_optimization"
+                result["optimization_context"] = json.loads(
+                    submission.optimization_context_json or "{}"
+                )
             _atomic_json(run_directory / "result.json", result)
             _atomic_text(
                 run_directory / "result.md",
@@ -2090,7 +2293,19 @@ class EvaluationSubmissionService:
 
     def _update_submission(self, submission_id: str) -> None:
         with transaction(self.session_factory) as session:
-            submission = session.get(EvaluationSubmission, submission_id)
+            statement = select(EvaluationSubmission).where(
+                EvaluationSubmission.id == submission_id
+            )
+            if session.get_bind().dialect.name == "sqlite":
+                # Method completion and scoring completion can update the same
+                # submission concurrently.  Without a write boundary, an older
+                # SQLite read snapshot may commit ``scoring`` after the scorer
+                # has already committed ``completed``, leaving the durable
+                # submission permanently non-terminal.
+                session.execute(text("BEGIN IMMEDIATE"))
+            else:
+                statement = statement.with_for_update()
+            submission = session.scalar(statement)
             if submission is None:
                 return
             cases = list(
@@ -2139,6 +2354,10 @@ class EvaluationSubmissionService:
             "timestamp": item.run_timestamp,
             "status": item.status,
             "schedule_run_id": item.schedule_run_id,
+            "purpose": item.purpose,
+            "optimization_context": json.loads(
+                item.optimization_context_json or "{}"
+            ),
             "method_ids": manifest.get("method_ids", []),
             "methods": manifest.get("methods", []),
             "target_ids": manifest.get("target_ids", []),

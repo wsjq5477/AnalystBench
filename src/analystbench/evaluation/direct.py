@@ -219,6 +219,7 @@ def evaluate_direct(
     settings: Settings,
     judge_runner: str,
     source_path: str | None = None,
+    judge_configuration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate original report texts entirely in memory and return export-ready results."""
     if not reports:
@@ -238,7 +239,7 @@ def evaluate_direct(
             raise AnalystBenchError("report_invalid", "报告原文不能为空。")
         report_hash = content_hash(report.encode("utf-8"))
         judge = (
-            SemanticJudge(settings, judge_runner)
+            SemanticJudge(settings, judge_runner, judge_configuration)
             if judge_runner != "lexical"
             else None
         )

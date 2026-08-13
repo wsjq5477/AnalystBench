@@ -1,10 +1,10 @@
 # AnalystBench Skill 自优化系统方案设计
 
-> 文档类型：工程设计规格 / Codex 开发输入  
-> 状态：Revised Draft for Implementation  
-> 版本：v1.1  
-> 日期：2026-07-31  
-> 目标版本：Skill Optimization V1  
+> 文档类型：工程设计规格 / Codex 开发输入
+> 状态：V1 本地代码已实现；私有环境证据待运行
+> 版本：v1.2
+> 日期：2026-08-12
+> 目标版本：Skill Optimization V1
 > 目标读者：Codex、后端开发、前端开发、测试、架构评审人员
 
 配套研究与实验口径：[AnalystBench 面向内核日志分析的 Skill 自优化方法研究与实验方案](../skillopt/AnalystBench-Skill自优化研究与实验方案.md)。
@@ -30,13 +30,20 @@ Codex 在开始编码前必须：
 
 ### 0.1 已确认产品决策
 
-1. Skill 源路径由用户配置，例如 `/user/project/.claude/skills/xxx`；
+1. 普通产品流程由冻结 Harness 的 `skill_base_dir` 与 Skill Key 派生源路径：
+   `<skill_base_dir>/skills/<skill-key>`；`name=<skill-key>`、
+   `invoke_as=/<skill-key>`，不再要求用户分别手填；
 2. 每次目标 Agent 运行前，把冻结 Skill 版本安装到该次隔离工作区的项目级 Skill 目录，例如 `<workspace>/.claude/skills/xxx`；
 3. 不复制用户完整 `.claude/` 或全局 HOME，只复制明确登记的 Skill 包和显式依赖；
 4. Skill 历史使用 AnalystBench 自己管理的内部 Git 仓库，不向 AnalystBench 源码仓库或用户源仓库写入 commit、branch、tag、配置或工作区文件；
 5. 提升只更新 `SkillTargetBinding.active_version_id`，V1 不自动同步回用户 `source_path`；
 6. 当前只有 4 个 Case，V1 先采用 `development_regression` 小样本模式；三次重复用于降低随机波动，不等价于独立 Validation 或 Hidden Test；
-7. 新增 Case 默认可以进入 `prospective_holdout`，在正式候选冻结前不向优化器公开。
+7. 新增 Case 不会由系统隐式分配 split；用户在创建不可变 Snapshot 时可显式
+   放入 `prospective_holdout`，在正式候选冻结前不向优化器公开；
+8. 每个 Epoch 必须持久化“改了什么、基线/候选分数、升降 Delta、逐
+   Case/Family/Dimension 变化、Gate 和 Active 决策”，并可导出；
+9. 真实 claude 验收和研究结果只在用户私有环境运行，不由 Codex 或确定性替身
+   测试代跑、代填。
 
 ### 0.2 当前仓库映射
 
@@ -48,7 +55,7 @@ Codex 在开始编码前必须：
 | 后台任务 | `Job`、`JobQueue`、`LocalWorker` | 增加优化 Job 类型和资源限流；保持租约与幂等 |
 | Agent Profile | `ExecutionProfile`、`AgentExecutionService` | 优化器模型优先复用冻结 ExecutionProfile，不把它混同为被测 EvaluationModel |
 | 内容存储 | `ContentStore` + `content_blobs` | Prompt、证据摘要等复用 ContentStore；Skill 文件历史使用独立内部 Git |
-| 数据库迁移 | Alembic，当前头为 `0013_p19_harness_model_targets` | 新功能从实际最新头创建后继迁移 |
+| 数据库迁移 | Alembic，当前头为 `0018_evaluation_submission_idempotency` | 后续改动始终从实际最新头创建后继迁移 |
 | API | FastAPI，统一前缀 `/api/v1` | 本文所有新 API 使用 `/api/v1/...` |
 | 配置 | `pydantic-settings`，环境变量前缀 `ANALYSTBENCH_` | 不新增独立 YAML 事实源 |
 | 前端 | Vue 2，`App.vue` + `app-options.js`，Axios，现有四个主视图 | V1 在“设置/评测结果”内增加二级界面，保持四个主视图；先沿用轮询 |
@@ -90,8 +97,9 @@ Active Skill vN
 - Skill 注册、导入和完整包快照；
 - AnalystBench 内部 Git 仓库、不可变 `SkillPackageVersion` 与包级哈希；
 - Evaluation Run 绑定具体 Skill 版本；
-- 用户可配置源目录、调用名和项目级安装相对路径；
-- 独立 HOME / Workspace / Skill Root；
+- 普通 UI 从冻结 Harness + Skill Key 派生源目录、调用名和项目级安装路径；
+- 独立临时 HOME / Workspace / Skill Root；HOME/XDG 是进程环境隔离，不冒充通用
+  文件系统或网络沙箱；
 - Optimization Experiment 和 Epoch 状态机；
 - 基线结果缓存和复用；
 - 成功/失败轨迹证据收集；
@@ -106,7 +114,8 @@ Active Skill vN
 - Decision History；
 - Active 原子提升和手动回滚；
 - 前端查看实验、Epoch、候选、Diff、分数和退化。
-- 当前四 Case 的 `development_regression` 模式和后续 `prospective_holdout` 升级路径。
+- 每轮修改与得分总账，JSON/Markdown/CSV 导出，版本 ZIP 和带审计的显式回滚；
+- `development_regression`、独立 Train/Validation 和后续 Holdout 的严格术语与数据隔离。
 
 ### 1.2 非目标
 
@@ -122,7 +131,7 @@ V1 不实现：RL Skill Curator、MetaSkill 自优化、多 Skill 自动组合�
 4. 候选不得写入用户 `source_path` 或共享全局 Skill 目录；
 5. 所有修改通过结构化 Patch 表达并受编辑预算限制；
 6. 基线和候选使用相同 CaseRevision 和运行参数；
-7. 只有 Promotion Service 可以修改 Active；
+7. Active 只能由受信初始 Binding、Promotion Service 或带审计的显式 Rollback 修改；
 8. Worker 崩溃后可从持久化状态恢复；
 9. 所有诊断、修改、证据和决策可审计；
 10. Optimizer Memory 不加载到线上 Agent。
@@ -154,6 +163,7 @@ V1 不实现：RL Skill Curator、MetaSkill 自优化、多 Skill 自动组合�
 | OptimizerPolicyVersion | 优化模型、Prompt 和编辑策略快照 |
 | VerifierBundleVersion | 静态检查、Judge 和门禁快照 |
 | Development Regression | 当前已知小样本上的样本内优化与回归保护，不代表泛化 |
+| Independent Validation | Train 仅用于 Evidence/Screening，独立 Validation 仅用于一个 Epoch 的 Gate；同一 Snapshot 只能被一个已启动 Experiment 消费 |
 | Prospective Holdout | 在候选冻结前不向优化器公开的后续新增 Case |
 
 ---
@@ -185,7 +195,7 @@ V1 不实现：RL Skill Curator、MetaSkill 自优化、多 Skill 自动组合�
                         ▼
               ┌─────────────────────┐
               │ Candidate Sandbox   │
-              │ isolated HOME/root  │
+              │ temp HOME/workspace │
               └──────────┬──────────┘
                          ▼
               ┌─────────────────────┐
@@ -221,7 +231,7 @@ V1 不实现：RL Skill Curator、MetaSkill 自优化、多 Skill 自动组合�
 ```sql
 CREATE TABLE skills (
     id UUID PRIMARY KEY,
-    key VARCHAR(128) NOT NULL UNIQUE,
+    skill_key VARCHAR(128) NOT NULL UNIQUE,
     name VARCHAR(256) NOT NULL,
     description TEXT,
     source_path TEXT,
@@ -229,7 +239,9 @@ CREATE TABLE skills (
     harness_key VARCHAR(128) NOT NULL,
     install_relative_path TEXT NOT NULL,
     publish_mode VARCHAR(32) NOT NULL DEFAULT 'managed',
-    editable_paths JSON NOT NULL,
+    editable_paths_json JSON NOT NULL,
+    limits_json JSON NOT NULL,
+    archived_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
@@ -237,12 +249,13 @@ CREATE TABLE skills (
 
 约束：
 
-- `key` 创建后不可修改；
+- `skill_key` 创建后不可修改；
 - `source_path` 只用于导入，不作为运行事实源；
 - `install_relative_path` 必须是安全相对路径，并匹配 Harness Adapter 允许的项目级 Skill Root；
 - claude 兼容 Harness 可使用 `.claude/skills/<skill-dir>`，其他 Harness 由 Adapter 声明允许前缀；
 - V1 只支持 `managed`，不写回 `source_path`；
-- 默认 editable paths 为 `SKILL.md`、`references/**`、`scripts/**`、`tests/**`。
+- 默认 editable paths 只有 `SKILL.md`；需允许 `references/**`、
+  `scripts/**` 或 `tests/**` 时必须在注册时显式列出。
 
 ### 5.2 skill_package_versions
 
@@ -250,28 +263,37 @@ CREATE TABLE skills (
 CREATE TABLE skill_package_versions (
     id UUID PRIMARY KEY,
     skill_id UUID NOT NULL REFERENCES skills(id),
-    version_no INTEGER NOT NULL,
+    version_number INTEGER NOT NULL,
     parent_version_id UUID NULL REFERENCES skill_package_versions(id),
-    package_hash CHAR(64) NOT NULL,
-    internal_git_commit VARCHAR(64) NOT NULL,
-    internal_git_tree VARCHAR(64) NOT NULL,
+    package_hash VARCHAR(71) NOT NULL,
+    git_commit VARCHAR(64) NOT NULL,
+    git_tree VARCHAR(64) NOT NULL,
     git_object_format VARCHAR(16) NOT NULL,
-    manifest JSON NOT NULL,
+    manifest_json JSON NOT NULL,
     source_type VARCHAR(32) NOT NULL,
     status VARCHAR(32) NOT NULL,
     created_by VARCHAR(128),
     created_at TIMESTAMP NOT NULL,
-    UNIQUE(skill_id, version_no),
-    UNIQUE(skill_id, package_hash)
+    UNIQUE(skill_id, version_number),
+    UNIQUE(skill_id, package_hash),
+    UNIQUE(skill_id, git_commit)
 );
 ```
 
-`source_type`：`imported`、`mutation`、`manual`。回滚直接把 Binding 指回已有 commit，不创建内容相同的 `rollback_copy`。  
-`status`：`draft`、`candidate`、`provisional`、`validated`、`rejected`、`archived`。Active 由独立 Binding 表表示；四 Case 开发模式通过的版本使用 `provisional`，不能冒充独立验证完成。
+`source_type` 是审计字符串；当前主路径写入 `initial`、`import` 和
+`optimizer_patch`。回滚直接把 Binding 指回已有 commit，不创建内容相同的
+`rollback_copy`。
+
+`SkillPackageVersion.status` 当前表示制品生命周期，主路径使用 `candidate`、
+`active` 和 `rejected`。`provisional`/`validated` 不是版本 status，而是
+`SkillTargetBinding.active_level`；同一不可变版本在不同 Target 上可有不同验证级别。
+Version status 也不是“是否仍是某一 Target 当前 Active”的权威判断；权威来源是
+Binding 及其 History。
 
 内部 Git 约束：
 
-- 每个 Skill 使用独立 bare repository，例如 `<managed_root>/skills/<skill-id>/repo.git`；
+- 每个 Skill 使用独立 bare repository，当前路径为
+  `<managed_root>/repositories/<skill-id>.git`；
 - 仓库由 AnalystBench 创建，不能把 `source_path` 或 AnalystBench 工作树直接 `git init`；
 - 导入流程先复制到临时 staging、完成安全检查与规范化哈希，再写入内部仓库；
 - commit author 使用固定服务身份，commit message 只包含版本号、来源类型和 Patch hash，不包含日志或标准答案；
@@ -293,6 +315,11 @@ CREATE TABLE skill_target_bindings (
 );
 ```
 
+除表级 `UNIQUE(skill_id, evaluation_target_id)` 外，V1 Registry Service 还在首次绑定的
+原子事务内检查目标 Target 是否已绑定其他 Skill；若已存在，以
+`evaluation_target_skill_binding_conflict` 拒绝。因此一个 Target 在 V1 最多有一个
+Active Skill，普通评测不存在多 Skill 隐式选择。
+
 Active 更新必须乐观锁：
 
 ```sql
@@ -306,7 +333,7 @@ WHERE id = :binding_id
   AND lock_version = :expected_lock_version;
 ```
 
-影响行数为 0 时标记 `ACTIVE_CHANGED_CONFLICT`。
+影响行数为 0 时以 `skill_binding_conflict` 拒绝。
 
 ### 5.3.1 evaluation_variants
 
@@ -318,7 +345,7 @@ CREATE TABLE evaluation_variants (
     materialized_method_id UUID NOT NULL REFERENCES evaluation_methods(id),
     install_relative_path TEXT NOT NULL,
     invoke_as VARCHAR(128) NOT NULL,
-    content_hash CHAR(64) NOT NULL UNIQUE,
+    content_hash VARCHAR(71) NOT NULL UNIQUE,
     status VARCHAR(32) NOT NULL,
     created_at TIMESTAMP NOT NULL,
     UNIQUE(evaluation_target_id, skill_package_version_id)
@@ -340,47 +367,49 @@ CREATE TABLE evaluation_variants (
 ```sql
 CREATE TABLE optimizer_policy_versions (
     id UUID PRIMARY KEY,
-    key VARCHAR(128) NOT NULL,
-    version_no INTEGER NOT NULL,
-    optimizer_execution_profile_id UUID NOT NULL REFERENCES execution_profiles(id),
-    prompt_bundle_uri TEXT NOT NULL,
-    prompt_hash CHAR(64) NOT NULL,
-    config JSON NOT NULL,
+    policy_key VARCHAR(128) NOT NULL,
+    version_number INTEGER NOT NULL,
+    execution_profile_id UUID NOT NULL REFERENCES execution_profiles(id),
+    prompt_bundle_hash VARCHAR(71) NOT NULL,
+    config_json JSON NOT NULL,
+    content_hash VARCHAR(71) NOT NULL UNIQUE,
     created_at TIMESTAMP NOT NULL,
-    UNIQUE(key, version_no)
+    UNIQUE(policy_key, version_number)
 );
 ```
 
-优化器调用属于“生成 Skill Patch 的 Agent”，不是被测 `EvaluationModel`。V1 复用冻结 `ExecutionProfile` 表达 claude 或 OpenCode 的可执行文件、模型、Prompt 环境和权限；`OptimizerPolicyVersion` 再冻结本功能专属 Prompt bundle 和编辑策略。
+优化器调用属于“生成 Skill Patch 的 Agent”，不是被测 `EvaluationModel`。V1 复用冻结
+`ExecutionProfile` 表达 claude 的可执行文件、模型、Prompt 环境和权限；
+`OptimizerPolicyVersion` 再冻结本功能专属 Prompt bundle 和编辑策略。
 
 配置示例：
 
 ```json
 {
-  "candidate_count": 2,
-  "max_epochs": 5,
-  "reflection_batch_size": 8,
-  "edit_budget_schedule": [4, 4, 3, 2, 1],
-  "allowed_operations": ["append", "insert_after", "replace", "delete"],
-  "max_changed_files": 2,
-  "max_added_tokens": 600,
-  "max_deleted_tokens": 300
+  "prompt_bundle": {
+    "instruction": "Use only the supplied Train evidence and propose small general patches."
+  }
 }
 ```
+
+当前 pipeline 从 `config_json.prompt_bundle.instruction` 读取冻结基础指令。
+`candidate_count`、`max_epochs` 和重复次数进入 Experiment 的
+`config_snapshot_json`；Patch 操作和预算属于 Verifier 的
+`static_policy_json`，不应混写成 Optimizer Policy 已消费字段。
 
 ### 5.5 verifier_bundle_versions
 
 ```sql
 CREATE TABLE verifier_bundle_versions (
     id UUID PRIMARY KEY,
-    key VARCHAR(128) NOT NULL,
-    version_no INTEGER NOT NULL,
-    static_policy JSON NOT NULL,
-    gate_policy JSON NOT NULL,
-    judge_config_snapshot JSON NOT NULL,
-    content_hash CHAR(64) NOT NULL,
+    bundle_key VARCHAR(128) NOT NULL,
+    version_number INTEGER NOT NULL,
+    static_policy_json JSON NOT NULL,
+    gate_policy_json JSON NOT NULL,
+    judge_config_json JSON NOT NULL,
+    content_hash VARCHAR(71) NOT NULL UNIQUE,
     created_at TIMESTAMP NOT NULL,
-    UNIQUE(key, version_no)
+    UNIQUE(bundle_key, version_number)
 );
 ```
 
@@ -393,25 +422,30 @@ CREATE TABLE optimization_experiments (
     skill_id UUID NOT NULL REFERENCES skills(id),
     base_skill_version_id UUID NOT NULL REFERENCES skill_package_versions(id),
     evaluation_target_id UUID NOT NULL,
-    benchmark_snapshot_id UUID NOT NULL,
-    split_snapshot_id UUID NOT NULL,
+    data_snapshot_id UUID NOT NULL REFERENCES optimization_data_snapshots(id),
     optimizer_policy_version_id UUID NOT NULL,
     verifier_bundle_version_id UUID NOT NULL,
     status VARCHAR(32) NOT NULL,
-    current_epoch_no INTEGER NOT NULL DEFAULT 0,
+    current_epoch_number INTEGER NOT NULL DEFAULT 0,
     max_epochs INTEGER NOT NULL,
     stop_reason VARCHAR(128),
     created_by VARCHAR(128),
     created_at TIMESTAMP NOT NULL,
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
-    config_snapshot JSON NOT NULL
+    config_snapshot_json JSON NOT NULL,
+    error_json JSON NOT NULL
 );
 ```
 
-Experiment 状态：`created`、`freezing`、`baseline_running`、`optimizing`、`screening`、`validating`、`promoting`、`completed`、`failed`、`cancelled`。
+Experiment 当前持久化状态是 `created`、`running`、`completed`、`failed` 和
+`cancelled`。基线、生成、Screening 与 Validation 的细粒度阶段保存在
+Epoch/Candidate/Run Group 状态和事件中，不是 Experiment 的独立状态值。
 
-`benchmark_snapshot_id` 和 `split_snapshot_id` 不是当前仓库已有对象。V1 必须新增不可变优化数据快照，不能把可变化的 `dataset_key` 或当前目录扫描结果直接当实验身份。
+V1 用一个 `OptimizationDataSnapshot` 同时冻结 Benchmark 内容身份和 split，
+持久化字段是 `data_snapshot_id`；早期文稿中分开的 `benchmark_snapshot_id` /
+`split_snapshot_id` 不是当前实现字段。不能把可变化的 `dataset_key` 或当前目录扫描
+结果直接当实验身份。
 
 ### 5.6.1 optimization_data_snapshots
 
@@ -426,7 +460,7 @@ CREATE TABLE optimization_data_snapshots (
     prospective_holdout_cases_json JSON NOT NULL,
     case_input_hashes_json JSON NOT NULL,
     eval_spec_hashes_json JSON NOT NULL,
-    content_hash CHAR(64) NOT NULL UNIQUE,
+    content_hash VARCHAR(71) NOT NULL UNIQUE,
     created_at TIMESTAMP NOT NULL
 );
 ```
@@ -434,10 +468,21 @@ CREATE TABLE optimization_data_snapshots (
 `mode`：
 
 - `development_regression`：当前 4 Case 均可用于证据和门禁，结果必须标记 `provisional`；
-- `validation_gated`：Train 与 Validation 独立，允许自动提升为非临时 Active；
-- `publication`：在前两者基础上冻结 Hidden Test，只用于最终报告。
+- `independent_validation`：Train 与 Validation 独立；达到最少独立 Validation
+  Case 且统计 Gate 通过时允许产生 `validated` Active。该模式强制
+  `max_epochs=1`，且同一 Snapshot 只能被一个成功启动的 Experiment 原子消费，避免把同一
+  Validation 反复变成调参集。早期设计中的
+  `validation_gated` 对应当前实现的这个名称，不是第三种运行模式。
 
-同一原始事件的不同裁剪必须通过 `source_group_key` 归入同一集合。Snapshot 创建后不可新增 Case；后续 Case 通过新 Snapshot 进入 `prospective_holdout` 或下一轮正式切分。
+当前实现只接受上述两种 `mode`。Snapshot 可以登记 Hidden Test 和
+Prospective Holdout 并冻结其哈希，但闭环不会自动调度它们；早期设计中的
+`publication` 是私有最终实验阶段，不是当前 API 可选 mode。
+
+同一原始事件的不同裁剪必须通过 `source_group_key` 归入同一集合。Snapshot
+创建后不可新增 Case。系统不会将新 Case 自动放入 Prospective；由用户在新
+Snapshot 中显式分配为 `prospective_holdout` 或下一次正式切分。创建
+`independent_validation` Snapshot 时 Validation 数不足最小值会直接失败，不会
+创建一个“仅描述性、但可运行”的独立 Snapshot。
 
 ### 5.7 optimization_epochs
 
@@ -445,19 +490,22 @@ CREATE TABLE optimization_data_snapshots (
 CREATE TABLE optimization_epochs (
     id UUID PRIMARY KEY,
     experiment_id UUID NOT NULL REFERENCES optimization_experiments(id),
-    epoch_no INTEGER NOT NULL,
+    epoch_number INTEGER NOT NULL,
     parent_skill_version_id UUID NOT NULL,
     status VARCHAR(32) NOT NULL,
-    evidence_summary JSON,
+    evidence_summary_json JSON NOT NULL,
+    summary_json JSON NOT NULL,
     best_candidate_version_id UUID,
     decision VARCHAR(32),
     created_at TIMESTAMP NOT NULL,
     finished_at TIMESTAMP,
-    UNIQUE(experiment_id, epoch_no)
+    UNIQUE(experiment_id, epoch_number)
 );
 ```
 
-Epoch 状态：`created`、`collecting_evidence`、`reflecting`、`generating_candidates`、`static_validating`、`screening`、`full_validating`、`deciding`、`accepted`、`rejected`、`failed`。
+Epoch 当前状态：`collecting_evidence`、`generating_candidates`、`screening`、
+`full_validating` 和 `completed`。早期名称 `generating`/`validating` 仅为恢复
+兼容分支，新 Epoch 不写入它们。
 
 ### 5.8 candidate_mutations
 
@@ -468,20 +516,24 @@ CREATE TABLE candidate_mutations (
     parent_skill_version_id UUID NOT NULL,
     candidate_skill_version_id UUID,
     candidate_type VARCHAR(32) NOT NULL,
-    structured_patch JSON NOT NULL,
-    patch_hash CHAR(64) NOT NULL,
+    structured_patch_json JSON NOT NULL,
+    patch_hash VARCHAR(71) NOT NULL,
     rationale TEXT,
-    intended_failure_clusters JSON NOT NULL,
-    evidence_refs JSON NOT NULL,
+    intended_failure_clusters_json JSON NOT NULL,
+    intent_json JSON NOT NULL,
+    change_stats_json JSON NOT NULL,
+    evidence_refs_json JSON NOT NULL,
     status VARCHAR(32) NOT NULL,
     rejection_code VARCHAR(128),
-    rejection_detail JSON,
+    rejection_detail_json JSON NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
 ```
 
-候选类型：`corrective`、`evidence_strengthening`、`simplification`、`tool_enhancement`。  
-状态：`proposed`、`patch_validated`、`package_created`、`static_rejected`、`screening`、`screening_rejected`、`full_validation`、`gate_rejected`、`accepted`、`failed`。
+`candidate_type` 当前记录 `structured_patch_<index>`；纠错/证据强化/精简/
+工具增强是 `intent_json.change_type`，不是 `candidate_type`。状态主路径为
+`validated_static`、`screening`、`screening_passed`、`screening_selected`、
+`validating`、`needs_more_runs`、`accepted` 或 `rejected`。
 
 ### 5.9 optimization_signals
 
@@ -490,15 +542,15 @@ CREATE TABLE optimization_signals (
     id UUID PRIMARY KEY,
     experiment_id UUID NOT NULL,
     epoch_id UUID,
-    case_revision_id UUID NOT NULL,
-    evaluation_run_id UUID NOT NULL,
+    case_path TEXT NOT NULL,
+    evaluation_method_run_id UUID NOT NULL,
     run_role VARCHAR(16) NOT NULL,
     case_family VARCHAR(128),
     score DECIMAL(8,3),
-    signal JSON NOT NULL,
-    signal_hash CHAR(64) NOT NULL,
+    signal_json JSON NOT NULL,
+    signal_hash VARCHAR(71) NOT NULL,
     created_at TIMESTAMP NOT NULL,
-    UNIQUE(evaluation_run_id)
+    UNIQUE(evaluation_method_run_id)
 );
 ```
 
@@ -511,10 +563,8 @@ CREATE TABLE candidate_comparisons (
     epoch_id UUID NOT NULL,
     candidate_mutation_id UUID NOT NULL,
     comparison_type VARCHAR(32) NOT NULL,
-    baseline_run_group_id UUID NOT NULL,
-    candidate_run_group_id UUID NOT NULL,
-    metrics JSON NOT NULL,
-    gate_result JSON,
+    metrics_json JSON NOT NULL,
+    gate_result_json JSON NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
 ```
@@ -533,13 +583,19 @@ CREATE TABLE optimization_run_groups (
     arm VARCHAR(32) NOT NULL,
     skill_package_version_id UUID NOT NULL,
     repeat_index INTEGER NOT NULL,
-    evaluation_submission_id UUID NOT NULL,
+    evaluation_submission_id UUID NOT NULL UNIQUE,
     status VARCHAR(32) NOT NULL,
-    run_config_hash CHAR(64) NOT NULL,
+    run_config_hash VARCHAR(71) NOT NULL,
     created_at TIMESTAMP NOT NULL,
-    UNIQUE(experiment_id, epoch_id, candidate_mutation_id, split_role, arm, repeat_index)
+    UNIQUE(experiment_id, epoch_id, candidate_mutation_id, split_role, arm, repeat_index),
+    UNIQUE(experiment_id, run_config_hash)
 );
 ```
+
+`0018_evaluation_submission_idempotency` 还为底层 `evaluation_submissions` 增加可空、唯一的
+`idempotency_key`。优化编排使用 `skillopt:<run_config_hash>`：Worker 在 Run Group 写入前
+崩溃时，重试底层 Submission 创建会复用同一批次，不再因只有 Run Group
+唯一约束而重复调用模型。
 
 底层 Submission 增加可空的 `purpose` 和 `optimization_context_json`：
 
@@ -551,8 +607,10 @@ optimization_context = experiment/epoch/candidate/arm/repeat/split
 `skill_optimization` Submission：
 
 - 复用现有 Case 复制、Method Run、stdout 报告、评分和 Worker；
-- 默认 `included_in_statistics=false`，不进入普通总览和正式排行榜；
-- 由 Optimization Experiment 管理保留和删除，普通“正式结果”页面默认折叠；
+- 评分 `result.json` 强制 `included_in_statistics=false` 与
+  `result_purpose=skill_optimization`，不进入普通总览、正式排行榜或普通结果列表；
+- 底层 Submission 默认不出现在普通 Submission 列表；普通取消/删除 API 会拒绝它，
+  只能通过 Optimization Experiment 状态机取消和管理；
 - 每次运行冻结 `EvaluationVariant` 和 Skill package hash；
 - 基线与候选使用不同 Submission，不能共享可写运行目录。
 
@@ -564,10 +622,10 @@ CREATE TABLE decision_records (
     experiment_id UUID NOT NULL,
     epoch_id UUID,
     candidate_mutation_id UUID,
-    diagnosis JSON NOT NULL,
-    revision JSON,
-    evidence JSON NOT NULL,
-    outcome JSON NOT NULL,
+    diagnosis_json JSON NOT NULL,
+    revision_json JSON NOT NULL,
+    evidence_json JSON NOT NULL,
+    outcome_json JSON NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
 ```
@@ -580,32 +638,43 @@ CREATE TABLE decision_records (
 
 ```text
 <managed_root>/
-├── skills/<skill-id>/
-│   ├── repo.git/
-│   └── metadata/
-│       ├── <version-id>.json
-│       └── <package-hash>.file-index.json
-├── optimizer-policies/
-├── verifier-bundles/
-└── experiments/
+├── repositories/
+│   └── <skill-id>.git/
+└── tmp/
 ```
 
-`managed_root` 默认从现有 `workspace_root_path` 派生为 `<workspace_root_path>/skill-optimization`；大文本和结构化摘要继续进入现有 `ContentStore`。不得在项目源码目录下创建内部仓库。
+设置层在未显式配置时仍有
+`<workspace_root_path>/skill-optimization` 兼容派生值，但启用自优化时的严格预检
+要求 `ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT` 显式配置为已存在、
+可写的绝对路径。该目录不得指向用户源 Skill、AnalystBench 源码仓库、
+`results` 或 Worker workspace。大文本和结构化摘要继续进入现有
+`ContentStore`。
 
 ### 6.1 包哈希
 
-1. 遍历纳入版本的文件；
+V1 新导入使用 `analystbench.skill-package.v2`。步骤为：
+
+1. 遍历纳入版本的普通文件；
 2. 相对路径统一为 `/`；
 3. 按路径排序；
 4. 不跟随符号链接；
-5. 拒绝设备文件、FIFO 和 Socket；
+5. 拒绝设备文件、FIFO、Socket 以及任何 setuid/setgid 位；
 6. 每个文件计算 SHA-256；
-7. 将 `path + mode + size + file_hash` 序列化为 canonical JSON；
-8. 对 canonical JSON 再计算 SHA-256。
+7. 将源权限归一为非可执行 `0644` 或保留可执行语义的 `0755`，并把
+   `path + normalized mode + size + file_hash` 序列化为 canonical JSON；
+8. manifest 同时冻结 `ignored_paths` 规则：忽略目录名、文件名和文件
+   后缀的排序清单；
+9. 对完整 canonical manifest JSON 再计算 SHA-256。
 
 哈希基于原始 bytes，不自动修改换行。
+这使执行位成为制品身份的一部分：同样 bytes 但脚本从不可执行变为可执行，
+`package_hash` 会变化。物化后包整体只读，但保留执行语义：非执行文件为 `0444`，
+可执行文件为 `0555`，目录为 `0555`。旧 v1 manifest 物化时按其不含 mode 的旧哈希
+规则复核，以保持已存版本兼容；新导入不再生成 v1。
 
-内部 Git 提交前后都计算上述哈希；checkout 后必须重新计算并与数据库 `package_hash` 一致。Git commit hash 不能替代包哈希，因为 commit 还包含父提交、作者和时间。
+内部 Git 提交前计算上述哈希；checkout/导出/物化后必须按版本 manifest
+的 format 重新计算并与数据库 `package_hash` 一致。Git commit hash 不能替代包哈希，
+因为 commit 还包含父提交、作者和时间。
 
 ### 6.2 文件安全
 
@@ -619,7 +688,7 @@ CREATE TABLE decision_records (
 {
   "key": "kernel-log-analysis",
   "name": "Kernel Log Analysis",
-  "source_path": "/home/jiqi/claude/skills/kernel-log-analysis",
+  "source_path": "<frozen-harness.skill_base_dir>/skills/kernel-log-analysis",
   "invoke_as": "/kernel-log-analysis",
   "harness_key": "claude-skill",
   "install_relative_path": ".claude/skills/kernel-log-analysis",
@@ -641,14 +710,19 @@ CREATE TABLE decision_records (
 
 V1 不自动同步 `source_path`。后续可增加 `git` 或 `explicit_sync`。
 
-推荐注册时由用户选择或由 Harness Adapter 提供默认安装位置：
+普通 UI 注册时不直接收集上述三个路径字段，而是使用冻结 Harness 和 Skill Key
+确定以下映射；底层 API 仍保存解析后的绝对源路径作为导入审计事实：
 
 ```text
-claude-compatible → .claude/skills/<skill-dir>
-custom            → 用户配置，但必须匹配 Adapter allowlist
+source_path           = <harness.skill_base_dir>/skills/<skill-key>
+invoke_as             = /<skill-key>
+install_relative_path = .claude/skills/<skill-key>
 ```
 
-`invoke_as` 是 Prompt 中的调用名，`install_relative_path` 是文件系统位置，两者不能相互推导。
+`invoke_as` 是 Prompt 中的调用名，`install_relative_path` 是文件系统位置，两者
+语义不同；V1 产品契约只是让它们共同由同一个 Skill Key 派生，不能在运行时把
+一个字段当作另一个字段使用。`skill_base_dir` 必须来自与 Target 对应的冻结
+Harness，且解析后的源目录必须通过包与路径安全检查。
 
 ---
 
@@ -664,13 +738,19 @@ custom            → 用户配置，但必须匹配 Adapter allowlist
 │   │   └── skills/
 │   │       └── kernel-log-analysis/
 │   └── logs/
-└── artifacts/
+└── home/tmp/
 ```
+
+`run_root` 是临时执行目录，命令结束后会清理；正式报告、评分和审计制品按
+Evaluation Submission 结果路径持久化，不依赖临时 `run_root/artifacts`。
 
 环境变量：
 
 ```bash
 HOME=<run_root>/home
+XDG_CONFIG_HOME=<run_root>/home/.config
+XDG_CACHE_HOME=<run_root>/home/.cache
+CLAUDE_CONFIG_DIR=<run_root>/home/.config/claude
 ANALYSTBENCH_SKILL_VERSION_ID=<uuid>
 ```
 
@@ -678,7 +758,15 @@ Harness Adapter 从内部 Git 的指定 commit 导出 Skill 包，验证 `packag
 
 禁止通过覆盖共享 `~/.claude/skills` 或其他全局目录实现候选切换。也禁止把用户完整 `.claude/` 复制进工作区，因为其中可能包含 settings、hooks、plugins、MCP、认证引用和与实验无关的 Skill。若 Harness 只能发现全局 Skill，必须先扩展 Adapter 或使用隔离 HOME；不得暂时覆盖后再恢复。
 
-运行期间 Skill 包只读；Benchmark 和答案只读且优化 Agent 不可见；缓存写入独立临时目录；候选生成器与目标 Agent 不共用 HOME。
+运行期间已安装 Skill 包按文件权限只读；缓存写入独立临时目录；候选
+生成器与目标 Agent 不共用 HOME。当前的 HOME/XDG 重定向是“进程环境与用户
+状态隔离”，不是 mount namespace：它不阻止按 Worker 操作系统权限通过绝对路径
+访问其他文件，也不自动断网。因此不应在文档或验收中把它称为完整沙箱；
+只有第 13.2 节声明式包内测试使用 bubblewrap 无网络 namespace。
+
+隔离 HOME 不会复制服务用户真实 HOME 中的 CLI 登录。凭据应由 Worker 显式继承的
+环境变量或受控 wrapper 提供；不复制完整 `.claude/`、hooks、plugins 或未声明
+Skill。`--version` 探测只证明 CLI 可执行，不证明认证可用。
 
 ---
 
@@ -797,40 +885,47 @@ Rejected History 根据当前 failure tags 和 case family 检索最多 10 条�
 
 ### 11.1 Schema
 
+当前输出协议身份是 `structured_skill_patch.v1`。Role envelope 只允许
+`role`、`prompt_version`、`findings` 和 `patches`；其中每个 patch 的顶层
+只允许 `rationale`、`intent` 和 `operations`。一个合法 patch 例如：
+
 ```json
 {
-  "schema_version": "1.0",
-  "candidate_type": "corrective",
-  "summary": "强化锁等待者与锁持有者的区分",
-  "target_failure_clusters": ["cluster-1"],
-  "preserve_rules": ["preserve-1"],
+  "rationale": "强化锁等待者与锁持有者的区分",
+  "intent": {
+    "change_type": "corrective",
+    "target_failure_families": ["hungtask-lock-contention"],
+    "target_dimensions": ["root_cause", "evidence"],
+    "target_failure_tags": ["EVIDENCE_NOT_BOUND"],
+    "protected_behaviors": ["保留已正确的重启触发者判定"]
+  },
   "operations": [
     {
       "op": "insert_after",
       "path": "SKILL.md",
       "anchor": "## 锁与阻塞分析",
-      "anchor_occurrence": 1,
       "content": "\n### 等待者与持有者判定\n..."
     },
     {
       "op": "replace",
       "path": "SKILL.md",
-      "old_text": "block LOCK 表示线程持有锁",
-      "new_text": "block LOCK 只表示线程因锁阻塞，需结合 owner 或调用栈判断持锁者"
+      "old": "block LOCK 表示线程持有锁",
+      "new": "block LOCK 只表示线程因锁阻塞，需结合 owner 或调用栈判断持锁者"
     }
-  ],
-  "expected_effect": {
-    "improve_tags": ["EVIDENCE_NOT_BOUND", "UNSUPPORTED_CLAIM"],
-    "risk_tags": ["MISSING_ROOT_CAUSE"]
-  }
+  ]
 }
 ```
 
 ### 11.2 操作
 
 V1 仅支持 `append`、`insert_after`、`replace`、`delete`。
+`create`、`old_text`、unified diff、shell 命令和 schema 外字段都会被拒绝。
 
-规则：path 必须匹配 editable paths；anchor 或 old_text 必须唯一命中；操作按顺序执行；任一步失败整体回滚；在临时副本应用；完成后重新计算包哈希；相同哈希不创建新版本；保存 before/after diff。
+规则：path 必须匹配 editable paths；`anchor` 或 `old` 必须在目标
+文件中精确且唯一命中；`append` 和其他文本操作只能作用于已存文件；
+操作按顺序在临时副本中执行，任一步失败则不创建候选版本；完成后
+重新计算包哈希，相同哈希复用已有版本，并保留 before/after diff 和
+变更统计。
 
 ### 11.3 编辑预算
 
@@ -842,13 +937,14 @@ max_deleted_tokens: 300
 max_single_file_change_ratio: 0.25
 ```
 
-超限错误码：`EDIT_BUDGET_EXCEEDED`。
+超限错误码：`edit_budget_exceeded`。
 
 ---
 
 ## 12. 证据分析与候选策略
 
-V1 实现四个逻辑角色，可以由同一模型使用不同 Prompt：
+V1 已实现四个固定角色，由同一个冻结 claude Optimizer Profile
+使用不同的显式版本 Prompt 依次运行：
 
 ```text
 failure_analyst
@@ -857,16 +953,21 @@ generalization_analyst
 simplification_analyst
 ```
 
-每个角色必须输出 JSON。合并器执行：按 tag 和语义相似度去重；合并 support count；删除案例专属关键词；检测 preserve 与 corrective 冲突；检测多个操作的区域冲突；生成候选方向。
+每个角色只接收有界的 Train/Development 聚合证据和同实验的
+Rejected History，不接收 Validation、Hidden、Holdout、原始日志、标准答案或
+报告全文。输出必须匹配严格 JSON envelope 和
+`structured_skill_patch.v1`；非法 JSON 只允许使用同一 Runner 做一次格式修复，
+修复后仍无效则记录该角色错误。`AgentRunnerError` 每次调用最多三次尝试，
+失败间隔为 1/2 秒指数退避。
 
-默认每轮两个候选：
+合并器按固定角色顺序对各角色的第 1 个提案、第 2 个提案……
+做 round-robin，按 canonical patch hash 去重，取到 `candidate_count`
+为止。当前实现不做语义相似度合并，不应将其写成已有能力。
 
-```text
-Candidate 1: corrective
-Candidate 2: simplification 或 evidence_strengthening
-```
-
-失败主要来自脚本时可使用 `tool_enhancement`。V1 UI 可配置 1～2，后端预留最大 4。
+默认每轮取两个去重后的候选。候选的 `intent.change_type` 可为
+`corrective`、`simplification`、`evidence_strengthening` 或
+`tool_enhancement`，具体顺序由固定角色 round-robin 和 canonical hash
+去重结果决定，不强制“第一个纠错、第二个精简”。
 
 ---
 
@@ -893,29 +994,37 @@ package_tests
 
 ### 13.2 包内测试
 
-若存在 `tests/`，在无网络沙箱执行，设置超时并收集 stdout/stderr。命令由 manifest 声明。失败时候选不得进入 Screening。若未配置测试，允许通过但记录 `not_configured`。
+包内测试只在 `manifest.json` 显式声明 `package_tests.argv` 时执行；仅存在
+`tests/` 不触发隐式测试。声明时 `tests/` 必须存在，argv 必须匹配受限
+Python/pytest 前缀、不经 shell，且 timeout 不能超过 Verifier 上限。平台把临时 Skill
+副本放入 bubblewrap namespace，清空环境，只读绑定运行时和守卫代码，禁止网络与
+子进程。测试失败、`bwrap` 缺失或当前 WSL/容器不允许 namespace 时，候选
+在进入 Screening 前静态拒绝。若未声明测试，允许通过但记录
+`not_configured`。需要真实 namespace 的 E2E 默认跳过，私有宿主使用
+`ANALYSTBENCH_RUN_BWRAP_E2E=1` 显式启用。
 
 ---
 
 ## 14. Evaluation Submission 扩展
 
-当前真实执行单位是 `EvaluationSubmission → CaseRun → MethodRun`。V1 增加 Submission `purpose`，并在 `optimization_run_groups` 中保存以下 `run_role`：
+当前真实执行单位是 `EvaluationSubmission → CaseRun → MethodRun`。V1 增加
+Submission `purpose`，Run Group 不使用单一 `run_role` 字段，而是保存
+`split_role × arm`：
 
 ```text
-baseline
-screening_candidate
-validation_baseline
-validation_candidate
-hidden_test
+split_role = screening | validation
+arm        = baseline | candidate
 ```
 
-每个 Run Group 绑定：`skill_package_version_id`、`optimization_experiment_id`、`optimization_epoch_id`、可空 `candidate_mutation_id`、`repeat_index`、`pair_key`。底层 Submission Manifest 必须包含同一快照，Method Run artifact 再保存实际安装路径、package hash 和内部 Git commit。
-
-`pair_key`：
-
-```text
-<experiment-id>:<epoch>:<case-revision-id>:<repeat-index>
-```
+每个 Run Group 绑定 `skill_package_version_id`、`experiment_id`、
+`epoch_id`、可空 `candidate_mutation_id`、`repeat_index` 和
+`run_config_hash`。Validation 每个 repeat 根据
+`experiment_id + epoch_id + candidate_mutation_id + repeat_index` 生成稳定
+`pair_seed`，Seed 决定 baseline→candidate 或 candidate→baseline 的创建顺序；
+`pair_seed` 和 `pair_position` 进入冻结 run config hash 与 Submission context。
+当前数据库没有 `pair_key` 列。底层 Submission Manifest 必须包含同一
+快照，Method Run artifact 再保存实际安装路径、package hash 和内部
+Git commit。Hidden/Prospective 不在当前优化编排中生成 Run Group。
 
 历史 Run 可保持 SkillVersion 为 NULL，并显示 `legacy/unfrozen`。
 
@@ -928,8 +1037,7 @@ hidden_test
 ```text
 parent_skill_version_id
 evaluation_target_id
-benchmark_snapshot_id
-split_snapshot_id
+data_snapshot_id
 verifier_bundle_version_id
 run_config_hash
 repeat_count
@@ -937,7 +1045,11 @@ repeat_count
 
 任一 Skill、Model、Harness、Benchmark、Case Revision、Eval Spec、Judge、运行参数或环境镜像变化均不得复用。
 
-完整验证中基线与候选交错执行，顺序由稳定 Seed 生成，降低服务时间漂移。
+当前实现按 `experiment_id + epoch_id + candidate_mutation_id + repeat_index`
+计算稳定 `pair_seed`，每个 repeat 由 Seed 决定创建顺序为 baseline→candidate 或
+candidate→baseline，并把 `pair_seed`/`pair_position` 写进冻结 run config hash 与
+Optimization Context。这提供可复现的交错调度；外部 CLI/模型服务仍可有时间漂移，
+因此私有实验仍应记录运行时间和并发配置。
 
 V1 的“缓存”只用于同一 Experiment、同一 Epoch 和同一目标 repeat 的中断恢复，不跨 Experiment 复用历史分数。原因是当前本地 Harness、外部 CLI、模型服务和工作目录内容无法形成足够强的环境指纹。每个 Epoch 的基线必须是该 Epoch 的 `parent_skill_version_id`：
 
@@ -953,9 +1065,13 @@ Epoch 2: baseline v2 vs candidate v3
 
 ## 16. Screening 与 Full Validation
 
+`development_regression` 可以逐 Epoch 更新 Active 并在下一轮使用新基线。
+`independent_validation` 不执行这种多轮适应：前端锁定且后端强制
+`max_epochs == 1`，同一独立 Snapshot 只能被一个已启动 Experiment 消费。
+
 ### 16.1 Screening
 
-- `validation_gated` 使用 Validation 子集；`development_regression` 在当前四 Case
+- `independent_validation` 使用 Train 子集，不使用 Validation；`development_regression` 在当前四 Case
   阶段让全部开发 Case 参与 Evidence 和固定 Screening，Case 增长后再由冻结快照
   显式指定开发 Screening 子集；
 - 每 Case 一次；
@@ -967,7 +1083,7 @@ Epoch 2: baseline v2 vs candidate v3
 
 ### 16.2 Full Validation
 
-- `validation_gated` 模式使用独立 Validation 全集；
+- `independent_validation` 模式使用独立 Validation 全集；
 - `development_regression` 模式使用当前四个开发 Case，但结果标记为样本内和 `provisional`；
 - 基线和候选每 Case 三次；
 - 按 Case 取中位数；
@@ -982,7 +1098,7 @@ Epoch 2: baseline v2 vs candidate v3
 
 - 不参与 Screening、Full Validation、灰区增采样或 Epoch 选择；
 - 优化器、Evidence Builder 和 Rejected Buffer 均不能读取 Hidden Test 日志、答案、逐 Case 分数或失败标签；
-- 只在最终版本、统计方案和固定重复次数预注册后运行；
+- 当前系统只冻结和隔离 Hidden Test，不自动运行；应在最终版本、统计方案和固定重复次数预注册后，由用户在私有环境另行运行；
 - 一旦用于决定继续修改 Skill，该集合即失去 Hidden Test 身份，必须登记为已暴露并更换新快照。
 
 ### 16.5 当前四 Case 模式
@@ -992,15 +1108,21 @@ Epoch 2: baseline v2 vs candidate v3
 ```json
 {
   "split_mode": "development_regression",
-  "train_case_count": 4,
-  "validation_case_count": 0,
+  "train_case_count": 0,
+  "validation_case_count": 4,
+  "optimizer_visible_case_count": 4,
   "hidden_test_case_count": 0,
   "repeats": 3,
   "promotion_label": "provisional"
 }
 ```
 
-四个 Case 都可以向优化器提供反馈；Gate 的职责是防止已知 Case 回归并判断样本内是否改善。后续新增 Case 默认先进入 `prospective_holdout`。积累到足以覆盖多个独立故障家族后，再由用户冻结正式切分并启用 `validation_gated`。
+四个 Case 在持久化结构中登记为 Validation，但 `development_regression` 会明确
+把它们同时作为优化器可见的开发 Case；Gate 的职责是防止已知 Case 回归并判断
+样本内是否改善。后续新增 Case 不会自动进入任何 split；用户应在新 Snapshot
+中显式先放入 `prospective_holdout`。积累到足以
+覆盖多个独立故障家族后，再由用户冻结正式切分并启用
+`independent_validation`。
 
 ---
 
@@ -1010,32 +1132,23 @@ Epoch 2: baseline v2 vs candidate v3
 
 ```json
 {
-  "quality": {
-    "min_overall_delta": 1.0,
-    "min_candidate_win_probability": 0.95,
-    "require_bootstrap_lower_bound_gt_zero": true
-  },
-  "guardrails": {
-    "error_type_delta_min": 0.0,
-    "root_cause_delta_min": 0.0,
-    "unsupported_claim_rate_delta_max": 0.0,
-    "critical_family_max_regression": -2.0,
-    "generation_success_rate_delta_min": 0.0,
-    "new_timeout_count_max": 0,
-    "new_empty_report_count_max": 0,
-    "new_execution_failure_count_max": 0,
-    "median_latency_growth_max": 0.20,
-    "median_token_growth_max": 0.20
-  },
-  "statistics": {
-    "bootstrap_samples": 10000,
-    "confidence": 0.95,
-    "minimum_independent_validation_cases": 8,
-    "initial_repeats": 3,
-    "max_repeats": 7
-  }
+  "min_overall_delta": 1.0,
+  "max_latency_growth": 0.20,
+  "max_token_growth": 0.20,
+  "critical_dimension_min_delta": 0.0,
+  "critical_family_max_regression": -2.0,
+  "minimum_independent_validation_cases": 8,
+  "bootstrap_samples": 2000,
+  "bootstrap_confidence": 0.95,
+  "min_candidate_win_probability": 0.0,
+  "require_bootstrap_lower_bound_positive": true
 }
 ```
+
+这些字段和完整 `judge_config` 在 `VerifierBundleVersion` 中不可变冻结。Judge runner
+及 configuration 进入 Run Group config hash；Bootstrap 样本数/置信度进入实际比较，
+根据 Experiment/Epoch/Candidate 身份导出稳定 Seed，并把最终整数 Seed 保存在
+Comparison 与 Gate metrics 中。
 
 ### 17.2 判定顺序
 
@@ -1049,11 +1162,22 @@ Epoch 2: baseline v2 vs candidate v3
 
 硬约束失败不得被总分抵消。
 
+当前 Method Run artifact 对最终 stdout 持久化确定性估算：
+`token_count=ceil(output_character_count/4)`，同时记录
+`token_count_source=approximate_output_characters`。该量度只代表输出报告规模，不冒充
+provider 输入+输出 usage 或账单 Token。Full Gate 以每个 Case 重复运行中位数构成配对，
+然后比较基线/候选跨 Case 平均值的增长；任一 pair 缺 usage 以
+`token_usage_missing` 硬拒绝，超阈值以 `token_growth_exceeded` 硬拒绝。
+
+`forbidden_hit_count` 和 `missing_chain_count` 也会在每个 Case 上对重复运行取中位数。
+候选的任意一项高于基线即以 `candidate_guardrail_metric_increased` 硬拒绝；
+该判定不只依赖布尔 Failure Tag，也不允许被 Overall Delta 抵消。
+
 门禁模式：
 
 - `development_regression`：执行质量与稳定性硬约束、最小 Delta 和逐 Case 回归检查；Bootstrap 仅展示，不以 4 个 Case 声称统计显著；通过后只产生 `provisional` Active；
-- `validation_gated`：达到 `minimum_independent_validation_cases` 后，才启用 Bootstrap 下界/胜率作为自动发布必要条件；
-- `publication`：只报告冻结 Final Version 的 Hidden Test 结果，不执行 Promotion。
+- `independent_validation`：达到 `minimum_independent_validation_cases` 后，才启用 Bootstrap 下界/胜率作为自动发布必要条件；
+- 私有 publication 阶段：只报告冻结 Final Version 的 Hidden Test 结果，不执行 Promotion；当前闭环不自动调度该阶段。
 
 ### 17.3 配对计算
 
@@ -1068,7 +1192,33 @@ Bootstrap 以 Case 为重采样单元，不能以单次 Run 为单元。
 
 ### 17.4 原子 Promotion
 
-单事务执行：校验 Active 未变化；写 DecisionRecord；更新 Binding；标记 Candidate accepted；按切分模式把版本标记为 `provisional` 或 `validated`；写持久化事件记录；提交。V1 前端通过轮询读取事件记录；后续 SSE 可以发送 `skill.active_changed`。失败可幂等重试。
+单事务执行：校验 Active 未变化；写 DecisionRecord；更新 Binding 的
+`active_version_id` 和 `active_level`；标记 Candidate accepted、版本制品 status 为
+`active`；写 Binding History 和持久化事件；提交。`provisional`/`validated`
+保存在 Binding 上，不写进 Version status。V1 前端通过轮询读取事件记录；失败可幂等
+重试。
+
+### 17.5 Epoch 总账与 Active Path Score
+
+每个终态 Epoch 必须冻结选中候选的意图、实际 Patch/Diff 统计、静态结果、
+Baseline/Candidate/配对 Delta、逐 Case/Family/Dimension 变化、Gate 原因和
+Active 决策。所有候选保留在 JSON 总账；Markdown/CSV 提供一轮一行的主路径摘要，
+不代替候选详情。
+
+`ACTIVE PATH SCORE` 的精确定义是：
+
+```text
+initial baseline score + Σ(仅 decision=promote 的 Epoch paired delta)
+```
+
+Retained/拒绝候选不进入累计。该值是跨 Epoch 的 Active 路径审计量，不是对最终
+Active 重新执行的独立绝对分；因每个 Epoch 的基线/候选采样独立且可有模型波动，
+它不保证等于最后一轮 Candidate Score。研究报告必须保留各轮配对分数，并把最终
+Hidden Test 分数单独报告。
+
+若候选未进入 Full Validation，可保留带阶段标记的 Screening 比较用于诊断；它不能
+触发 Promotion 或进入 Active Path 累计。完全缺少合法比较时字段为 `null`，不伪造
+`0`。
 
 ---
 
@@ -1079,15 +1229,10 @@ Bootstrap 以 Case 为重采样单元，不能以单次 Run 为单元。
 ```text
 created
   ↓
-freezing
-  ↓
-baseline_running
-  ↓
-optimizing
-  ├── screening
-  ├── validating
-  ├── promoting
-  └── optimizing(next epoch)
+running
+  ├── epoch 1
+  ├── epoch 2 ... (development_regression only)
+  └── atomic promotion/retain decisions
   ↓
 completed
 ```
@@ -1097,24 +1242,21 @@ completed
 ### 18.2 Epoch
 
 ```text
-created
-  ↓
 collecting_evidence
   ↓
-reflecting
-  ↓
 generating_candidates
-  ↓
-static_validating
   ↓
 screening
   ↓
 full_validating
   ↓
-deciding
-  ├── accepted
-  └── rejected
+completed(decision=promote|retain|no_screening_survivor)
 ```
+
+`created`、`reflecting`、`static_validating` 和 `deciding` 不是当前 Epoch
+持久化状态。Candidate 另行记录 `validated_static`、`screening`、
+`screening_passed`、`screening_selected`、`validating`、`needs_more_runs`、
+`accepted` 或 `rejected`。
 
 ### 18.3 Early Stop
 
@@ -1126,7 +1268,10 @@ deciding
 - 人工取消；
 - 不可恢复基础设施错误。
 
-`stop_reason`：`MAX_EPOCHS`、`NO_SCREENING_SURVIVOR`、`NO_VALIDATION_IMPROVEMENT`、`TARGET_SCORE_REACHED`、`BUDGET_EXHAUSTED`、`USER_CANCELLED`、`INFRASTRUCTURE_FAILURE`。
+当前自动终止使用 `MAX_EPOCHS`、`NO_SCREENING_SURVIVOR` 和
+`NO_VALIDATION_IMPROVEMENT`；用户取消记录 `user_cancelled`，Optimizer
+无法产生可用提案时记录 `optimizer_error`。目标分、总预算和通用基础设施
+错误不是当前 Early Stop 的已实现原因码。
 
 ---
 
@@ -1161,7 +1306,10 @@ gate:<candidate-id>:<comparison-hash>:<gate-policy-hash>
 promote:<binding-id>:<candidate-version-id>
 ```
 
-重试：模型调用指数退避最多三次；数据库死锁短退避；Patch 不合法、Gate Reject 不重试；Active 冲突终止实验，需基于新 Active 重启。
+重试：Optimizer 调用只在 `AgentRunnerError` 时最多执行三次，两次
+重试前分别等待 1 秒和 2 秒；JSON 语法错误只允许一次同 Runner 格式修复。
+Patch schema/预算非法、Gate Reject 不重试；Active 冲突终止实验，
+需基于新 Active 重新决策。
 
 ---
 
@@ -1173,13 +1321,15 @@ promote:<binding-id>:<candidate-version-id>
 POST   /api/v1/skills
 GET    /api/v1/skills
 GET    /api/v1/skills/{skill_id}
-POST   /api/v1/skills/{skill_id}/import
+POST   /api/v1/skills/{skill_id}/versions
 GET    /api/v1/skills/{skill_id}/versions
-GET    /api/v1/skills/{skill_id}/versions/{version_id}
-GET    /api/v1/skills/{skill_id}/versions/{version_id}/files
-GET    /api/v1/skills/{skill_id}/versions/{version_id}/diff?against={id}
-POST   /api/v1/skills/{skill_id}/bindings
-POST   /api/v1/skills/{skill_id}/rollback
+GET    /api/v1/skills/{skill_id}/versions/{version_id}/export
+GET    /api/v1/skills/{skill_id}/diff?from_version_id={id}&to_version_id={id}
+GET    /api/v1/skills/{skill_id}/bindings
+GET    /api/v1/skills/{skill_id}/binding-history
+PUT    /api/v1/skills/{skill_id}/bindings
+POST   /api/v1/skills/{skill_id}/bindings/{evaluation_target_id}/rollback
+POST   /api/v1/evaluation-variants
 ```
 
 创建请求：
@@ -1188,7 +1338,7 @@ POST   /api/v1/skills/{skill_id}/rollback
 {
   "key": "kernel-log-analysis",
   "name": "Kernel Log Analysis",
-  "source_path": "/path/to/skill",
+  "source_path": "<frozen-harness.skill_base_dir>/skills/kernel-log-analysis",
   "invoke_as": "/kernel-log-analysis",
   "harness_key": "claude-skill",
   "install_relative_path": ".claude/skills/kernel-log-analysis",
@@ -1196,17 +1346,29 @@ POST   /api/v1/skills/{skill_id}/rollback
 }
 ```
 
+普通 UI 会按第 7 节派生 `name`、`source_path`、`invoke_as` 和
+`install_relative_path`；这里保留完整底层 API 形态，供审计和脚本化调用。
+
 ### 20.2 Experiment
 
 ```http
+POST   /api/v1/skill-optimization/policies
+GET    /api/v1/skill-optimization/policies
+POST   /api/v1/skill-optimization/verifiers
+GET    /api/v1/skill-optimization/verifiers
+POST   /api/v1/skill-optimization/data-snapshots
+GET    /api/v1/skill-optimization/data-snapshots
 POST   /api/v1/skill-optimization/experiments
 GET    /api/v1/skill-optimization/experiments
 GET    /api/v1/skill-optimization/experiments/{id}
-POST   /api/v1/skill-optimization/experiments/{id}/start
-POST   /api/v1/skill-optimization/experiments/{id}/cancel
-GET    /api/v1/skill-optimization/experiments/{id}/epochs
-GET    /api/v1/skill-optimization/experiments/{id}/candidates
+POST   /api/v1/skill-optimization/experiments/{id}:start
+POST   /api/v1/skill-optimization/experiments/{id}:resume
+POST   /api/v1/skill-optimization/experiments/{id}:cancel
 GET    /api/v1/skill-optimization/experiments/{id}/events
+GET    /api/v1/skill-optimization/experiments/{id}/detail?epoch_offset=0&epoch_limit=20
+GET    /api/v1/skill-optimization/experiments/{id}/ledger
+GET    /api/v1/skill-optimization/experiments/{id}/export?format=json|markdown|csv
+POST   /api/v1/skill-optimization/preflight
 ```
 
 创建请求：
@@ -1217,12 +1379,10 @@ GET    /api/v1/skill-optimization/experiments/{id}/events
   "skill_id": "uuid",
   "base_skill_version_id": "uuid",
   "evaluation_target_id": "uuid",
-  "benchmark_snapshot_id": "uuid",
-  "split_snapshot_id": "uuid",
+  "data_snapshot_id": "uuid",
   "optimizer_policy_version_id": "uuid",
   "verifier_bundle_version_id": "uuid",
-  "max_epochs": 5,
-  "candidate_count": 2
+  "max_epochs": 5
 }
 ```
 
@@ -1230,21 +1390,25 @@ GET    /api/v1/skill-optimization/experiments/{id}/events
 
 ```http
 GET  /api/v1/skill-optimization/candidates/{id}
-GET  /api/v1/skill-optimization/candidates/{id}/patch
-GET  /api/v1/skill-optimization/candidates/{id}/diff
-GET  /api/v1/skill-optimization/candidates/{id}/comparison
-POST /api/v1/skill-optimization/candidates/{id}/promote
-POST /api/v1/skill-optimization/candidates/{id}/reject
 ```
+
+候选详情响应统一包含 intent、change stats、Patch、Diff、静态验证、Screening
+和完整比较。V1 不提供绕过 Gate 的手工 promote/reject API；Active 只能由
+Promotion Service 的门禁晋升或显式 rollback 改变。
 
 ### 20.4 事件与前端更新
 
-事件：`experiment.status_changed`、`epoch.status_changed`、`candidate.created`、`candidate.static_rejected`、`candidate.screening_completed`、`candidate.validation_progress`、`candidate.gate_decided`、`skill.active_changed`、`experiment.completed`、`experiment.failed`。
+当前持久化事件名使用 snake_case：`evidence_built`、`candidate_generated`、
+`candidate_static_rejected`、`candidate_screening_completed`、`candidate_gate_decided`、
+`epoch_started`、`epoch_completed`、`epoch_summary_ready`、`skill_version_promoted`、
+`experiment_resumed`、`experiment_cancelled`、`experiment_completed` 和
+`experiment_failed`。前端还会读取实验/Epoch 当前 status，不依赖一个虚构的
+`*.status_changed` 事件。
 
 ```json
 {
   "event_id": "uuid",
-  "event_type": "candidate.gate_decided",
+  "event_type": "candidate_gate_decided",
   "experiment_id": "uuid",
   "epoch_id": "uuid",
   "candidate_id": "uuid",
@@ -1349,7 +1513,7 @@ src/frontend/src/
 
 ```text
 skill_optimization_enabled = false
-skill_optimization_managed_root = <workspace_root_path>/skill-optimization
+skill_optimization_managed_root = <explicit-existing-writable-absolute-path>
 skill_optimization_max_files = 200
 skill_optimization_max_total_bytes = 2097152
 skill_optimization_max_single_file_bytes = 262144
@@ -1371,20 +1535,22 @@ skill_optimization_test_timeout_seconds = 120
 
 ## 24. Optimizer Prompt 契约
 
-Prompt 必须版本化，不能硬编码在业务函数：
+当前 V1 冻结 `OptimizerPolicyVersion.prompt_bundle/config`，并在运行时为四个
+角色构造带明确版本的 Prompt：
 
 ```text
-optimizer-prompts/
-├── failure_analyst.md
-├── success_analyst.md
-├── generalization_analyst.md
-├── simplification_analyst.md
-├── merge_analysis.md
-├── propose_candidate.md
-└── summarize_decision.md
+failure_analyst       = skill_optimizer.failure_analyst.v1
+success_analyst       = skill_optimizer.success_analyst.v1
+generalization_analyst = skill_optimizer.generalization_analyst.v1
+simplification_analyst = skill_optimizer.simplification_analyst.v1
+output schema         = structured_skill_patch.v1
+pipeline              = four_role_optimizer.v1
 ```
 
-每个 Prompt 必须定义输入、输出 JSON Schema、禁止事项、隐藏答案隔离、editable paths、案例硬编码禁令、证据要求和退化风险。模型结果解析失败时只允许一次格式修复；仍失败则任务失败，不允许正则拼凑不可验证 JSON。
+每个 Prompt 定义 Train-only 证据边界、角色任务、严格 JSON
+Schema 和禁止事项。模型返回非法 JSON 时只允许一次格式修复；仍失败
+则记录该角色错误，不允许正则拼凑不可验证 JSON。四角色的输出概要、
+错误和最终入选 patch hash 保存在 `optimizer_pipeline_completed` 事件中。
 
 ---
 
@@ -1407,26 +1573,29 @@ case_results = [
 
 ```json
 {
-  "case_deltas": [],
+  "pairs": [],
+  "case_outcomes": [],
   "overall_delta": 2.4,
-  "median_delta": 2.0,
-  "candidate_win_rate": 0.68,
   "candidate_win_probability": 0.97,
-  "bootstrap_ci": {"lower": 0.6, "upper": 4.1},
+  "bootstrap_confidence": 0.95,
+  "bootstrap_interval": [0.6, 4.1],
+  "bootstrap_seed": 123456789,
   "family_deltas": {},
   "dimension_deltas": {},
-  "runtime": {},
-  "tokens": {}
+  "guardrail_metric_deltas": {}
 }
 ```
 
 Bootstrap Seed：
 
 ```text
-sha256(experiment_id + candidate_id + gate_policy_hash)
+seed_context = experiment_id + epoch_id + candidate_mutation_id
+seed_material = seed_context + sorted(case_path + paired_delta)
+bootstrap_seed = first_64_bits(sha256(seed_material))
 ```
 
-结果中保存 Seed。
+结果中保存实际整数 Seed。`bootstrap_samples` 和 `bootstrap_confidence` 来自冻结
+Verifier Gate Policy；以 Case Delta 为重采样单元，不以 repeat 作为独立样本。
 
 ---
 
@@ -1486,9 +1655,15 @@ V1 默认只提升 AnalystBench Managed Active，不自动发布到生产源目�
 
 ### 28.1 单元测试
 
-**Package Snapshot / Internal Git**：稳定哈希、排序、符号链接拒绝、路径穿越、重复哈希、大小限制、checkout 后哈希一致、内部仓库不修改用户 `.git`、禁用 hooks/submodule。
+**Package Snapshot / Internal Git**：v2 稳定哈希、忽略路径清单、排序、
+执行 mode、setuid/setgid 拒绝、符号链接拒绝、路径穿越、重复哈希、
+大小限制、checkout 后哈希一致、只读物化保留执行位、内部仓库不修改
+用户 `.git`、禁用 hooks/submodule。
 
-**Patch Applier**：四种操作、anchor 不唯一、old_text 不存在、越界路径、预算超限、整体回滚。
+**Patch Applier / Optimizer Pipeline**：四种操作、`create`/`old_text`
+拒绝、anchor/old 不唯一、越界路径、预算超限、整体回滚、四角色
+Train-only Prompt、严格 schema、一次格式修复、1/2 秒退避、round-robin 和
+canonical hash 去重。
 
 **Gate**：正常 promote、Overall 不达标、关键维度退化、新增超时、延迟超限、灰区、最大次数拒绝、Case 级 Bootstrap、四 Case 模式不宣称显著性、`provisional` Active。
 
@@ -1513,7 +1688,12 @@ import
 
 ### 28.3 E2E
 
-使用真实 claude Skill Harness 小数据集验证：把冻结版本复制到 `<workspace>/.claude/skills/<skill>`、cwd 正确、`/skill-name` 可被发现、独立 HOME、并发不污染、Candidate Report 正常评分、轮询状态更新、Diff 展示、Active 切换后普通评测使用新版本、历史评测仍读取旧版本。
+使用真实 claude Skill Harness 小数据集验证：把冻结版本复制到
+`<workspace>/.claude/skills/<skill>`、cwd 正确、`/skill-name` 可被发现、每次运行
+使用独立临时 HOME/XDG 环境、并发不污染、Candidate Report 正常评分、
+轮询状态更新、Diff 展示、Active 切换后普通评测使用新版本、历史评测
+仍读取旧版本。HOME/XDG 重定向只是进程环境与用户状态隔离，不是
+文件系统/网络沙箱证据。
 
 ### 28.4 回归
 
@@ -1535,37 +1715,61 @@ import
 运行版本优先级：
 
 ```text
-request.evaluation_variant
-> request.skill_version + evaluation_target
-> target binding active
-> legacy harness behavior
+request.target / target_selection
+  ├── target binding exists  -> freeze current Active EvaluationVariant
+  └── no binding             -> frozen Target materialized method
+
+request.method_id             -> explicitly selected frozen legacy Method
 ```
 
-Active 变化不得改变历史 Run 展示。
+当前普通 Submission API 不接收一个单独的 `skill_version`
+参数。按 Target 评测时在创建 Submission 的事务中解析 Active，并将
+Variant/Version/Binding 身份写进冻结 Target snapshot。Active 变化不得改变
+历史 Run 展示。
 
 ---
 
 ## 30. 实施拆分
 
-### 30.0 当前开发基线（2026-07-31）
+### 30.0 当前开发基线（2026-08-12）
 
 第一条后端纵切已落在独立的 `src/analystbench/skill_optimization/` 包：
 
-- 已实现包检查、稳定哈希、普通文件/符号链接/容量限制、AnalystBench 内部 bare Git、不可变版本、Diff 和 checkout 后哈希复核；
-- 已实现 Skill、Version、Binding、EvaluationVariant、Experiment、Epoch、Candidate、Snapshot、Run Group、Signal、Comparison、Decision、Event 的 ORM 与 `0014_skill_optimization` 迁移；
+- 已实现 v2 包检查与稳定哈希（包含归一化 mode 和
+  `ignored_paths`）、setuid/setgid/符号链接/容量限制、AnalystBench
+  内部 bare Git、不可变只读版本、Diff 和 checkout 后哈希复核；
+- 已实现 Skill、Version、Binding、Binding History、EvaluationVariant、Experiment、Epoch、Candidate、Snapshot、Run Group、Signal、Comparison、Decision、Event 的 ORM 与 `0014`—`0018` 迁移；`0018` 增加底层 Submission 幂等键；
 - 现有 `EvaluationSubmissionService` 只增加可选 `EvaluationWorkspacePreparer` Protocol；应用工厂和 Worker 注入 Skill Adapter，功能关闭时保持旧行为；
-- 已实现冻结版本安装到 `<workspace>/.claude/skills/<skill>`，且只复制声明的 Skill 包；
-- 已实现结构化 Patch、文本预算、静态失败候选隔离、每轮两个候选、单次 Screening、三次完整配对验证、灰区自动追加到 5/7 次、逐 Case 中位数和确定性 Bootstrap；
+- 已实现冻结版本安装到 `<workspace>/.claude/skills/<skill>`，且只复制声明的 Skill 包；目标命令收到具体 `ANALYSTBENCH_SKILL_VERSION_ID`；
+- Optimizer、Target 和 Judge 使用各自临时 HOME/XDG 目录；这是进程环境隔离，不是通用文件系统/网络沙箱，交互式 HOME 登录不会自动复制；
+- 已实现四角色 Train-only Optimizer pipeline、严格
+  `structured_skill_patch.v1`、一次 JSON 格式修复、Runner 1/2 秒退避、
+  canonical-hash round-robin 去重、逐 Epoch 收紧的操作预算、文件数/增删
+  Token/单文件比例预算、静态失败候选隔离、每轮默认最多两个
+  候选、单次 Screening、三次完整配对验证、灰区自动追加到 5/7 次、
+  逐 Case 中位数和确定性 Bootstrap；
+- 静态验证固定检查凭据与私有路径、Case 泄漏、引用文件、脚本语法和声明式包内测试；只有 manifest 声明 `package_tests.argv` 才会使用 bubblewrap 无网络 namespace 执行，失败发生在不可变版本导入前；
 - 已实现 Failure Family、Dimension、Failure Tag Evidence，优化器会读取当前 Evidence 和同实验 Rejected History，但不会读取 hidden/prospective holdout；
 - 已实现硬回归 Gate、`provisional`/`validated` 判定、原子 Binding 晋升、下一 Epoch 新基线、连续两轮无 Screening survivor/无验证提升 Early Stop、取消、恢复与事件记录；
-- Run Group 使用冻结配置哈希幂等复用；恢复时已完成或已排队的同实验组不会重复创建 Submission，配置漂移则拒绝复用；
-- 已提供 `/api/v1/skills`、`/api/v1/evaluation-variants`、`/api/v1/skill-optimization/*` 后端接口，以及实验向导、Epoch 流、Evidence、候选、比较和 Diff 前端；
+- Full Gate 强制完整输出字符近似 Token usage，缺失/超阈值硬拒绝；逐 Case 的 `forbidden_hit_count`/`missing_chain_count` 重复中位数任一上升硬拒绝；
+- Run Group 使用冻结配置哈希幂等复用；Verifier 冻结 Judge 与
+  Bootstrap 策略，Validation repeat 以稳定 `pair_seed` 交错 arm 顺序；
+  底层 Submission 使用同一 run hash 的唯一 idempotency key，覆盖
+  “Submission 已创建、Run Group 尚未写入”的崩溃窗口；配置漂移则拒绝复用；
+- Snapshot 冻结 Case 输入、日志、Eval Spec 和 `source_group_key` 哈希；启动、恢复和推进时拒绝内容漂移，并支持严格独立 Train/Validation；`independent_validation` 强制单 Epoch，启动时原子消费 Snapshot；
+- 每个已终结 Epoch 持久化候选意图、实际修改统计、基线/候选分数、本轮与累计 Delta、逐 Case/Family/Dimension 变化和 Gate/Active 决策；支持 JSON、Markdown、CSV 确定性总账导出；
+- 已实现版本 ZIP 导出、同一 Target 历史 Active 限定的显式回滚、乐观锁和 Binding 审计历史；不会把版本自动写回用户源目录；
+- 按 Target 发起的普通评测会优先解析当前 `SkillTargetBinding` Active 对应的冻结 EvaluationVariant，并把具体版本冻结进 Submission；历史 Run 不随晋升/回滚变化；
+- V1 每个 Evaluation Target 只允许一个 Active Skill；优化 Submission/结果默认不进入普通列表和统计，普通取消/删除 API 不能绕过 Experiment 破坏它们；
+- 已实现基础与上下文环境预检，覆盖功能开关、绝对 Managed Root、Git/Runner、迁移、磁盘、Skill/Harness/Target/Profile/Policy/Snapshot 和 Case 日志；
+- 已提供 `/api/v1/skills`、`/api/v1/evaluation-variants`、`/api/v1/skill-optimization/*` 后端接口，以及实验向导、分页 Epoch 流、Evidence、候选、比较、Diff、总账、导出、版本和回滚前端；
+- 普通创建向导从冻结 Harness 的 `skill_base_dir` 与 Skill Key 派生源路径和 `/skill-key`；前端已支持选择 `development_regression` 或 `independent_validation`，并在页面为 Case 编辑 Train/Validation/Hidden/Prospective split；独立模式的 Epoch 输入被锁定为 1；
 - 已通过确定性 `/skill` 命令契约并发 E2E：两个冻结版本分别安装到独立 `<workspace>/.claude/skills/<skill>`，并发执行且互不污染。真实 claude E2E 自动发现 PATH 中的 `claude`，也可由 `ANALYSTBENCH_REAL_CLAUDE` 显式指定。
 
-代码闭环已经覆盖本轮列出的 V1 缺口。当前机器没有可发现的 `claude`
-可执行文件，因此“真实 claude 二进制验收”和“真实四 Case 先导实验数据”
-仍是环境/实验验收项，不能用确定性替身测试代替。下列清单据此区分“代码已完成”
-与“仍需真实环境或数据验收”。
+本地代码闭环已覆盖 V1 开发范围。真实 claude 二进制、用户私有 Case 先导实验、
+独立 Holdout 和研究结果仍是用户私有环境的运行项，不能用确定性替身测试
+代替，也不能在没有数据时预填结论。完整操作见
+[Skill 自优化私有环境运行手册](../skill-optimization-runbook.md)。
 
 ### Phase 0：仓库勘察
 
@@ -1591,9 +1795,12 @@ Active 变化不得改变历史 Run 展示。
 
 ### Phase 4：候选和静态验证
 
-实现 Prompt Bundle、Optimizer Adapter、Structured Patch、Patch Applier、预算、静态检查、包内测试和 Diff UI。
+实现四角色 Train-only Optimizer pipeline、版本化 Prompt、严格
+`structured_skill_patch.v1`、一次 JSON 格式修复、Runner 退避、canonical-hash
+round-robin 合并、Patch Applier、预算、静态检查、包内测试和 Diff UI。
 
-验收：可生成两个候选；越界 Patch 拒绝；合法 Patch 创建不可变包；所有拒绝有错误码。
+验收：默认可选出最多两个去重候选；非法 schema、`create`、
+`old_text` 和越界 Patch 拒绝；合法 Patch 创建不可变包；所有拒绝有错误码。
 
 ### Phase 5：筛选、完整验证和 Gate
 
@@ -1605,60 +1812,95 @@ Active 变化不得改变历史 Run 展示。
 
 实现原子 Active、冲突处理、下一 Epoch、Early Stop、回滚、审计、指标和 E2E。
 
-验收：最多五轮闭环；接受候选成为下一轮父版本；拒绝不影响 Active；任意已验证版本可回滚；Worker 重启可恢复。
+验收：`development_regression` 最多五轮闭环，接受候选成为下一轮父版本；
+`independent_validation` 固定一轮；拒绝不影响 Active；同一 Target Binding
+上曾经 Active 的版本可带乐观锁回滚；Worker 重启可恢复。
 
 ### Phase 7：文档和实验
 
-补充操作、API、配置文档，运行真实内核日志实验，并填写研究文档结果。
+操作、API、配置、导出、回滚和私有验收手册已补充。真实内核日志实验和研究
+文档结果由用户在私有环境运行后据实填写，不属于本地替身开发的完成声明。
 
 ---
 
 ## 31. V1 验收清单
 
+以下 `[x]` 只表示当前代码、迁移或确定性测试已实现对应契约，不代表真实
+claude 或私有数据已经跑出提升。真实环境证据单列在末尾。
+
 ### 功能
 
 - [x] 注册和导入 Skill；
-- [x] 用户可配置 source path、invoke name、Harness Key 和 install relative path；
+- [x] 普通向导由冻结 Harness `skill_base_dir` + Skill Key 派生源路径、调用名和安装路径；
 - [x] 每个 Skill 使用与用户仓库隔离的内部 Git；
 - [x] 完整包不可变版本；
 - [x] EvaluationVariant 绑定 Target 与 SkillVersion，并校验 Harness Key；
 - [x] 运行前安装到隔离工作区的项目级 Skill 目录；
 - [x] 候选运行隔离；
-- [x] 最多五 Epoch；
-- [x] 每轮两个候选；
-- [x] 所有候选使用 Structured Patch；
+- [x] Development Regression 最多五 Epoch；Independent Validation 强制一 Epoch；
+- [x] 四角色只使用有界 Train/Development 证据，并按固定顺序
+  round-robin/canonical hash 去重，默认每轮取最多两个候选；
+- [x] 所有候选使用严格 `structured_skill_patch.v1`，只允许
+  `append`/`insert_after`/`replace`/`delete`；
 - [x] 编辑预算生效；
 - [x] 静态违规候选单独拒绝，不中止其他候选；
 - [x] 基线/候选配对运行三次；
+- [x] 配对运行以稳定 Seed 交错 arm 顺序；Verifier 冻结 Judge 和
+  Bootstrap policy/seed 身份；
 - [x] 灰区自动追加到 5/7 次；
 - [x] Gate 支持硬约束和 Bootstrap；
 - [x] 四 Case 开发模式标记 `provisional` 且不宣称显著性；
+- [x] 独立模式严格分离 Train/Validation，校验最少 Validation Case 和跨 split `source_group_key`；
+- [x] 独立 Snapshot 只能被一个已启动 Experiment 原子消费，避免重复选择导致 Validation 过拟合；
+- [x] Snapshot 冻结输入/日志/Eval Spec 哈希，运行前拒绝 drift；
 - [x] prospective holdout 不进入优化器输入；
-- [x] Rejected Buffer 下一轮可检索；
+- [x] Development Regression 中 Rejected Buffer 下一轮可检索；独立验证不会运行第二 Epoch；
 - [x] 通过候选原子提升；
-- [x] 可手动回滚；
+- [x] 仅可显式回滚到同一 Target 曾 Active 的版本，带乐观锁和审计历史；
 - [x] Run Group 恢复复用和 Early Stop；
-- [x] 前端查看 Diff、分数、Family/Dimension 退化和历史。
+- [x] Submission 幂等键与 Run Group 唯一哈希覆盖“Submission 已创建、
+  Run Group 尚未落库”的崩溃窗口；
+- [x] 每个 Epoch 持久化“改了什么”和本轮/累计分数升降；
+- [x] 前端查看 Diff、逐 Case/Family/Dimension 变化、Gate 原因和历史；
+- [x] 实验总账可导出 JSON/Markdown/CSV，版本可导出确定性 ZIP；
+- [x] CLI/API/UI 提供环境预检、总账、版本导出和显式回滚入口。
+- [x] 按 Target 创建的普通评测冻结当时 Active Variant/Version，历史评测不随 Binding 变化；
+- [x] 优化结果排除普通统计/列表，且普通取消/删除不能破坏实验子任务；
 
 ### 质量
 
-- [ ] 核心代码满足项目覆盖率标准；
-- [ ] Gate、Patch、状态机建议覆盖率不低于 90%；
-- [ ] 所有 API 有权限检查；
+- [x] 当前工作树已生成核心风险代码覆盖率报告；
+- [x] Gate 95%、Patch 98%，状态机可执行区间 90.3%。整个
+  `experiment.py`（含 CRUD、分页、详情和兼容读取面）为 80.0%，不拿整文件比例
+  冒充状态机比例；
+- [ ] 通用认证/授权中间件及全部 API 权限检查；这是当前本地自托管产品缺少的
+  平台级基础设施，不属于 Skill 自优化 V1，不能在本模块中虚构已完成；
 - [x] 无路径穿越和符号链接逃逸；
+- [x] v2 package hash 包含归一化 mode 和 `ignored_paths`，拒绝
+  setuid/setgid，只读物化保留执行位；
+- [x] Patch 预算、内容安全、Case 泄漏、引用、语法和声明式包内测试检查；
+- [x] 包内测试必须由 manifest 声明，且使用 bubblewrap 无网络 namespace；真实 namespace E2E 由私有宿主 opt-in；
 - [x] 不修改 AnalystBench 仓库或用户源仓库的 Git 状态；
 - [x] 并发候选不污染（确定性命令契约 E2E）；
 - [x] 历史评测可复现；
-- [ ] 真实 claude 二进制并发 E2E；
-- [ ] 全量现有评测回归通过。
+- [x] 当前工作树全量后端回归收集 234 个用例：231 通过，3 个按私有环境
+  约定跳过（真实 claude 1 个、bubblewrap namespace 2 个），退出码 0；
 
 ### 性能
 
-- [ ] 快照和哈希不阻塞 API 主线程；
+- [x] 快照、预检和哈希 API 使用同步路由线程池，推进阶段由 Worker 执行，不阻塞异步事件循环；
 - [x] 大文件和文件数有上限；
-- [ ] 前端详情分页加载；
+- [x] 前端详情按 Epoch 分页加载；
 - [x] 事件轮询更新；
 - [x] 同实验 Run Group 缓存命中不重复执行。
+
+### 用户私有环境与研究证据（不由本地替身代替）
+
+- [ ] 真实 claude 二进制 `/skill` 发现与并发 E2E；
+- [ ] 真实 Optimizer × Target × Judge 的完整单 Epoch 验收；
+- [ ] 用户私有 Case 的 `development_regression` 先导实验；
+- [ ] 独立 Train/Validation 与最终未暴露 Holdout 实验；
+- [ ] 根据真实导出总账填写研究结果、成本、失败样本和环境版本。
 
 ---
 
@@ -1684,7 +1926,29 @@ class EvidenceRetriever(Protocol):
 
 ## 33. 完成定义
 
-只有以下全部满足才视为完成：
+“本地代码开发完成”和“私有实验研究完成”是两个不同边界。
+
+### 33.1 V1 本地代码开发完成
+
+以下事项由当前仓库实现和本地确定性验证证明：
+
+1. Skill 可从 Harness 派生的用户配置目录导入内部 Git 并形成不可变包；
+2. 两个版本可分别安装到独立工作区的项目级 Skill 目录，并发执行且互不污染；
+3. Evaluation 结果可生成 OptimizationSignal；
+4. 优化器输出只能通过受限 Structured Patch 修改 Managed 副本；
+5. 候选经过预算、静态验证、Screening 和重复配对验证；
+6. Gate 可阻止关键类别、执行、时延与 Token 回归；
+7. 通过候选原子更新 Active，失败候选不改变 Active；
+8. 每轮修改、分数升降、逐 Case/Family/Dimension 和决策可在前端复盘并导出；
+9. Development Regression 的新 Active 可进入下一 Epoch；Independent Validation
+   固定一 Epoch 且不重用 Snapshot；中断可恢复；
+10. 同一 Target 曾 Active 的版本可带乐观锁显式回滚，历史评测身份不变；
+11. Snapshot 内容冻结、独立切分、防泄漏、版本 ZIP、Binding 审计和环境预检可用；
+12. 聚焦测试、前端构建和全量回归以当前提交的实际命令结果为验收证据。
+
+### 33.2 用户私有环境与研究完成
+
+以下事项必须由用户在私有环境完成，不能作为 Codex 本地开发的虚构结果：
 
 1. 真实 claude Skill 可从用户配置目录导入内部 Git 并形成不可变包；
 2. 两个版本可分别安装到独立工作区的项目级 Skill 目录，并发评测且互不污染；
@@ -1694,8 +1958,10 @@ class EvidenceRetriever(Protocol):
 6. Gate 可阻止关键类别回归；
 7. 通过候选原子更新 Active；
 8. 失败候选和原因可在前端复盘；
-9. 新 Active 可进入下一 Epoch；
-10. 任一历史已验证版本可回滚；
+9. Development Regression 的新 Active 可进入下一 Epoch；Independent Validation
+   只运行一 Epoch；
+10. 同一 Target Binding 上任一曾 Active 的历史版本可带乐观锁回滚，不要
+    把范围误写成“任意已验证版本”；
 11. E2E 和现有系统回归测试通过；
 12. 当前四 Case 能完成带 `provisional` 标记的先导实验；
 13. 在新增独立 Holdout Case 前，不把先导结果写成论文主实验或泛化结论；
@@ -1705,50 +1971,66 @@ class EvidenceRetriever(Protocol):
 
 ## 附录 A：错误码
 
+以下是当前 V1 主路径使用的稳定小写错误/原因码，而非早期设计中的
+大写占位名：
+
 ```text
-SKILL_SOURCE_NOT_FOUND
-SKILL_PACKAGE_TOO_LARGE
-SKILL_FILE_TOO_LARGE
-SKILL_TOO_MANY_FILES
-SKILL_PATH_TRAVERSAL
-SKILL_SYMLINK_ESCAPE
-SKILL_HASH_CONFLICT
-SKILL_INSTALL_PATH_INVALID
-SKILL_INTERNAL_GIT_FAILED
-SKILL_CHECKOUT_HASH_MISMATCH
+skill_source_invalid
+skill_package_too_large
+skill_path_invalid
+skill_symlink_forbidden
+skill_file_mode_forbidden
+skill_install_path_invalid
+skill_git_failed
+skill_package_integrity_failed
 
-PATCH_SCHEMA_INVALID
-PATCH_PATH_NOT_EDITABLE
-PATCH_ANCHOR_NOT_FOUND
-PATCH_ANCHOR_AMBIGUOUS
-PATCH_OLD_TEXT_NOT_FOUND
-PATCH_OPERATION_FAILED
-EDIT_BUDGET_EXCEEDED
+optimizer_output_invalid
+optimizer_policy_invalid
+optimizer_policy_unsafe_tools
+optimizer_policy_unsafe_arguments
+skill_patch_invalid
+skill_patch_operation_invalid
+skill_patch_operation_forbidden
+skill_patch_path_forbidden
+skill_patch_target_missing
+skill_patch_anchor_invalid
+edit_budget_exceeded
+skill_token_budget_exceeded
 
-STATIC_SECRET_DETECTED
-STATIC_ABSOLUTE_PATH_DETECTED
-STATIC_CASE_LEAK_DETECTED
-STATIC_REFERENCE_MISSING
-STATIC_SCRIPT_SYNTAX_FAILED
-STATIC_PACKAGE_TEST_FAILED
+skill_content_security_violation
+skill_case_leak_detected
+skill_reference_check_failed
+skill_script_syntax_invalid
+skill_package_test_config_invalid
+skill_package_test_sandbox_unavailable
+skill_package_tests_timeout
+skill_package_tests_failed
 
-SCREENING_REGRESSION
-GATE_MIN_GAIN_NOT_MET
-GATE_ERROR_TYPE_REGRESSION
-GATE_ROOT_CAUSE_REGRESSION
-GATE_UNSUPPORTED_CLAIM_REGRESSION
-GATE_CRITICAL_FAMILY_REGRESSION
-GATE_NEW_TIMEOUT
-GATE_NEW_EMPTY_REPORT
-GATE_NEW_EXECUTION_FAILURE
-GATE_LATENCY_EXCEEDED
-GATE_TOKEN_EXCEEDED
-INCONCLUSIVE_AFTER_MAX_REPEATS
-INSUFFICIENT_INDEPENDENT_VALIDATION_CASES
+screening_results_missing
+screening_delta_below_minimum
+no_paired_results
+minimum_delta_not_met
+candidate_case_failures_increased
+candidate_new_failure_type
+candidate_guardrail_metric_increased
+critical_dimension_regressed
+failure_family_regressed
+latency_growth_exceeded
+token_usage_missing
+token_growth_exceeded
+gray_zone
+inconclusive_after_max_repeats
+independent_validation_cases_insufficient
+independent_validation_not_confident
 
-ACTIVE_CHANGED_CONFLICT
-EXPERIMENT_BUDGET_EXHAUSTED
-EXPERIMENT_CANCELLED
+optimization_independent_validation_epoch_limit
+optimization_independent_snapshot_consumed
+optimization_case_input_drift
+optimization_eval_spec_drift
+optimization_submission_managed_by_experiment
+optimization_result_managed_by_experiment
+evaluation_target_skill_binding_conflict
+skill_binding_conflict
 ```
 
 ---
@@ -1804,7 +2086,7 @@ def run_experiment(experiment_id: str) -> None:
 
         survivor = select_screening_survivor(candidates)
         if survivor is None:
-            finalize_epoch_rejected(epoch, "NO_SCREENING_SURVIVOR")
+            finalize_epoch_rejected(epoch, "no_screening_survivor")
             if should_early_stop(exp):
                 break
             continue
@@ -1857,7 +2139,7 @@ def run_experiment(experiment_id: str) -> None:
 | 当前数据模式 | development_regression |
 | Skill 版本存储 | AnalystBench 内部 Git |
 | 发布模式 | managed / provisional |
-| 最大 Epoch | 5 |
+| 最大 Epoch | Development Regression 默认/上限 5；Independent Validation 固定 1 |
 | 每轮候选数 | 2 |
 | Screening 重复数 | 1 |
 | Full Validation 初始重复数 | 3 |
@@ -1867,7 +2149,7 @@ def run_experiment(experiment_id: str) -> None:
 | 最大新增 Token | 600 |
 | 最大删除 Token | 300 |
 | 最小 Overall Delta | +1.0 |
-| Bootstrap 样本数 | 10000 |
+| Bootstrap 样本数 | 2000（Verifier 可冻结配置） |
 | 置信度 | 95% |
 | 启用统计自动门禁的最少独立 Validation Case | 8 |
 | 最大关键家族退化 | -2.0 |
