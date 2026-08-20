@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from analystbench.execution.runner import CommandAgentRunner
+from analystbench.execution.runner import AgentRunnerError, CommandAgentRunner
 
 
 def test_build_command_resolves_executable_from_path(monkeypatch) -> None:
@@ -57,3 +57,23 @@ def test_execute_uses_one_time_isolated_home_and_preserves_explicit_credentials(
     assert environment["ANALYSTBENCH_ISOLATED_HOME"] == "1"
     assert not isolated_home.exists()
     assert result.final_report == "done"
+
+
+def test_execute_classifies_claude_not_logged_in(monkeypatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        "analystbench.execution.runner.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout='{"is_error":true,"result":"Not logged in · Please run /login"}',
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(AgentRunnerError) as raised:
+        CommandAgentRunner("claude").execute({}, workspace, "prompt")
+
+    assert raised.value.code == "agent_authentication_required"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in str(raised.value)
+    assert "Not logged in" in raised.value.stdout

@@ -11,6 +11,7 @@ from alembic import command
 from analystbench.api.app import create_app
 from analystbench.config import Settings
 from analystbench.db.models import Case, CaseTrace, DatasetVersion
+from analystbench.execution.runner import AgentRunnerError
 from analystbench.scoring.reporting import render_markdown
 from analystbench.worker import LocalWorker
 
@@ -291,6 +292,48 @@ def test_frontend_raw_conversion_uses_background_runner(tmp_path: Path) -> None:
         assert converted.status_code == 201
         assert converted.json()["status"] == "ready"
         assert converted.json()["issues"] == []
+
+
+def test_case_generation_persists_bounded_runner_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = migrated_settings(tmp_path)
+
+    class FailingRunner:
+        def execute(self, configuration, workspace, prompt):
+            raise AgentRunnerError(
+                "agent_authentication_required",
+                "Claude CLI 未登录。",
+                stdout="x" * 2100,
+                stderr="not logged in",
+            )
+
+    monkeypatch.setattr(
+        "analystbench.catalog.case_library.create_runner", lambda runner_id: FailingRunner()
+    )
+    with TestClient(create_app(settings)) as client:
+        generated = client.post(
+            "/api/v1/case-drafts:generate",
+            json={
+                "reference_answer": "人工标准答案",
+                "case_key": "auth-failure",
+                "test_set": "kernel-log-analysis",
+                "category": "panic",
+            },
+        ).json()
+
+        worker = LocalWorker(settings)
+        try:
+            assert worker.run_once() is True
+        finally:
+            worker.close()
+
+        draft = client.get(f"/api/v1/case-drafts/{generated['id']}").json()
+        assert draft["status"] == "failed"
+        assert draft["error"]["code"] == "agent_authentication_required"
+        assert draft["error"]["message"] == "Claude CLI 未登录。"
+        assert draft["error"]["stdout_tail"] == "x" * 2000
+        assert draft["error"]["stderr_tail"] == "not logged in"
 
 
 def test_case_hierarchy_is_persisted_in_one_test_set(tmp_path: Path) -> None:

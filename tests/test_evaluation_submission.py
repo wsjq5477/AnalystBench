@@ -105,6 +105,80 @@ def create_case_directory(settings: Settings) -> Path:
     return case_directory
 
 
+def test_delete_local_case_removes_inputs_and_preserves_history(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "main.log").write_text("chmod hung", encoding="utf-8")
+    run_directory = case_directory / "runs" / "20260820120000"
+    run_directory.mkdir(parents=True)
+    (run_directory / "result.json").write_text(
+        json.dumps({"status": "completed"}), encoding="utf-8"
+    )
+
+    with TestClient(create_app(settings)) as client:
+        deleted = client.delete(
+            "/api/v1/local-cases/kdiag/SYSTEM_DEADLOCK/chmod_hung"
+        )
+
+        assert deleted.status_code == 200
+        assert deleted.json() == {
+            "case_files_deleted": 1,
+            "log_files_deleted": 1,
+            "historical_results_preserved": 1,
+        }
+        assert client.get("/api/v1/local-cases/tree").json() == []
+        assert (
+            client.get(
+                "/api/v1/local-cases/kdiag/SYSTEM_DEADLOCK/chmod_hung"
+            ).status_code
+            == 404
+        )
+
+    assert not (case_directory / "case.json").exists()
+    assert not logs_directory.exists()
+    assert (run_directory / "result.json").is_file()
+
+
+def test_delete_local_case_rejects_active_submission(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "main.log").write_text("chmod hung", encoding="utf-8")
+
+    with TestClient(create_app(settings)) as client:
+        method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "case-delete-script",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        ).json()
+        method_id = method["id"]
+        assert client.post(f"/api/v1/evaluation-methods/{method_id}:probe").status_code == 200
+        assert client.post(f"/api/v1/evaluation-methods/{method_id}:freeze").status_code == 200
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": [method_id],
+                "judge_runner": "lexical",
+            },
+        )
+        assert submission.status_code == 202
+
+        blocked = client.delete(
+            "/api/v1/local-cases/kdiag/SYSTEM_DEADLOCK/chmod_hung"
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "local_case_delete_running"
+    assert (case_directory / "case.json").is_file()
+    assert (logs_directory / "main.log").is_file()
+
+
 def test_scoring_error_payload_keeps_bounded_runner_output() -> None:
     stdout = "discarded-stdout-" + "x" * 2000
     stderr = b"discarded-stderr-" + b"y" * 2000

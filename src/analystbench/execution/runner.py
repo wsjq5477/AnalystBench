@@ -129,6 +129,17 @@ class CommandAgentRunner:
                 "output_limit_exceeded", "agent output exceeded configured limit", stdout, stderr
             )
         if process.returncode != 0:
+            if self.runner_id == "claude" and self._claude_authentication_required(
+                stdout, stderr
+            ):
+                raise AgentRunnerError(
+                    "agent_authentication_required",
+                    "Claude CLI 未登录。请为 AnalystBench 服务配置 "
+                    "CLAUDE_CODE_OAUTH_TOKEN、ANTHROPIC_API_KEY 或 "
+                    "ANTHROPIC_AUTH_TOKEN，然后重启服务。",
+                    stdout,
+                    stderr,
+                )
             raise AgentRunnerError(
                 "agent_exit_nonzero", f"agent exited with {process.returncode}", stdout, stderr
             )
@@ -160,6 +171,11 @@ class CommandAgentRunner:
                 continue
             values.extend(self._report_values(parsed))
         return values[-1].strip() if values else ""
+
+    @staticmethod
+    def _claude_authentication_required(stdout: str, stderr: str) -> bool:
+        output = f"{stdout}\n{stderr}".lower()
+        return "not logged in" in output or "please run /login" in output
 
     def _report_values(self, value: Any) -> list[str]:
         if isinstance(value, dict):

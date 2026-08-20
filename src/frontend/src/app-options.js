@@ -50,6 +50,7 @@ export default {
       selectedCaseLogs: null,
       caseLogFiles: [],
       caseLogsUploading: false,
+      caseDeleting: false,
 
       showEvaluateDialog: false,
       evaluateForm: { judge: "lexical" },
@@ -977,6 +978,44 @@ export default {
         this.showToast("日志已删除");
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "删除日志失败");
+      }
+    },
+    async deleteSelectedLocalCase() {
+      if (!this.selectedCaseParts || this.caseDeleting) return;
+      const caseName =
+        (this.selectedLocalCaseData?.case)?.case_key ||
+        this.selectedCaseParts.caseKey;
+      if (
+        !window.confirm(
+          `删除 Case“${caseName}”吗？\n\n` +
+            "Case JSON 和原始日志会被永久删除，历史评测结果会保留。此操作不可恢复。",
+        )
+      ) {
+        return;
+      }
+      this.caseDeleting = true;
+      try {
+        const parts = this.selectedCaseParts;
+        const result = await analystBenchApi.deleteLocalCase(
+          parts.testSet,
+          parts.category,
+          parts.caseKey,
+        );
+        this.selectedLocalCasePath = "";
+        this.selectedLocalCaseData = null;
+        this.selectedCaseLogs = null;
+        await Promise.all([
+          this.loadLocalCaseTree(),
+          this.refreshDirectResults(),
+        ]);
+        this.dashboardLoaded = false;
+        this.showToast(
+          `Case 已删除，保留 ${result.historical_results_preserved || 0} 条历史评测结果`,
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "删除 Case 失败");
+      } finally {
+        this.caseDeleting = false;
       }
     },
     openEvaluateDialog() {

@@ -149,7 +149,7 @@ export default appOptions;
             </div>
           </section>
           <section class="surface detail-panel">
-            <div class="panel-heading"><h2>Case 详情</h2><span>{{ selectedLocalCasePath || '未选择' }}</span><button v-if="selectedLocalCasePath" class="ghost-button" @click="openEvaluateDialog"><IconFlask :size="16" />评分</button></div>
+            <div class="panel-heading"><h2>Case 详情</h2><span>{{ selectedLocalCasePath || '未选择' }}</span><div v-if="selectedLocalCasePath" class="heading-actions"><button class="ghost-button" @click="openEvaluateDialog"><IconFlask :size="16" />评分</button><button class="ghost-button danger-button" :disabled="caseDeleting" @click="deleteSelectedLocalCase"><IconTrash :size="15" />{{ caseDeleting ? '删除中…' : '删除 Case' }}</button></div></div>
             <template v-if="selectedLocalCaseData">
               <div class="case-detail-content">
                 <section class="case-detail-card">

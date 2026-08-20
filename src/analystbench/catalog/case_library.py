@@ -67,6 +67,28 @@ REPORT_FILENAME_PATTERN = re.compile(
 )
 
 
+def _error_output_tail(value: object, limit: int = 2000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text_value = value.decode("utf-8", errors="replace")
+    else:
+        text_value = str(value)
+    return text_value[-limit:]
+
+
+def _generation_error_payload(exc: Exception) -> dict[str, str]:
+    payload = {
+        "code": str(getattr(exc, "code", "generation_failed")),
+        "message": str(exc),
+    }
+    for stream_name in ("stdout", "stderr"):
+        tail = _error_output_tail(getattr(exc, stream_name, None))
+        if tail:
+            payload[f"{stream_name}_tail"] = tail
+    return payload
+
+
 def report_metadata_from_filename(filename: str) -> dict[str, Any]:
     """Infer optional comparison metadata from the documented report filename."""
     stem = Path(filename).stem
@@ -321,22 +343,35 @@ class CaseLibraryService:
             if isinstance(case_payload, dict):
                 case_payload["reference_answer"] = source["reference_answer"]
                 # Force-fill case_key and problem_statement from user input (required fields)
-                case_payload["case_key"] = source.get("case_key") or case_payload.get("case_key") or ""
-                case_payload["problem_statement"] = source.get("problem_statement") or case_payload.get("problem_statement") or ""
+                case_payload["case_key"] = (
+                    source.get("case_key") or case_payload.get("case_key") or ""
+                )
+                case_payload["problem_statement"] = (
+                    source.get("problem_statement")
+                    or case_payload.get("problem_statement")
+                    or ""
+                )
                 if source.get("test_set"):
                     case_payload["test_set"] = source["test_set"]
                 if source.get("category"):
                     case_payload["category"] = source["category"]
             _normalize_structured_reference(payload)
             questions = self._questions(payload)
-            case = payload.get("case", {})
             with transaction(self.session_factory) as session:
                 stored = session.get(CaseDraft, draft_id)
                 assert stored is not None
                 stored.case_key = source.get("case_key") or stored.case_key
                 stored.source_filename = source.get("source_filename")
-                stored.dataset_key = source.get("test_set") if isinstance(source.get("test_set"), str) else None
-                stored.category_key = source.get("category") if isinstance(source.get("category"), str) else None
+                stored.dataset_key = (
+                    source.get("test_set")
+                    if isinstance(source.get("test_set"), str)
+                    else None
+                )
+                stored.category_key = (
+                    source.get("category")
+                    if isinstance(source.get("category"), str)
+                    else None
+                )
                 stored.working_json = canonical_json(payload)
                 stored.questions_json = canonical_json(questions)
                 stored.status = "needs_confirmation"
@@ -346,9 +381,7 @@ class CaseLibraryService:
                 stored = session.get(CaseDraft, draft_id)
                 assert stored is not None
                 stored.status = "failed"
-                stored.error_json = canonical_json(
-                    {"code": getattr(exc, "code", "generation_failed"), "message": str(exc)}
-                )
+                stored.error_json = canonical_json(_generation_error_payload(exc))
             raise
 
     @staticmethod

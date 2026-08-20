@@ -112,6 +112,12 @@ export const analystBenchApi = {
       method: "get",
     });
   },
+  deleteLocalCase(testSet, category, caseKey) {
+    return request({
+      url: `/local-cases/${encodeURIComponent(testSet)}/${encodeURIComponent(category)}/${encodeURIComponent(caseKey)}`,
+      method: "delete",
+    });
+  },
   getLocalCaseLogs(testSet, category, caseKey) {
     return request({
       url: `/local-cases/${encodeURIComponent(testSet)}/${encodeURIComponent(category)}/${encodeURIComponent(caseKey)}/logs`,
