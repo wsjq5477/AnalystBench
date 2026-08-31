@@ -252,7 +252,7 @@ export default appOptions;
                   <strong>{{ caseRun.case_path }}</strong>
                   <small>打分：{{ caseRun.scoring_status }}</small>
                   <small class="method-run-links">
-                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.key }} {{ methodRun.status }} · {{ formatMethodRunTiming(methodRun) }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
+                    <span v-for="methodRun in caseRun.methods" :key="methodRun.id">{{ methodRun.name || methodRun.key }} {{ methodRun.status }} · {{ formatMethodRunTiming(methodRun) }} <button v-if="methodRun.attempt" class="text-button" @click="openMethodArtifacts(methodRun)">审计</button></span>
                   </small>
                 </div>
                 <span :class="caseRun.status === 'completed' ? 'tag-match' : caseRun.status === 'failed' || caseRun.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ caseRun.status }}</span>

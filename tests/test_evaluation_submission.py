@@ -18,6 +18,7 @@ from analystbench.db.session import create_database_engine, create_session_facto
 from analystbench.db.transaction import transaction
 from analystbench.evaluation.submission import (
     EvaluationSubmissionService,
+    _candidate_name,
     _scoring_error_payload,
 )
 from analystbench.evaluation.target import (
@@ -42,6 +43,13 @@ def migrated_settings(tmp_path: Path) -> Settings:
         results_tmp_path=tmp_path / "results" / "tmp",
         results_formal_path=tmp_path / "results",
     )
+
+
+def test_skill_variant_candidate_name_never_exposes_internal_key() -> None:
+    assert _candidate_name("sv-1234567890abcdef", "codeagent-native@glm-5.2") == (
+        "codeagent-native@glm-5.2"
+    )
+    assert _candidate_name("script", "Script") == "script"
 
 
 def case_payload() -> dict:
@@ -1233,7 +1241,7 @@ def test_partial_method_failure_skips_scoring_and_names_failed_method(
         method_ids: list[str] = []
         for key, script, timeout in (
             ("fast-method", "fast.py", 10),
-            ("slow-method", "slow.py", 1),
+            ("sv-demo", "slow.py", 1),
         ):
             method = client.post(
                 "/api/v1/evaluation-methods",
@@ -1247,6 +1255,10 @@ def test_partial_method_failure_skips_scoring_and_names_failed_method(
             client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
             client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze")
             method_ids.append(method["id"])
+        with transaction(client.app.state.session_factory) as session:
+            variant = session.get(EvaluationMethod, method_ids[1])
+            assert variant is not None
+            variant.name = "codeagent-native@glm-5.2"
         submission = client.post(
             "/api/v1/evaluation-submissions",
             json={
@@ -1277,8 +1289,10 @@ def test_partial_method_failure_skips_scoring_and_names_failed_method(
     assert case_run["error"] == {
         "code": "partial_methods_failed",
         "message": "部分测评方式失败，已跳过评分。",
-        "failed_methods": ["slow-method（timeout）"],
+        "failed_methods": ["sv-demo（timeout）"],
     }
+    variant_run = next(item for item in case_run["methods"] if item["key"] == "sv-demo")
+    assert variant_run["name"] == "codeagent-native@glm-5.2"
     result = json.loads(
         (Path(case_run["run_directory"]) / "result.json").read_text(
             encoding="utf-8"
@@ -1286,6 +1300,12 @@ def test_partial_method_failure_skips_scoring_and_names_failed_method(
     )
     assert result["status"] == "failed"
     assert result["reports"] == []
+    variant_summary = next(
+        item
+        for item in result["summary"]["reports"]
+        if item["candidate_name"] == "codeagent-native@glm-5.2"
+    )
+    assert variant_summary["status"] == "timeout"
     assert result["error"] == case_run["error"]
 
 

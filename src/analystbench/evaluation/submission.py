@@ -58,6 +58,12 @@ SHELL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "2>", "2>>"}
 TERMINAL_METHOD_STATES = {"succeeded", "failed", "timeout", "cancelled"}
 
 
+def _candidate_name(method_key: str, method_name: str) -> str:
+    """Hide internal Skill Variant keys from every user-facing result path."""
+
+    return method_name if method_key.startswith("sv-") else method_key
+
+
 class EvaluationCommandError(Exception):
     def __init__(self, code: str, message: str, stdout: str = "", stderr: str = "") -> None:
         super().__init__(message)
@@ -1915,6 +1921,7 @@ class EvaluationSubmissionService:
             command = self._build_command(method_snapshot, workspace, primary, logs_workspace)
             process_environment = isolated_process_environment(
                 isolated_home,
+                preserve_user_home=True,
                 extra=(
                     {
                         "ANALYSTBENCH_SKILL_VERSION_ID": str(
@@ -2302,11 +2309,7 @@ class EvaluationSubmissionService:
         for _, method in method_rows:
             report_path = run_directory / f"{method.method_key}.md"
             text = report_path.read_text(encoding="utf-8")
-            candidate_name = (
-                method.name
-                if method.method_key.startswith("sv-")
-                else method.method_key
-            )
+            candidate_name = _candidate_name(method.method_key, method.name)
             reports.append(
                 report_payload_from_text(
                     report_path.name,
@@ -2480,7 +2483,9 @@ class EvaluationSubmissionService:
                         "ranking": [],
                         "reports": [
                             {
-                                "candidate_name": method["key"],
+                                "candidate_name": _candidate_name(
+                                    str(method["key"]), str(method["name"])
+                                ),
                                 "status": method["status"],
                                 "score": "0",
                                 "passed": False,

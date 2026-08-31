@@ -22,6 +22,7 @@ test("evaluation UI selects explicit Harness, model, and host Skill combinations
   assert.match(app, /@click="deleteEvaluationModel\(model\)"/);
   assert.match(app, /全局并发数/);
   assert.match(app, /全局超时（秒）/);
+  assert.match(app, /methodRun\.name \|\| methodRun\.key/);
   assert.doesNotMatch(app, /harnessForm\.(?:timeout_seconds|concurrency_limit)/);
   assert.match(options, /target_selections:/);
   assert.match(options, /skill_key: skillKey \|\| null/);

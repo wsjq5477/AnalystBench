@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from analystbench.execution.isolation import isolated_process_environment
 from analystbench.execution.runner import AgentRunnerError, CommandAgentRunner
 
 
@@ -85,6 +86,33 @@ def test_execute_local_claude_reuses_user_auth_configuration(
     assert environment["HOME"] == str(real_home)
     assert environment["CLAUDE_CONFIG_DIR"] == str(real_home / ".claude")
     assert "ANALYSTBENCH_ISOLATED_HOME" not in environment
+
+
+def test_local_evaluation_environment_keeps_runtime_home_and_wrapper_root(
+    tmp_path: Path,
+) -> None:
+    real_home = tmp_path / "real-home"
+    isolated_home = tmp_path / "isolated-home"
+    environment = isolated_process_environment(
+        isolated_home,
+        base={
+            "HOME": str(real_home),
+            "PATH": "/usr/bin",
+            "CLI_INSTALL_DIR": "/opt/codeagent",
+            "UNRELATED_SERVICE_SECRET": "must-not-leak",
+        },
+        preserve_user_home=True,
+    )
+
+    assert environment["HOME"] == str(real_home)
+    assert environment["USERPROFILE"] == str(real_home)
+    assert environment["CLI_INSTALL_DIR"] == "/opt/codeagent"
+    assert environment["XDG_CONFIG_HOME"] == str(isolated_home / ".config")
+    assert environment["CLAUDE_CONFIG_DIR"] == str(
+        isolated_home / ".config" / "claude"
+    )
+    assert "ANALYSTBENCH_ISOLATED_HOME" not in environment
+    assert "UNRELATED_SERVICE_SECRET" not in environment
 
 
 def test_execute_classifies_claude_not_logged_in(monkeypatch, tmp_path: Path) -> None:

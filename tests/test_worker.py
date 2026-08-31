@@ -9,13 +9,17 @@ from alembic.config import Config
 from alembic import command
 from analystbench.config import Settings
 from analystbench.db.models import (
+    EvaluationHarness,
     EvaluationMethod,
+    EvaluationModel,
     EvaluationSubmission,
     EvaluationSubmissionCaseRun,
     EvaluationSubmissionMethodRun,
+    EvaluationTarget,
     Job,
 )
 from analystbench.db.transaction import transaction
+from analystbench.evaluation.submission import EvaluationSubmissionService
 from analystbench.worker import LocalWorker
 
 
@@ -123,6 +127,141 @@ def test_concurrent_job_claims_respect_evaluation_method_limit(tmp_path: Path) -
             )
 
         assert sum(job is not None for job in claimed) == 2
+    finally:
+        worker.close()
+
+
+def test_concurrent_job_claims_share_latest_model_limit_across_harnesses(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'analystbench.db'}",
+        content_store_path=tmp_path / "content",
+    )
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(config, "head")
+    worker = LocalWorker(settings)
+    submission_id = str(uuid4())
+    model_v1_id = str(uuid4())
+    try:
+        with transaction(worker.session_factory) as session:
+            session.add_all(
+                [
+                    EvaluationModel(
+                        id=model_v1_id,
+                        model_key="shared-model",
+                        name="Shared Model",
+                        version_number=1,
+                        argument="shared-model",
+                        timeout_seconds=300,
+                        concurrency_limit=2,
+                        status="frozen",
+                        content_hash=f"sha256:{uuid4().hex}",
+                    ),
+                    EvaluationModel(
+                        id=str(uuid4()),
+                        model_key="shared-model",
+                        name="Shared Model",
+                        version_number=2,
+                        argument="shared-model",
+                        timeout_seconds=123,
+                        concurrency_limit=1,
+                        status="frozen",
+                        content_hash=f"sha256:{uuid4().hex}",
+                    ),
+                    EvaluationSubmission(
+                        id=submission_id,
+                        dataset_key="dataset",
+                        run_timestamp="20260831000000",
+                        manifest_json="{}",
+                    ),
+                ]
+            )
+            method_ids: list[str] = []
+            for harness_key in ("harness-a", "harness-b"):
+                harness_id = str(uuid4())
+                method_id = str(uuid4())
+                method_ids.append(method_id)
+                session.add(
+                    EvaluationHarness(
+                        id=harness_id,
+                        harness_key=harness_key,
+                        name=harness_key,
+                        version_number=1,
+                        model_policy="required",
+                        command_template="tool --model shared-model",
+                        status="frozen",
+                        content_hash=f"sha256:{uuid4().hex}",
+                    )
+                )
+                session.add(
+                    EvaluationMethod(
+                        id=method_id,
+                        method_key=f"{harness_key}@shared-model",
+                        name=f"{harness_key}@shared-model",
+                        version_number=1,
+                        command_template="tool --model shared-model",
+                        concurrency_limit=32,
+                        status="frozen",
+                        content_hash=f"sha256:{uuid4().hex}",
+                    )
+                )
+                session.add(
+                    EvaluationTarget(
+                        id=str(uuid4()),
+                        target_key=f"{harness_key}@shared-model",
+                        version_number=1,
+                        harness_id=harness_id,
+                        model_id=model_v1_id,
+                        model_argument="shared-model",
+                        status="frozen",
+                        content_hash=f"sha256:{uuid4().hex}",
+                        materialized_method_id=method_id,
+                    )
+                )
+                for case_index in range(2):
+                    case_run_id = str(uuid4())
+                    method_run_id = str(uuid4())
+                    session.add(
+                        EvaluationSubmissionCaseRun(
+                            id=case_run_id,
+                            submission_id=submission_id,
+                            case_path=f"dataset/category/{harness_key}-{case_index}",
+                            case_key=f"{harness_key}-{case_index}",
+                            run_directory=str(tmp_path / f"{harness_key}-{case_index}"),
+                        )
+                    )
+                    session.add(
+                        EvaluationSubmissionMethodRun(
+                            id=method_run_id,
+                            case_run_id=case_run_id,
+                            method_id=method_id,
+                        )
+                    )
+                    worker.jobs.enqueue(
+                        session,
+                        "evaluation_method_run",
+                        {"evaluation_method_run_id": method_run_id},
+                    )
+
+        with transaction(worker.session_factory) as session:
+            assert EvaluationSubmissionService._effective_model_timeout(
+                session, method_ids[0], 21600
+            ) == 123
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            claimed = list(
+                executor.map(
+                    lambda index: worker.jobs.claim(
+                        f"model-worker-{index}", lease_seconds=30
+                    ),
+                    range(4),
+                )
+            )
+
+        assert sum(job is not None for job in claimed) == 1
     finally:
         worker.close()
 

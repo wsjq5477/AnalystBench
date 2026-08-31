@@ -24,6 +24,7 @@ _INHERITED_ENVIRONMENT_KEYS = {
     "HTTPS_PROXY",
     "ALL_PROXY",
     "NO_PROXY",
+    "CLI_INSTALL_DIR",
     "http_proxy",
     "https_proxy",
     "all_proxy",
@@ -41,14 +42,16 @@ def isolated_process_environment(
     *,
     base: Mapping[str, str] | None = None,
     extra: Mapping[str, str] | None = None,
+    preserve_user_home: bool = False,
 ) -> dict[str, str]:
-    """Return an inherited environment with all user-state roots redirected.
+    """Return a filtered environment with tool state roots redirected.
 
     Credentials intentionally supplied through environment variables remain
-    available, while implicit configuration and caches are redirected away
-    from the service account's real HOME. This is environment isolation, not a
-    filesystem namespace; callers requiring filesystem confinement must add a
-    platform sandbox such as bubblewrap.
+    available. By default HOME is isolated too; explicit local-runtime callers
+    may preserve HOME for user-site packages while XDG/tool state stays
+    redirected. This is environment isolation, not a filesystem namespace;
+    callers requiring filesystem confinement must add a platform sandbox such
+    as bubblewrap.
     """
 
     resolved_home = home.expanduser().resolve()
@@ -79,8 +82,6 @@ def isolated_process_environment(
     }
     environment.update(
         {
-            "HOME": str(resolved_home),
-            "USERPROFILE": str(resolved_home),
             "XDG_CONFIG_HOME": str(config),
             "XDG_CACHE_HOME": str(cache),
             "XDG_DATA_HOME": str(data),
@@ -90,9 +91,20 @@ def isolated_process_environment(
             "TEMP": str(temporary),
             "CLAUDE_CONFIG_DIR": str(claude_config),
             "OPENCODE_CONFIG_DIR": str(opencode_config),
-            "ANALYSTBENCH_ISOLATED_HOME": "1",
         }
     )
+    if preserve_user_home:
+        # User-configured evaluation commands may rely on Python user-site
+        # packages or wrapper install roots. Keep HOME only for this explicit
+        # local-runtime path; XDG and tool config roots remain redirected and
+        # unrelated credentials remain filtered.
+        inherited_home = source.get("HOME") or source.get("USERPROFILE")
+        environment["HOME"] = inherited_home or str(resolved_home)
+        environment["USERPROFILE"] = inherited_home or str(resolved_home)
+    else:
+        environment["HOME"] = str(resolved_home)
+        environment["USERPROFILE"] = str(resolved_home)
+        environment["ANALYSTBENCH_ISOLATED_HOME"] = "1"
     if extra:
         environment.update(extra)
     return environment
