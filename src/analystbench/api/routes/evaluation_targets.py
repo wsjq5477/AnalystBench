@@ -25,9 +25,7 @@ class HarnessCreate(BaseModel):
     command_template: str = Field(min_length=1)
     tool_dir: str | None = None
     skill_base_dir: str | None = None
-    timeout_seconds: int = Field(default=1800, ge=1, le=7200)
     max_output_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
-    concurrency_limit: int = Field(default=1, ge=1, le=32)
 
 
 class HarnessRevise(BaseModel):
@@ -39,9 +37,7 @@ class HarnessRevise(BaseModel):
     command_template: str | None = Field(default=None, min_length=1)
     tool_dir: str | None = None
     skill_base_dir: str | None = None
-    timeout_seconds: int | None = Field(default=None, ge=1, le=7200)
     max_output_bytes: int | None = Field(default=None, ge=1024)
-    concurrency_limit: int | None = Field(default=None, ge=1, le=32)
 
 
 class ModelCreate(BaseModel):
@@ -50,6 +46,8 @@ class ModelCreate(BaseModel):
     key: str = Field(min_length=1, max_length=100)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     argument: str | None = Field(default=None, min_length=1, max_length=255)
+    timeout_seconds: int = Field(default=21600, ge=1, le=21600)
+    concurrency_limit: int = Field(default=1, ge=1, le=32)
 
 
 class ModelRevise(BaseModel):
@@ -57,6 +55,8 @@ class ModelRevise(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     argument: str | None = Field(default=None, min_length=1, max_length=255)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=21600)
+    concurrency_limit: int | None = Field(default=None, ge=1, le=32)
 
 
 class TargetCreate(BaseModel):
@@ -65,7 +65,6 @@ class TargetCreate(BaseModel):
     harness_id: str
     model_id: str | None = None
     model_argument: str | None = Field(default=None, min_length=1, max_length=255)
-    concurrency_limit: int | None = Field(default=None, ge=1, le=32)
 
 
 class HarnessResponse(BaseModel):
@@ -78,9 +77,7 @@ class HarnessResponse(BaseModel):
     tool_dir: str | None
     skill_base_dir: str | None
     command_template: str
-    timeout_seconds: int
     max_output_bytes: int
-    concurrency_limit: int
     status: str
     content_hash: str
     probe: dict[str, Any]
@@ -94,6 +91,8 @@ class ModelResponse(BaseModel):
     name: str
     version: int
     argument: str
+    timeout_seconds: int
+    concurrency_limit: int
     status: str
     content_hash: str
     created_at: datetime
@@ -108,7 +107,6 @@ class TargetResponse(BaseModel):
     harness: dict[str, Any]
     model: dict[str, Any] | None
     model_argument: str | None
-    concurrency_limit: int | None
     status: str
     content_hash: str
     probe: dict[str, Any]
@@ -180,6 +178,8 @@ def create_model(payload: ModelCreate, request: Request) -> dict[str, Any]:
         model_key=payload.key,
         name=payload.name or payload.key,
         argument=payload.argument or payload.key,
+        timeout_seconds=payload.timeout_seconds,
+        concurrency_limit=payload.concurrency_limit,
     )
     return EvaluationModelService.view(item)
 

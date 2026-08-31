@@ -294,11 +294,12 @@ Active 版本派生的不可变候选，不是直接修改正在使用的源 Ski
 
 ```dotenv
 ANALYSTBENCH_SKILL_OPTIMIZATION_ENABLED=true
-ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=/absolute/path/to/analystbench-skill-optimization
+ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=./data/skill-optimization
 ```
 
-Managed Root 必须是已存在、可写的绝对路径，并与源 Skill 目录和 AnalystBench
-仓库分开。新导入包使用 v2 manifest，把归一化执行 mode 和固定
+Managed Root 必须是已存在、可写的目录。相对路径按进程启动目录解析；
+拆分部署时 API、Worker 和 CLI 必须使用同一启动目录，否则应改用绝对路径。
+新导入包使用 v2 manifest，把归一化执行 mode 和固定
 `ignored_paths` 纳入哈希；setuid/setgid 会被拒绝，运行物化后整包只读
 但保留脚本执行位。先创建目录、升级数据库并执行只读预检：
 

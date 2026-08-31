@@ -401,14 +401,11 @@ V1 默认每轮从四角色提案中取两个 canonical-hash 去重候选。
 ```yaml
 edit_budget:
   max_operations: 4
-  max_changed_files: 2
-  max_added_tokens: 600
-  max_deleted_tokens: 300
-  max_single_file_change_ratio: 0.25
   allowed_operations: [append, insert_after, replace, delete]
 ```
 
-推荐逐轮衰减为 `4, 4, 3, 2, 1` 个操作。
+推荐逐轮衰减为 `4, 4, 3, 2, 1` 个操作。不限制改动文件数、新增内容、
+删除内容或单文件改动比例；历史策略中的对应字段会被忽略。
 
 ### 5.8 分级验证
 

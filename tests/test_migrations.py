@@ -199,3 +199,85 @@ def test_skill_optimization_idempotency_migration_round_trip(tmp_path: Path) -> 
         }
     finally:
         engine.dispose()
+
+
+def test_model_runtime_limits_migrate_from_referencing_harnesses(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'analystbench.db').as_posix()}"
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "0019_evaluation_skill_selections")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        # The historical 0002 migration calls current metadata.create_all(), so
+        # remove the new columns to reproduce a real pre-0020 database.
+        connection.execute(
+            text("ALTER TABLE evaluation_models DROP COLUMN timeout_seconds")
+        )
+        connection.execute(
+            text("ALTER TABLE evaluation_models DROP COLUMN concurrency_limit")
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO evaluation_harnesses
+                    (id, harness_key, name, version_number, model_policy,
+                     command_template, timeout_seconds, max_output_bytes,
+                     concurrency_limit, status, content_hash, last_probe_json)
+                VALUES
+                    ('h1', 'h1', 'H1', 1, 'required', '{model}', 300,
+                     10485760, 4, 'frozen', 'sha256:h1', '{}'),
+                    ('h2', 'h2', 'H2', 1, 'required', '{model}', 500,
+                     10485760, 2, 'frozen', 'sha256:h2', '{}')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO evaluation_models
+                    (id, model_key, name, version_number, argument, status, content_hash)
+                VALUES
+                    ('m1', 'shared-model', 'Shared Model', 1, 'shared-model',
+                     'frozen', 'sha256:m1')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO evaluation_targets
+                     (id, target_key, version_number, harness_id, model_id,
+                     model_argument, status, content_hash, last_probe_json)
+                VALUES
+                    ('t1', 'h1@shared-model', 1, 'h1', 'm1', 'shared-model',
+                     'frozen', 'sha256:t1', '{}'),
+                    ('t2', 'h2@shared-model', 1, 'h2', 'm1', 'shared-model',
+                     'frozen', 'sha256:t2', '{}')
+                """
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        model_columns = {
+            column["name"]
+            for column in inspector.get_columns("evaluation_models")
+        }
+        assert {"timeout_seconds", "concurrency_limit"} <= model_columns
+        with engine.connect() as connection:
+            limits = connection.execute(
+                text(
+                    "SELECT timeout_seconds, concurrency_limit "
+                    "FROM evaluation_models WHERE id = 'm1'"
+                )
+            ).one()
+        assert limits == (500, 2)
+    finally:
+        engine.dispose()

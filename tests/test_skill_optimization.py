@@ -14,6 +14,8 @@ from analystbench.db.models import (
     EvaluationHarness,
     EvaluationMethod,
     EvaluationSubmission,
+    EvaluationSubmissionCaseRun,
+    EvaluationSubmissionMethodRun,
     EvaluationTarget,
     ExecutionProfile,
     Job,
@@ -456,6 +458,31 @@ def test_host_skill_discovery_and_explicit_evaluation_selection_are_idempotent(
         variant_method = session.get(EvaluationMethod, skill_methods[0])
         assert variant_method is not None
         assert variant_method.command_template == 'claude -p "/crash analyze {input}"'
+        assert variant_method.name == "claude"
+
+    # The host directory is only an explicit import source. Editing it must not
+    # block a new task from resolving the already-managed Active version.
+    (skill_base_dir / "skills" / "crash" / "SKILL.md").write_text(
+        "# Crash v2\n\nUpdated host-authored guidance.\n",
+        encoding="utf-8",
+    )
+    changed = registry.discover_host_skills(harness_id=harness_id)[0]
+    assert changed["status"] == "source_changed"
+    with pytest.raises(AnalystBenchError) as changed_adoption:
+        registry.adopt_host_skill(harness_id=harness_id, skill_key="crash")
+    assert changed_adoption.value.code == "host_skill_source_changed"
+
+    _, _, active_snapshots, active_normalized = submissions.resolve_target_selections(
+        [{"harness_id": harness_id, "model_id": None, "skill_key": "crash"}]
+    )
+    assert active_snapshots[0]["active_skill"]["skill_package_version_id"] == (
+        first_version.id
+    )
+    assert active_normalized[0]["skill_package_version_id"] == first_version.id
+
+    imported = registry.import_version(first_skill.id, source_type="import")
+    assert imported.version_number == 2
+    assert imported.parent_version_id == first_version.id
 
 
 def test_paired_gate_keeps_four_case_regression_provisional() -> None:
@@ -490,6 +517,8 @@ def test_paired_gate_keeps_four_case_regression_provisional() -> None:
         mode="development_regression",
     )
 
+    assert comparison["baseline_score"] == 71.5
+    assert comparison["candidate_score"] == 74.5
     assert comparison["overall_delta"] == 3
     assert gate["verdict"] == "pass"
     assert gate["active_level"] == "provisional"
@@ -1162,7 +1191,25 @@ def test_experiment_start_persists_frozen_inputs_and_queues_advance(
         optimizer_policy_version_id=policy.id,
         verifier_bundle_version_id=verifier.id,
         max_epochs=3,
+        candidate_count=4,
+        screening_case_count=12,
+        validation_repeats=5,
+        max_repeats=9,
+        early_stop_patience=2,
     )
+    assert experiment_service._experiment_config(experiment) == {
+        "candidate_count": 4,
+        "screening_case_count": 12,
+        "validation_repeats": 5,
+        "max_repeats": 9,
+        "early_stop_patience": 2,
+        "min_overall_delta": settings.skill_optimization_min_overall_delta,
+        "minimum_independent_validation_cases": (
+            settings.skill_optimization_minimum_independent_validation_cases
+        ),
+        "max_latency_growth": settings.skill_optimization_max_latency_growth,
+        "max_token_growth": settings.skill_optimization_max_token_growth,
+    }
     candidate, _ = StructuredPatchApplier(registry).apply(
         parent_version_id=version.id,
         structured_patch={
@@ -1192,6 +1239,7 @@ def test_experiment_start_persists_frozen_inputs_and_queues_advance(
     started = experiment_service.start(experiment.id)
 
     assert started.status == "running"
+    assert started.updated_at is not None
     with transaction(session_factory) as session:  # type: ignore[arg-type]
         job = session.scalar(
             select(Job).where(Job.kind == "skill_optimization_advance")
@@ -1417,7 +1465,9 @@ def test_completed_or_queued_run_group_is_reused_after_resume(
         stored = session.get(type(experiment), experiment.id)
         assert stored is not None
         stored.status = "failed"
-    assert optimization.resume(experiment.id).status == "running"
+    resumed = optimization.resume(experiment.id)
+    assert resumed.status == "running"
+    assert resumed.updated_at is not None
     optimization._ensure_run_groups(
         experiment,
         epoch,
@@ -1438,3 +1488,95 @@ def test_completed_or_queued_run_group_is_reused_after_resume(
             .count()
             == 1
         )
+
+    with pytest.raises(AnalystBenchError) as running_delete_error:
+        optimization.delete(experiment.id)
+    assert (
+        running_delete_error.value.code
+        == "optimization_experiment_delete_running"
+    )
+
+    second_experiment = optimization.create_experiment(
+        name="same configuration in another experiment",
+        skill_id=skill.id,
+        base_skill_version_id=version.id,
+        evaluation_target_id=target_id,
+        data_snapshot_id=snapshot.id,
+        optimizer_policy_version_id=policy.id,
+        verifier_bundle_version_id=verifier.id,
+        max_epochs=1,
+    )
+    second_epoch = optimization._create_epoch(
+        second_experiment,
+        epoch_number=1,
+        parent_version_id=version.id,
+    )
+    optimization._ensure_run_groups(
+        second_experiment,
+        second_epoch,
+        split_role="screening",
+        arm="baseline",
+        version_id=version.id,
+        candidate_mutation_id=None,
+        repeat_indices=range(1),
+        case_paths=["kernel/panic/case-1"],
+    )
+
+    with transaction(session_factory) as session:  # type: ignore[arg-type]
+        groups = list(session.scalars(select(OptimizationRunGroup)))
+        submissions = list(session.scalars(select(EvaluationSubmission)))
+        assert len(groups) == 2
+        assert len(submissions) == 2
+        assert groups[0].evaluation_submission_id != groups[1].evaluation_submission_id
+
+        second_group = next(
+            group for group in groups if group.experiment_id == second_experiment.id
+        )
+        second_submission = session.get(
+            EvaluationSubmission, second_group.evaluation_submission_id
+        )
+        assert second_submission is not None
+        second_submission.status = "cancelled"
+        second_case_runs = list(
+            session.scalars(
+                select(EvaluationSubmissionCaseRun).where(
+                    EvaluationSubmissionCaseRun.submission_id
+                    == second_submission.id
+                )
+            )
+        )
+        second_case_run_ids = {case_run.id for case_run in second_case_runs}
+        second_method_runs = list(
+            session.scalars(
+                select(EvaluationSubmissionMethodRun).where(
+                    EvaluationSubmissionMethodRun.case_run_id.in_(
+                        second_case_run_ids
+                    )
+                )
+            )
+        )
+        for case_run in second_case_runs:
+            case_run.status = "cancelled"
+            case_run.scoring_status = "cancelled"
+        for method_run in second_method_runs:
+            method_run.status = "cancelled"
+        stored_second = session.get(type(second_experiment), second_experiment.id)
+        assert stored_second is not None
+        stored_second.status = "cancelled"
+        second_run_directories = [
+            Path(case_run.run_directory) for case_run in second_case_runs
+        ]
+
+    deleted = optimization.delete(second_experiment.id)
+
+    assert deleted["experiments_deleted"] == 1
+    assert deleted["submissions_deleted"] == 1
+    assert deleted["case_runs_deleted"] == 1
+    assert deleted["method_runs_deleted"] == 1
+    assert all(not directory.exists() for directory in second_run_directories)
+    with pytest.raises(AnalystBenchError) as deleted_error:
+        optimization.get(second_experiment.id)
+    assert deleted_error.value.code == "optimization_experiment_not_found"
+    with transaction(session_factory) as session:  # type: ignore[arg-type]
+        assert session.query(OptimizationRunGroup).count() == 1
+        assert session.query(EvaluationSubmission).count() == 1

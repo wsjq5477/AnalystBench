@@ -83,6 +83,36 @@ def test_eval_spec_rejects_forged_quote_at_freeze(tmp_path) -> None:
         assert "quote" in response.json()["error"]["details"]["errors"][0]
 
 
+def test_eval_spec_validation_errors_include_forbidden_claim_field_path(tmp_path) -> None:
+    settings = migrated_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        dataset_id = client.post("/api/v1/datasets", json={"name": "bad-forbidden"}).json()[
+            "id"
+        ]
+        revision_id = client.post(
+            f"/api/v1/datasets/{dataset_id}/cases",
+            json={"case_key": "case", "problem_statement": "p", "reference_answer": "actual"},
+        ).json()["id"]
+        policy_id = client.post("/api/v1/scoring-policies", json={"name": "v1"}).json()["id"]
+        generated = client.post(
+            "/api/v1/eval-spec-drafts:generate",
+            json={"case_revision_id": revision_id, "scoring_policy_version_id": policy_id},
+        ).json()
+        payload = generated["payload"]
+        payload["forbidden_claims"] = [
+            {"id": "forbidden-1", "statement": "wrong", "type": "root_cause"}
+        ]
+        draft_id = client.post(
+            "/api/v1/eval-spec-drafts",
+            json={"case_revision_id": revision_id, "payload": payload},
+        ).json()["id"]
+
+        errors = client.post(f"/api/v1/eval-spec-drafts/{draft_id}:validate").json()["errors"]
+        assert "forbidden_claims[0].severity: Field required" in errors
+        assert "forbidden_claims[0].penalty: Field required" in errors
+        assert any(error.startswith("forbidden_claims[0].type:") for error in errors)
+
+
 def test_root_category_chain_spec_freezes_with_mutually_exclusive_weights(tmp_path) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:

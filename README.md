@@ -330,12 +330,13 @@ API 文档位于 `http://127.0.0.1:8000/docs`，就绪探针位于 `/api/v1/heal
 
 ```dotenv
 ANALYSTBENCH_SKILL_OPTIMIZATION_ENABLED=true
-ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=/absolute/path/to/analystbench-skill-optimization
+ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=./data/skill-optimization
 ```
 
-`MANAGED_ROOT` 必须显式配置为已存在、可写的绝对路径；它保存 AnalystBench
-管理的不可变 Skill 版本和内部 Git，不要指向用户源 Skill 或 AnalystBench
-源码仓库。
+`MANAGED_ROOT` 必须显式配置为已存在、可写的目录。相对路径按进程
+启动目录解析；拆分部署 API、Worker 和 CLI 时必须使用同一启动目录，
+否则应配置绝对路径。它保存 AnalystBench 管理的不可变 Skill 版本和
+内部 Git，不要指向用户源 Skill、`results` 或 Worker workspace。
 
 Linux/WSL 私有验收还需安装且允许 Worker 运行 `bubblewrap`；
 `preflight --strict` 会实际探测 namespace。Optimizer、Target 和 Judge 使用

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import statistics
+from collections.abc import Sequence
 from typing import Any
 
 
@@ -28,6 +29,13 @@ def evaluate_gate(
     require_token_usage: bool = False,
     min_candidate_win_probability: float = 0.0,
     require_bootstrap_lower_bound_positive: bool = True,
+    critical_dimensions: Sequence[str] = ("root_cause", "classification"),
+    protected_guardrail_metrics: Sequence[str] = (
+        "forbidden_hit_count",
+        "missing_chain_count",
+    ),
+    reject_failure_increase: bool = True,
+    reject_new_failure_tags: bool = True,
 ) -> dict[str, Any]:
     hard_reasons: list[dict[str, Any]] = []
     quality_reasons: list[dict[str, Any]] = []
@@ -57,7 +65,7 @@ def evaluate_gate(
                 "required": min_overall_delta,
             }
         )
-    if int(comparison.get("candidate_failure_count", 0)) > int(
+    if reject_failure_increase and int(comparison.get("candidate_failure_count", 0)) > int(
         comparison.get("baseline_failure_count", 0)
     ):
         hard_reasons.append({"code": "candidate_failures_increased"})
@@ -65,7 +73,7 @@ def evaluate_gate(
         if not isinstance(outcome, dict):
             continue
         case_path = outcome.get("case_path")
-        if int(outcome.get("candidate_failure_count", 0)) > int(
+        if reject_failure_increase and int(outcome.get("candidate_failure_count", 0)) > int(
             outcome.get("baseline_failure_count", 0)
         ):
             hard_reasons.append(
@@ -79,7 +87,7 @@ def evaluate_gate(
         new_tags = sorted(
             str(tag) for tag in outcome.get("new_failure_tags") or [] if str(tag)
         )
-        if new_tags:
+        if reject_new_failure_tags and new_tags:
             hard_reasons.append(
                 {
                     "code": "candidate_new_failure_type",
@@ -90,7 +98,7 @@ def evaluate_gate(
         for name, increase in sorted(
             (outcome.get("guardrail_metric_increases") or {}).items()
         ):
-            if name not in {"forbidden_hit_count", "missing_chain_count"}:
+            if name not in set(protected_guardrail_metrics):
                 continue
             hard_reasons.append(
                 {
@@ -107,7 +115,7 @@ def evaluate_gate(
                 }
             )
     for name, value in (comparison.get("dimension_deltas") or {}).items():
-        if name in {"root_cause", "classification"} and float(value) < critical_dimension_min_delta:
+        if name in set(critical_dimensions) and float(value) < critical_dimension_min_delta:
             hard_reasons.append(
                 {
                     "code": "critical_dimension_regressed",
@@ -293,6 +301,13 @@ def evaluate_screening(
     minimum_delta: float = -1.0,
     max_latency_growth: float = 0.50,
     critical_dimension_min_delta: float = -5.0,
+    critical_dimensions: Sequence[str] = ("root_cause", "classification"),
+    protected_guardrail_metrics: Sequence[str] = (
+        "forbidden_hit_count",
+        "missing_chain_count",
+    ),
+    reject_failure_increase: bool = True,
+    reject_new_failure_tags: bool = True,
 ) -> dict[str, Any]:
     reasons: list[dict[str, Any]] = []
     overall_delta = comparison.get("overall_delta")
@@ -306,14 +321,14 @@ def evaluate_screening(
                 "minimum": minimum_delta,
             }
         )
-    if int(comparison.get("candidate_failure_count", 0)) > int(
+    if reject_failure_increase and int(comparison.get("candidate_failure_count", 0)) > int(
         comparison.get("baseline_failure_count", 0)
     ):
         reasons.append({"code": "candidate_failures_increased"})
     for outcome in comparison.get("case_outcomes") or []:
         if not isinstance(outcome, dict):
             continue
-        if int(outcome.get("candidate_failure_count", 0)) > int(
+        if reject_failure_increase and int(outcome.get("candidate_failure_count", 0)) > int(
             outcome.get("baseline_failure_count", 0)
         ):
             reasons.append(
@@ -322,7 +337,7 @@ def evaluate_screening(
                     "case_path": outcome.get("case_path"),
                 }
             )
-        if outcome.get("new_failure_tags"):
+        if reject_new_failure_tags and outcome.get("new_failure_tags"):
             reasons.append(
                 {
                     "code": "candidate_new_failure_type",
@@ -333,7 +348,7 @@ def evaluate_screening(
         for name, increase in sorted(
             (outcome.get("guardrail_metric_increases") or {}).items()
         ):
-            if name not in {"forbidden_hit_count", "missing_chain_count"}:
+            if name not in set(protected_guardrail_metrics):
                 continue
             reasons.append(
                 {
@@ -344,7 +359,7 @@ def evaluate_screening(
                 }
             )
     for name, value in (comparison.get("dimension_deltas") or {}).items():
-        if name in {"root_cause", "classification"} and float(value) < critical_dimension_min_delta:
+        if name in set(critical_dimensions) and float(value) < critical_dimension_min_delta:
             reasons.append(
                 {
                     "code": "critical_dimension_screening_regression",

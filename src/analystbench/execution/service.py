@@ -58,9 +58,9 @@ class AgentExecutionService:
                 "validation_failed",
                 f"execution profile must not persist credential fields: {sorted(forbidden)}",
             )
-        timeout = int(configuration.get("timeout_seconds", 1800))
+        timeout = int(configuration.get("timeout_seconds", 21600))
         output_limit = int(configuration.get("max_output_bytes", 10 * 1024 * 1024))
-        if not 1 <= timeout <= 7200 or not 1024 <= output_limit <= 100 * 1024 * 1024:
+        if not 1 <= timeout <= 21600 or not 1024 <= output_limit <= 100 * 1024 * 1024:
             raise AnalystBenchError(
                 "validation_failed", "invalid execution timeout or output limit"
             )

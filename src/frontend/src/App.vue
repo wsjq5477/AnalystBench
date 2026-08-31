@@ -604,6 +604,7 @@ export default appOptions;
                   <button v-if="selectedOptimizationDetail.experiment.status === 'created'" class="primary-button" @click="startOptimizationExperiment(selectedOptimizationDetail.experiment)">启动</button>
                   <button v-if="selectedOptimizationDetail.experiment.status === 'failed'" class="primary-button" @click="resumeOptimizationExperiment(selectedOptimizationDetail.experiment)">从断点恢复</button>
                   <button v-if="selectedOptimizationDetail.experiment.status === 'running'" class="ghost-button danger-button" @click="cancelOptimizationExperiment(selectedOptimizationDetail.experiment)">取消</button>
+                  <button v-else class="ghost-button danger-button" :disabled="optimizationDeleting" @click="deleteOptimizationExperiment(selectedOptimizationDetail.experiment)"><IconTrash :size="15" />{{ optimizationDeleting ? '删除中…' : '删除实验' }}</button>
                 </div>
               </section>
 
@@ -752,6 +753,11 @@ export default appOptions;
                       <span>FULL DELTA <strong>{{ signedDelta(candidateComparison(candidate, 'paired_repeated_validation').metrics.overall_delta) }}</strong></span>
                       <span>REPEATS <strong>{{ candidateComparison(candidate, 'paired_repeated_validation').metrics.repeat_count }}</strong></span>
                     </div>
+                    <div v-if="candidateScoreSummary(candidate)" class="candidate-score-grid">
+                      <span><small>{{ candidateScoreSummary(candidate).stage }}</small> BASELINE<strong>{{ optimizationScore(candidateScoreSummary(candidate).baseline_score) }}</strong></span>
+                      <span><small>{{ candidateScoreSummary(candidate).stage }}</small> CANDIDATE<strong>{{ optimizationScore(candidateScoreSummary(candidate).candidate_score) }}</strong></span>
+                      <span><small>{{ candidateScoreSummary(candidate).stage }}</small> DELTA<strong :class="{ 'delta-positive': candidateScoreSummary(candidate).delta > 0, 'delta-negative': candidateScoreSummary(candidate).delta < 0 }">{{ signedDelta(candidateScoreSummary(candidate).delta) }}</strong></span>
+                    </div>
                     <span v-if="candidate.rejection_code" class="candidate-rejection">{{ candidate.rejection_code }}<template v-if="optimizationRejectionMessage(candidate)"> · {{ optimizationRejectionMessage(candidate) }}</template></span>
                     <button class="ghost-button" @click="openOptimizationCandidate(candidate)">查看 Patch 与 Diff</button>
                   </article>
@@ -764,7 +770,7 @@ export default appOptions;
                     <div class="evidence-grid">
                       <table>
                         <thead><tr><th>CASE / FAMILY</th><th>BASELINE</th><th>CANDIDATE</th><th>DELTA</th></tr></thead>
-                        <tbody><tr v-for="pair in candidateComparison(candidate, 'paired_repeated_validation').metrics.pairs" :key="pair.case_path"><td>{{ pair.case_family }}<small>{{ pair.case_path }}</small></td><td>{{ pair.baseline_score }}</td><td>{{ pair.candidate_score }}</td><td :class="{ 'delta-positive': pair.delta > 0, 'delta-negative': pair.delta < 0 }">{{ signedDelta(pair.delta) }}</td></tr></tbody>
+                        <tbody><tr v-for="pair in candidateComparison(candidate, 'paired_repeated_validation').metrics.pairs" :key="pair.case_path"><td>{{ pair.case_family }}<small>{{ pair.case_path }}</small></td><td>{{ optimizationScore(pair.baseline_score) }}</td><td>{{ optimizationScore(pair.candidate_score) }}</td><td :class="{ 'delta-positive': pair.delta > 0, 'delta-negative': pair.delta < 0 }">{{ signedDelta(pair.delta) }}</td></tr></tbody>
                       </table>
                       <table>
                         <thead><tr><th>DIMENSION</th><th>DELTA</th></tr></thead>
@@ -785,7 +791,10 @@ export default appOptions;
               <section v-if="optimizationCandidateDetail" class="surface optimization-diff">
                 <div class="panel-heading"><h2>候选 Patch 与 Diff</h2><button class="text-button" @click="optimizationCandidateDetail = null">关闭</button></div>
                 <p>{{ optimizationCandidateDetail.rationale }}</p>
-                <pre>{{ optimizationCandidateDetail.diff || '没有文本差异。' }}</pre>
+                <div class="optimization-diff-grid">
+                  <section><h3>结构化 Patch（实际修改内容）</h3><pre>{{ optimizationPatchText(optimizationCandidateDetail.patch) }}</pre></section>
+                  <section><h3>文件 Diff（应用后的结果）</h3><pre>{{ optimizationCandidateDetail.diff || (optimizationCandidateDetail.candidate_skill_version_id ? '候选版本与基线没有文本差异。' : '候选未生成可落盘版本，因此没有文件 Diff；结构化 Patch 仍保留在左侧。') }}</pre></section>
+                </div>
               </section>
             </template>
             <div v-else class="empty-state surface"><IconInfoCircle :size="30" /><p>选择左侧实验查看详情</p></div>
@@ -819,7 +828,7 @@ export default appOptions;
                   <span>{{ item.label }}</span><small>{{ item.ready ? '日志已就绪' : '缺少日志' }}</small>
                 </label>
               </div>
-              <p v-if="optimizationForm.data_mode === 'development_regression'" class="form-note">已选择 {{ optimizationForm.case_paths.length }} 个 Case；基线和候选默认各运行 3 次，灰区自动追加到 5/7 次。</p>
+              <p v-if="optimizationForm.data_mode === 'development_regression'" class="form-note">已选择 {{ optimizationForm.case_paths.length }} 个 Case；基线和候选各运行 {{ optimizationForm.validation_repeats }} 次，灰区最多追加到 {{ optimizationForm.max_repeats }} 次。</p>
               <template v-else>
                 <div class="optimization-split-contract">
                   <p><strong>Train</strong><span>用于 Failure Evidence、Optimizer Prompt 与 Screening。</span></p>
@@ -851,15 +860,85 @@ export default appOptions;
               <label>优化指令<textarea v-model.trim="optimizationForm.optimizer_instruction" rows="4"></textarea></label>
               <div class="form-two-columns">
                 <label>评分 Judge<select v-model="optimizationForm.judge_runner"><option value="claude">claude</option><option value="lexical">Lexical（调试）</option></select></label>
-                <label>最大 Epoch<input v-model.number="optimizationForm.max_epochs" type="number" min="1" max="5" :disabled="optimizationForm.data_mode === 'independent_validation'" /></label>
+                <label>最大 Epoch<input v-model.number="optimizationForm.max_epochs" type="number" min="1" :max="optimizationCapabilities?.ranges?.max_epochs?.maximum || 5" :disabled="optimizationForm.data_mode === 'independent_validation'" /></label>
               </div>
               <p v-if="optimizationForm.data_mode === 'independent_validation'" class="form-note">独立 Validation 固定只运行一个 Epoch，避免根据晋升结果再次适配同一验证集。</p>
               <div class="form-three-columns">
                 <label>最小分数提升<input v-model.number="optimizationForm.min_overall_delta" type="number" step="0.1" /></label>
                 <label>最大耗时增长<input v-model.number="optimizationForm.max_latency_growth" type="number" step="0.05" /></label>
-                <label>最大 Token 增长<input v-model.number="optimizationForm.max_token_growth" type="number" step="0.05" /></label>
+                <label>运行输出 Token 增长阈值<input v-model.number="optimizationForm.max_token_growth" type="number" step="0.05" /></label>
               </div>
-              <div class="api-notice"><IconInfoCircle :size="16" />每轮生成两个候选，Screening 只保留一个；连续两轮无候选或无提升会 Early Stop。</div>
+              <div class="api-notice"><IconInfoCircle :size="16" />每轮生成 {{ optimizationForm.candidate_count }} 个候选，Screening 保留得分最高的一个；连续 {{ optimizationForm.early_stop_patience }} 轮无候选或无提升会 Early Stop。</div>
+              <button class="optimization-advanced-toggle" type="button" :aria-expanded="optimizationAdvancedOpen" @click="optimizationAdvancedOpen = !optimizationAdvancedOpen">
+                <span><strong>高级策略</strong><small>候选、筛选、统计、运行成本与保护规则</small></span>
+                <IconChevronRight :class="{ expanded: optimizationAdvancedOpen }" :size="17" />
+              </button>
+              <div v-if="optimizationAdvancedOpen" class="optimization-advanced-panel">
+                <section>
+                  <h3>候选与验证</h3>
+                  <div class="form-three-columns">
+                    <label>每轮候选数<input v-model.number="optimizationForm.candidate_count" type="number" min="1" :max="optimizationCapabilities?.ranges?.candidate_count?.maximum || 4" /></label>
+                    <label>Screening Case 数<input v-model.number="optimizationForm.screening_case_count" type="number" min="1" :max="optimizationCapabilities?.ranges?.screening_case_count?.maximum || 1000" /></label>
+                    <label>每轮操作数<input v-model.trim="optimizationForm.edit_budget_schedule" placeholder="4,4,3,2,1" /></label>
+                    <label>初始验证重复<input v-model.number="optimizationForm.validation_repeats" type="number" min="1" :max="optimizationCapabilities?.ranges?.validation_repeats?.maximum || 7" /></label>
+                    <label>最大验证重复<input v-model.number="optimizationForm.max_repeats" type="number" min="1" :max="optimizationCapabilities?.ranges?.max_repeats?.maximum || 15" /></label>
+                    <label>Early Stop 轮数<input v-model.number="optimizationForm.early_stop_patience" type="number" min="1" :max="optimizationCapabilities?.ranges?.early_stop_patience?.maximum || 20" /></label>
+                  </div>
+                  <p class="form-note tone-success">不再限制改动文件数、新增内容、删除内容或单文件改动比例。操作数只控制 Patch 结构复杂度，每轮可设 1–50 个操作。</p>
+                </section>
+                <section>
+                  <h3>Optimizer 角色</h3>
+                  <div class="optimization-role-grid">
+                    <label v-for="role in optimizationCapabilities?.optimizer_roles || []" :key="role.role">
+                      <input v-model="optimizationForm.optimizer_roles" type="checkbox" :value="role.role" />
+                      <span><strong>{{ role.role }}</strong><small>{{ role.mission }}</small></span>
+                    </label>
+                  </div>
+                </section>
+                <section>
+                  <h3>Screening 与统计 Gate</h3>
+                  <div class="form-three-columns">
+                    <label>筛选最低 Delta<input v-model.number="optimizationForm.screening_minimum_delta" type="number" step="0.1" /></label>
+                    <label>筛选最大耗时增长<input v-model.number="optimizationForm.screening_max_latency_growth" type="number" step="0.05" /></label>
+                    <label>筛选关键维度底线<input v-model.number="optimizationForm.screening_critical_dimension_min_delta" type="number" step="0.1" /></label>
+                    <label>Bootstrap 次数<input v-model.number="optimizationForm.bootstrap_samples" type="number" min="0" :max="optimizationCapabilities?.ranges?.bootstrap_samples?.maximum || 100000" /></label>
+                    <label>置信水平<input v-model.number="optimizationForm.bootstrap_confidence" type="number" min="0.51" max="0.99" step="0.01" /></label>
+                    <label>最低候选胜率<input v-model.number="optimizationForm.min_candidate_win_probability" type="number" min="0" max="1" step="0.05" /></label>
+                    <label>关键维度最小 Delta<input v-model.number="optimizationForm.critical_dimension_min_delta" type="number" step="0.1" /></label>
+                    <label>Family 最小 Delta<input v-model.number="optimizationForm.critical_family_max_regression" type="number" step="0.1" /></label>
+                    <label>关键维度<input v-model.trim="optimizationForm.critical_dimensions" placeholder="root_cause,classification" /></label>
+                    <label>保护指标<input v-model.trim="optimizationForm.protected_guardrail_metrics" placeholder="forbidden_hit_count,missing_chain_count" /></label>
+                  </div>
+                  <div class="optimization-check-grid">
+                    <label><input v-model="optimizationForm.reject_failure_increase" type="checkbox" />拒绝失败次数增加</label>
+                    <label><input v-model="optimizationForm.reject_new_failure_tags" type="checkbox" />拒绝新增 Failure Tag</label>
+                    <label><input v-model="optimizationForm.require_token_usage" type="checkbox" />要求 Token 数据完整</label>
+                    <label><input v-model="optimizationForm.require_bootstrap_lower_bound_positive" type="checkbox" />独立验证要求置信下界大于 0</label>
+                  </div>
+                </section>
+                <section>
+                  <h3>运行成本</h3>
+                  <div class="form-three-columns">
+                    <label>Optimizer 超时（秒）<input v-model.number="optimizationForm.optimizer_timeout_seconds" type="number" min="1" :max="optimizationCapabilities?.ranges?.optimizer_timeout_seconds?.maximum || 7200" /></label>
+                    <label>Optimizer 输出上限（字节）<input v-model.number="optimizationForm.optimizer_max_output_bytes" type="number" min="1024" /></label>
+                    <label>Optimizer 尝试次数<input v-model.number="optimizationForm.optimizer_execution_attempts" type="number" min="1" max="5" /></label>
+                    <label>Judge 超时（秒）<input v-model.number="optimizationForm.judge_timeout_seconds" type="number" min="1" :max="optimizationCapabilities?.ranges?.judge_timeout_seconds?.maximum || 7200" /></label>
+                    <label>Judge 输出上限（字节）<input v-model.number="optimizationForm.judge_max_output_bytes" type="number" min="1024" :max="optimizationCapabilities?.ranges?.judge_max_output_bytes?.maximum || 104857600" /></label>
+                    <label>包内测试超时（秒）<input v-model.number="optimizationForm.package_test_timeout_seconds" type="number" min="1" :max="optimizationCapabilities?.ranges?.package_test_timeout_seconds?.maximum || 300" /></label>
+                  </div>
+                  <div class="optimization-check-grid"><label><input v-model="optimizationForm.format_repair_enabled" type="checkbox" />JSON 格式失败时自动修复</label></div>
+                </section>
+                <section class="optimization-protection-panel">
+                  <h3>服务上限与系统保护</h3>
+                  <p>Skill 包：最多 {{ optimizationCapabilities?.package_ceiling?.max_files || '—' }} 个文件，合计 {{ optimizationCapabilities?.package_ceiling?.max_total_bytes || '—' }} 字节，单文件 {{ optimizationCapabilities?.package_ceiling?.max_single_file_bytes || '—' }} 字节；磁盘最少保留 {{ optimizationCapabilities?.package_ceiling?.minimum_free_bytes || '—' }} 字节。</p>
+                  <p>Skill 内容没有 Token 上限。上面的 Token 增长阈值只比较基线与候选生成报告的输出规模，用作运行成本 Gate，不限制 Skill 文本长度；真正执行时仍受所选模型自身上下文窗口约束。</p>
+                  <p>优化证据、失败 Case 和被拒历史不截断。运维诊断尾部保留 {{ optimizationCapabilities?.evidence_policy?.diagnostic_tail_chars || '—' }} 字符，静态检查详情最多 {{ optimizationCapabilities?.evidence_policy?.static_finding_details || '—' }} 条，标签最多 {{ optimizationCapabilities?.evidence_policy?.label_length || '—' }} 字符。</p>
+                  <p><strong>公开的固定策略</strong></p>
+                  <ul><li v-for="rule in optimizationCapabilities?.fixed_strategy || []" :key="rule.key"><code>{{ rule.key }}</code>：{{ Array.isArray(rule.value) ? rule.value.join(' → ') : rule.value }}；{{ rule.reason }}</li></ul>
+                  <p><strong>不可关闭的保护</strong></p>
+                  <ul><li v-for="rule in optimizationCapabilities?.system_protections || []" :key="rule">{{ rule }}</li></ul>
+                </section>
+              </div>
             </template>
 
             <div class="dialog-actions">
@@ -899,7 +978,7 @@ export default appOptions;
         </section>
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>Harness</h2><button class="primary-button" @click="openHarnessDialog"><IconPlus :size="16" />新建 Harness</button></div>
-          <p class="form-note">定义 Harness 命令与共享并发；<code>{model}</code> 注入模型，<code>{skill}</code> 注入所选宿主机 Skill 调用名。</p>
+          <p class="form-note">定义 Harness 命令；<code>{model}</code> 注入模型，<code>{skill}</code> 注入所选宿主机 Skill 调用名。</p>
           <div v-if="visibleEvaluationHarnesses.length" class="method-list">
             <div v-for="harness in visibleEvaluationHarnesses" :key="harness.id" class="method-row">
               <div><strong>{{ harness.key }} <small>v{{ harness.version }}</small></strong><code>{{ harness.command_template }}</code><span>Skill 配置目录：{{ harness.skill_base_dir || '未配置' }}</span></div>
@@ -915,11 +994,12 @@ export default appOptions;
         </section>
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>模型</h2><button class="primary-button" @click="openModelDialog"><IconPlus :size="16" />新建模型</button></div>
-          <p class="form-note">这里只保存传给 Harness 的模型名称，不管理 endpoint、密钥或模型参数。</p>
+          <p class="form-note">模型的并发与超时限制对所有 Harness 全局生效；这里不管理 endpoint、密钥或其他供应商参数。</p>
           <div v-if="visibleEvaluationModels.length" class="method-list">
             <div v-for="model in visibleEvaluationModels" :key="model.id" class="method-row">
-              <div><strong>{{ model.key }} <small>v{{ model.version }}</small></strong><code>--model {{ model.argument }}</code></div>
+              <div><strong>{{ model.key }} <small>v{{ model.version }}</small></strong><code>--model {{ model.argument }}</code><span>全局并发 {{ model.concurrency_limit }} · 超时 {{ model.timeout_seconds }} 秒</span></div>
               <span :class="model.status === 'frozen' ? 'tag-match' : 'tag-missing'">{{ model.status }}</span>
+              <button class="ghost-button" @click="openModelDialog(model)">修改限制</button>
               <button class="tree-delete" title="删除模型" :disabled="catalogActionId === model.id" @click="deleteEvaluationModel(model)"><IconTrash :size="14" /></button>
             </div>
           </div>
@@ -927,11 +1007,12 @@ export default appOptions;
         </section>
         <section class="surface form-card method-card">
           <div class="panel-heading"><h2>Skill</h2><button class="primary-button" @click="openSkillDialog"><IconPlus :size="16" />新建 Skill</button></div>
-          <p class="form-note">这里只展示已保存的 Skill。新建时先选择冻结 Harness，再直接扫描该 Harness 配置的 Skills 本地目录。</p>
+          <p class="form-note">这里只展示已保存的 Skill。修改宿主目录内容后，点击“导入新版本”创建新的 Managed 版本；已有版本和 Active 绑定不会被覆盖。</p>
           <div v-if="configuredSkills.length" class="method-list">
             <div v-for="skill in configuredSkills" :key="skill.id" class="method-row">
               <div><strong>/{{ skill.key }}</strong><code>{{ skill.source_path }}</code><span>Harness：{{ skill.harness_key }} v{{ skill.harness_version }}</span></div>
               <span :class="skill.selectable ? 'tag-match' : 'tag-missing'">{{ skill.selectable ? '可用' : 'Harness 不可用' }}</span>
+              <button class="text-button" :disabled="Boolean(skillImportingId) || !skill.selectable" @click="importHostSkillVersion(skill)">{{ skillImportingId === skill.id ? '导入中…' : '导入新版本' }}</button>
             </div>
           </div>
           <div v-else class="empty-state"><IconInfoCircle :size="26" /><p>尚未配置 Skill</p><span>点击“新建 Skill”，从指定 Harness 的宿主机目录中选择。</span></div>
@@ -1067,7 +1148,7 @@ export default appOptions;
           <textarea v-model="methodForm.command_template" rows="3" placeholder='claude -p "帮我分析日志 {input}"'></textarea>
         </label>
         <div class="form-grid">
-          <label>超时（秒）<input v-model.number="methodForm.timeout_seconds" type="number" min="1" max="7200" /></label>
+          <label>超时（秒）<input v-model.number="methodForm.timeout_seconds" type="number" min="1" max="21600" /></label>
           <label>最大输出（字节）<input v-model.number="methodForm.max_output_bytes" type="number" min="1024" /></label>
           <label>并发限制<input v-model.number="methodForm.concurrency_limit" type="number" min="1" max="32" /></label>
         </div>
@@ -1085,17 +1166,17 @@ export default appOptions;
         <label>Key<input v-model="harnessForm.key" :disabled="Boolean(editingHarnessId)" placeholder="claude-native" /></label>
         <label>Skills 本地配置目录<input v-model.trim="harnessForm.skill_base_dir" placeholder="~/.claude/skills" /><span>该目录应直接包含各个 <code>{skill-key}/SKILL.md</code> 子目录</span></label>
         <label>命令模板<textarea v-model="harnessForm.command_template" rows="3" placeholder='claude -p "{skill} 分析 {input}" --model {model}'></textarea></label>
-        <div class="form-grid"><label>超时时间（秒）<input v-model.number="harnessForm.timeout_seconds" type="number" min="1" max="7200" /></label><label>并发数<input v-model.number="harnessForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showHarnessDialog = false">取消</button><button class="primary-button" :disabled="harnessSaving" @click="saveEvaluationHarness">{{ harnessSaving ? '保存中…' : '保存并检测' }}</button></div>
       </section>
     </div>
 
     <div v-if="showModelDialog" class="dialog-overlay" @click.self="showModelDialog = false">
       <section class="surface dialog-card">
-        <div class="panel-heading"><h2>新建模型</h2></div>
-        <p class="form-note">模型名称会直接作为传给 Harness 的 <code>--model</code> 参数。</p>
-        <label>模型名称<input v-model="modelForm.key" placeholder="glm5.1" /></label>
-        <div class="dialog-actions"><button class="ghost-button" @click="showModelDialog = false">取消</button><button class="primary-button" :disabled="modelSaving" @click="saveEvaluationModel">{{ modelSaving ? '保存中…' : '保存模型' }}</button></div>
+        <div class="panel-heading"><h2>{{ editingModelId ? '修改模型限制' : '新建模型' }}</h2></div>
+        <p class="form-note">模型名称会直接作为传给 Harness 的 <code>--model</code> 参数；运行限制按模型名称跨所有 Harness 全局共享。</p>
+        <label>模型名称<input v-model="modelForm.key" :disabled="Boolean(editingModelId)" placeholder="glm5.1" /></label>
+        <div class="form-grid"><label>全局超时（秒）<input v-model.number="modelForm.timeout_seconds" type="number" min="1" max="21600" /></label><label>全局并发数<input v-model.number="modelForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
+        <div class="dialog-actions"><button class="ghost-button" @click="showModelDialog = false">取消</button><button class="primary-button" :disabled="modelSaving" @click="saveEvaluationModel">{{ modelSaving ? '保存中…' : editingModelId ? '保存为新版本' : '保存模型' }}</button></div>
       </section>
     </div>
 
@@ -1356,6 +1437,7 @@ export default appOptions;
         </template>
         <template v-else-if="caseDraftView?.status === 'ready'">
           <p class="form-note">Case 已审核通过，点击"发布"将其写入测试集目录。</p>
+          <p v-if="caseDraftView.error?.stage === 'publish'" class="form-note tone-warning">上次发布失败：{{ caseDraftView.error.message }}</p>
           <div class="case-info-grid">
             <div class="case-info-item"><span class="case-info-label">Case Key</span><span class="case-info-value">{{ caseDraftView.case_key }}</span></div>
             <div class="case-info-item"><span class="case-info-label">测试集</span><span class="case-info-value">{{ caseDraftView.test_set }}</span></div>
@@ -1379,7 +1461,7 @@ export default appOptions;
           </div>
         </template>
         <template v-else-if="caseDraftView?.status === 'failed'">
-          <p class="form-note tone-warning">生成失败：{{ caseDraftView.error?.message ?? '未知错误' }}</p>
+          <p class="form-note tone-warning">{{ caseDraftView.error?.stage === 'publish' ? '发布失败' : '生成失败' }}：{{ caseDraftView.error?.message ?? '未知错误' }}</p>
           <div class="dialog-actions">
             <button class="ghost-button" @click="showCaseReviewDialog = false">关闭</button>
           </div>

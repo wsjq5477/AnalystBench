@@ -88,25 +88,29 @@ wrapper 可执行文件完成认证。不要把完整用户 `.claude/`、`.confi
 Target 和 Judge 仍会按 Worker 的操作系统权限运行；只有声明式 Skill 包内测试
 额外使用 bubblewrap 的只读、无网络 namespace。
 
-为 Managed Root 选择一个专用绝对路径。它不能是：
+为 Managed Root 选择一个专用目录。它不能是：
 
 - 用户源 Skill 目录或其子目录；
-- AnalystBench 源码仓库；
 - `results`、Worker workspace 或临时结果目录。
 
+可以使用已被 `.gitignore` 排除的项目本地 `data` 子目录，也可以使用
+仓库外的绝对路径。
+
 ```bash
-mkdir -p /srv/analystbench/skill-optimization
+mkdir -p ./data/skill-optimization
 ```
 
 在项目根目录的 `.env.local` 中配置：
 
 ```dotenv
 ANALYSTBENCH_SKILL_OPTIMIZATION_ENABLED=true
-ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=/srv/analystbench/skill-optimization
+ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT=./data/skill-optimization
 ```
 
-不要在 `.env.local` 中写 `$(pwd)` 或依赖 shell 展开的相对路径；这里需要真实
-绝对路径。API、Worker、CLI 和测试命令必须读取同一数据库及同一配置。
+不要在 `.env.local` 中写 `$(pwd)`，dotenv 不会执行 shell 展开。相对路径按
+进程启动目录解析；API、Worker、CLI 和测试命令必须从同一目录
+启动并读取同一数据库及同一配置。拆分部署无法保证同一启动目录时，
+使用绝对路径。
 
 ## 2. 升级数据库并预检基础环境
 
@@ -738,7 +742,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/evaluation-submissions \
 | 现象或错误 | 常见原因 | 处理 |
 |---|---|---|
 | `skill_optimization_disabled` / `feature_switch=FAIL` | 开关未启用，或服务未重启 | 修改项目根 `.env.local`，重启 API 与 Worker |
-| `managed_root_configured/absolute/writable=FAIL` | 未显式配置、用了相对路径、目录不可写 | 改为专用绝对路径，创建目录并检查当前运行用户权限 |
+| `managed_root_configured/absolute/writable=FAIL` | 未显式配置、路径无法解析、目录不可写 | 确认解析后路径，创建目录并检查当前运行用户权限 |
 | `git_executable=FAIL` | Worker 的 PATH 找不到 Git | 在实际服务用户环境安装/配置 Git，重启后预检 |
 | `agent_runners=FAIL` | claude 未安装或版本命令失败 | 用服务用户直接执行 `claude --version`，确认 PATH；通过后仍要另做最小真实认证请求 |
 | `package_test_sandbox=WARN` | `bwrap` 缺失，或当前 WSL/容器不允许 namespace | 安装 bubblewrap，并用实际 Worker 用户运行预检；严格验收不应忽略 WARN |
@@ -754,7 +758,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/evaluation-submissions \
 | `optimization_split_overlap` | 同一 Case 出现在多个 split | 修正 Snapshot 列表 |
 | `optimization_source_group_overlap` | 同源事件的不同裁剪跨 Train/Validation | 统一 `source_group_key` 并放到同一 split |
 | `optimization_case_input_drift` / `optimization_eval_spec_drift` | Snapshot 后修改了日志、问题或评分标准 | 保留旧实验审计，创建新 Snapshot 和新实验 |
-| Patch/Static candidate 被拒绝 | 越界路径、操作/文件/Token/比例超预算，或安全、引用、语法、包内测试失败 | 在候选详情看稳定错误码；修正 Skill/Policy，勿放宽到绕过安全边界 |
+| Patch/Static candidate 被拒绝 | 越界路径、操作数超出公开策略，或安全、引用、语法、包内测试失败 | 在候选详情查看结构化 Patch、文件 Diff 和稳定错误码；Skill 内容本身没有 Token 上限，也不再按改动文件数、新增/删除 Token 或单文件改动比例拒绝 |
 | Gate 未提升 | 最小增益不足、关键 Case/Family/Dimension 回归、执行失败、耗时或 Token 超限 | 查看 Epoch 总账和逐 Case Delta；旧 Active 会保持不变 |
 | `token_usage_missing` / `token_growth_exceeded` | 配对 artifact 缺少输出规模估算，或候选增长超阈值 | 检查所有基线/候选 Method Run artifact；不要把缺失 usage 当作 0 |
 | `candidate_guardrail_metric_increased` | 任一 Case 的 `forbidden_hit_count` 或 `missing_chain_count` 重复中位数上升 | 查看逐 Case 比较并修正候选；该硬回归不能由总分抵消 |

@@ -20,6 +20,11 @@ from analystbench.evaluation.submission import (
     EvaluationSubmissionService,
     _scoring_error_payload,
 )
+from analystbench.evaluation.target import (
+    EvaluationHarnessService,
+    EvaluationModelService,
+    EvaluationTargetService,
+)
 from analystbench.execution.runner import AgentRunnerError
 from analystbench.worker import LocalWorker
 
@@ -103,6 +108,107 @@ def create_case_directory(settings: Settings) -> Path:
         json.dumps(case_payload(), ensure_ascii=False), encoding="utf-8"
     )
     return case_directory
+
+
+def test_model_key_accepts_safe_square_brackets(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    engine = create_database_engine(settings)
+    try:
+        model = EvaluationModelService(create_session_factory(engine)).create(
+            model_key="GLM-5.2[1m]",
+            name="GLM-5.2[1m]",
+            argument="GLM-5.2[1m]",
+        )
+    finally:
+        engine.dispose()
+
+    assert model.model_key == "GLM-5.2[1m]"
+    assert model.name == "GLM-5.2[1m]"
+    assert model.argument == "GLM-5.2[1m]"
+
+
+def test_method_and_model_allow_six_hour_timeout(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        default_method = client.post(
+            "/api/v1/evaluation-methods",
+            json={"key": "default-timeout", "command_template": sys.executable},
+        )
+        max_method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "six-hour-method",
+                "command_template": sys.executable,
+                "timeout_seconds": 21600,
+            },
+        )
+        invalid_method = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "too-long-method",
+                "command_template": sys.executable,
+                "timeout_seconds": 21601,
+            },
+        )
+        default_model = client.post(
+            "/api/v1/evaluation-models",
+            json={"key": "default-model"},
+        )
+        max_model = client.post(
+            "/api/v1/evaluation-models",
+            json={
+                "key": "six-hour-model",
+                "timeout_seconds": 21600,
+            },
+        )
+        invalid_model = client.post(
+            "/api/v1/evaluation-models",
+            json={
+                "key": "too-long-model",
+                "timeout_seconds": 21601,
+            },
+        )
+
+    assert default_method.status_code == 201
+    assert default_method.json()["timeout_seconds"] == 21600
+    assert max_method.status_code == 201
+    assert invalid_method.status_code == 422
+    assert default_model.status_code == 201
+    assert default_model.json()["timeout_seconds"] == 21600
+    assert default_model.json()["concurrency_limit"] == 1
+    assert max_model.status_code == 201
+    assert invalid_model.status_code == 422
+
+
+def test_list_targets_handles_multiple_targets_for_same_harness(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        harness = EvaluationHarnessService(session_factory, settings).create(
+            harness_key="shared-harness",
+            name="Shared Harness",
+            family=None,
+            model_policy="required",
+            command_template=f'{sys.executable} -c "print(1)" {{model}} {{input}}',
+        )
+        models = EvaluationModelService(session_factory)
+        targets = EvaluationTargetService(session_factory, settings)
+        for model_key in ("model-a", "model-b"):
+            model = models.create(
+                model_key=model_key,
+                name=model_key,
+                argument=model_key,
+            )
+            targets.create(harness_id=harness.id, model_id=model.id)
+        views = targets.list_views()
+    finally:
+        engine.dispose()
+
+    assert {item["key"] for item in views} == {
+        "shared-harness@model-a",
+        "shared-harness@model-b",
+    }
 
 
 def test_delete_local_case_removes_inputs_and_preserves_history(tmp_path: Path) -> None:
@@ -345,7 +451,7 @@ def test_worker_executes_method_runs_in_parallel_up_to_method_limit(
     assert max(start for start, _ in intervals) < min(end for _, end in intervals)
 
 
-def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
+def test_model_concurrency_is_global_across_harnesses_and_versions(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     settings.worker_concurrency_limit = 2
     settings.worker_poll_interval_seconds = 0.02
@@ -382,33 +488,49 @@ def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
     )
 
     with TestClient(create_app(settings)) as client:
-        harness = client.post(
-            "/api/v1/evaluation-harnesses",
-            json={
-                "key": "claude-skill",
-                "model_policy": "required",
-                "tool_dir": str(tool_directory),
-                "command_template": (
-                    f"{sys.executable} {{tool_dir}}/report.py --model {{model}} {{input}}"
-                ),
-                "concurrency_limit": 1,
-            },
+        model = client.post(
+            "/api/v1/evaluation-models",
+            json={"key": "glm-5.1", "argument": "glm5.1", "concurrency_limit": 2},
         ).json()
-        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:probe")
-        client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:freeze")
         target_ids = []
-        for key, argument in (("glm-5.1", "glm5.1"), ("deepseek-v4", "deepseek-v4")):
-            model = client.post(
-                "/api/v1/evaluation-models",
-                json={"key": key, "argument": argument},
+        method_ids = []
+        for harness_key in ("claude-skill", "opencode-skill"):
+            harness = client.post(
+                "/api/v1/evaluation-harnesses",
+                json={
+                    "key": harness_key,
+                    "model_policy": "required",
+                    "tool_dir": str(tool_directory),
+                    "command_template": (
+                        f"{sys.executable} {{tool_dir}}/report.py --model {{model}} {{input}}"
+                    ),
+                },
             ).json()
+            client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:probe")
+            client.post(f"/api/v1/evaluation-harnesses/{harness['id']}:freeze")
             target = client.post(
                 "/api/v1/evaluation-targets",
                 json={"harness_id": harness["id"], "model_id": model["id"]},
             ).json()
             client.post(f"/api/v1/evaluation-targets/{target['id']}:probe")
-            client.post(f"/api/v1/evaluation-targets/{target['id']}:freeze")
+            frozen_target = client.post(
+                f"/api/v1/evaluation-targets/{target['id']}:freeze"
+            ).json()
             target_ids.append(target["id"])
+            method_ids.append(frozen_target["materialized_method_id"])
+        revised_model = client.post(
+            f"/api/v1/evaluation-models/{model['id']}:revise",
+            json={"timeout_seconds": 123, "concurrency_limit": 1},
+        ).json()
+        assert revised_model["version"] == 2
+        engine = create_database_engine(settings)
+        try:
+            with transaction(create_session_factory(engine)) as session:
+                assert EvaluationSubmissionService._effective_model_timeout(
+                    session, method_ids[0], 21600
+                ) == 123
+        finally:
+            engine.dispose()
         submission = client.post(
             "/api/v1/evaluation-submissions",
             json={"dataset_key": "kdiag", "target_ids": target_ids, "judge_runner": "lexical"},
@@ -429,9 +551,6 @@ def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
                 if status == "completed":
                     break
                 time.sleep(0.05)
-            comparison = client.get(
-                f"/api/v1/evaluation-submissions/{submission['id']}/target-comparison"
-            ).json()
         assert status == "completed"
     finally:
         stop.set()
@@ -449,12 +568,6 @@ def test_targets_share_their_harness_concurrency_limit(tmp_path: Path) -> None:
             intervals, intervals[1:], strict=False
         )
     )
-    assert comparison["by_harness"] == [
-        {
-            "key": "claude-skill@v1",
-            "target_keys": ["claude-skill@deepseek-v4", "claude-skill@glm-5.1"],
-        }
-    ]
 
 
 def test_submission_requires_logs_and_runs_isolated_command_then_scores(
@@ -1100,6 +1213,82 @@ def test_timed_out_method_keeps_terminal_timing_in_api_and_result(
     )
 
 
+def test_partial_method_failure_skips_scoring_and_names_failed_method(
+    tmp_path: Path,
+) -> None:
+    settings = migrated_settings(tmp_path)
+    case_directory = create_case_directory(settings)
+    logs_directory = case_directory / "logs"
+    logs_directory.mkdir()
+    (logs_directory / "log.txt").write_text("chmod hung", encoding="utf-8")
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    (tool_directory / "fast.py").write_text("print('done')\n", encoding="utf-8")
+    (tool_directory / "slow.py").write_text(
+        "import time\ntime.sleep(2)\nprint('too late')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        method_ids: list[str] = []
+        for key, script, timeout in (
+            ("fast-method", "fast.py", 10),
+            ("slow-method", "slow.py", 1),
+        ):
+            method = client.post(
+                "/api/v1/evaluation-methods",
+                json={
+                    "key": key,
+                    "tool_dir": str(tool_directory),
+                    "command_template": f"{sys.executable} {{tool_dir}}/{script}",
+                    "timeout_seconds": timeout,
+                },
+            ).json()
+            client.post(f"/api/v1/evaluation-methods/{method['id']}:probe")
+            client.post(f"/api/v1/evaluation-methods/{method['id']}:freeze")
+            method_ids.append(method["id"])
+        submission = client.post(
+            "/api/v1/evaluation-submissions",
+            json={
+                "dataset_key": "kdiag",
+                "method_ids": method_ids,
+                "judge_runner": "lexical",
+            },
+        ).json()
+
+    worker = LocalWorker(settings)
+    try:
+        while worker.run_once():
+            pass
+    finally:
+        worker.close()
+
+    with TestClient(create_app(settings)) as client:
+        current = client.get(
+            f"/api/v1/evaluation-submissions/{submission['id']}"
+        ).json()
+        case_run = client.get(
+            f"/api/v1/evaluation-submissions/{submission['id']}/case-runs"
+        ).json()[0]
+
+    assert current["status"] == "failed"
+    assert case_run["status"] == "failed"
+    assert case_run["scoring_status"] == "skipped"
+    assert case_run["error"] == {
+        "code": "partial_methods_failed",
+        "message": "部分测评方式失败，已跳过评分。",
+        "failed_methods": ["slow-method（timeout）"],
+    }
+    result = json.loads(
+        (Path(case_run["run_directory"]) / "result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["status"] == "failed"
+    assert result["reports"] == []
+    assert result["error"] == case_run["error"]
+
+
 def test_deleting_one_method_removes_shared_submission_but_keeps_other_method(
     tmp_path: Path,
 ) -> None:
@@ -1236,6 +1425,13 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
                 "command_template": f'{sys.executable} -c "print(1)"',
             },
         )
+        trailing_square_bracket = client.post(
+            "/api/v1/evaluation-methods",
+            json={
+                "key": "agent[deepseek]",
+                "command_template": f'{sys.executable} -c "print(1)"',
+            },
+        )
         unsafe = client.post(
             "/api/v1/evaluation-methods",
             json={
@@ -1252,6 +1448,9 @@ def test_method_key_is_display_name_and_accepts_safe_filename_characters(
     assert trailing_parenthesis.status_code == 201
     assert trailing_parenthesis.json()["key"] == "agent(deepseek)"
     assert trailing_parenthesis.json()["name"] == "agent(deepseek)"
+    assert trailing_square_bracket.status_code == 201
+    assert trailing_square_bracket.json()["key"] == "agent[deepseek]"
+    assert trailing_square_bracket.json()["name"] == "agent[deepseek]"
     assert deleted.status_code == 200
     assert deleted.json()["submissions_deleted"] == 0
     assert all(item["id"] != response.json()["id"] for item in remaining)
@@ -1440,7 +1639,7 @@ def test_two_cases_and_two_methods_are_scored_in_one_submission(tmp_path: Path) 
 
     with TestClient(create_app(settings)) as client:
         method_ids = []
-        for key, name in (("script", "Script"), ("claude", "claude")):
+        for key, name in (("script", "Script"), ("sv-demo", "harness@model")):
             created = client.post(
                 "/api/v1/evaluation-methods",
                 json={
@@ -1483,3 +1682,14 @@ def test_two_cases_and_two_methods_are_scored_in_one_submission(tmp_path: Path) 
         assert len(case_runs) == 2
         assert all(len(item["methods"]) == 2 for item in case_runs)
         assert all(item["status"] == "completed" for item in case_runs)
+
+    for directory in (first, second):
+        result = json.loads(
+            (directory / "runs" / submission["timestamp"] / "result.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert {item["candidate_name"] for item in result["reports"]} == {
+            "script",
+            "harness@model",
+        }

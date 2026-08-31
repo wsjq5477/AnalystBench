@@ -21,10 +21,6 @@ SUPPORTED_OPERATIONS = frozenset({"append", "delete", "insert_after", "replace"}
 DEFAULT_PATCH_POLICY: dict[str, object] = {
     "allowed_operations": ["append", "insert_after", "replace", "delete"],
     "edit_budget_schedule": [4, 4, 3, 2, 1],
-    "max_changed_files": 2,
-    "max_added_tokens": 600,
-    "max_deleted_tokens": 300,
-    "max_single_file_change_ratio": 0.25,
 }
 
 
@@ -90,10 +86,6 @@ class PatchApplicationResult:
 class _ResolvedPatchPolicy:
     allowed_operations: frozenset[str]
     max_operations: int
-    max_changed_files: int
-    max_added_tokens: int
-    max_deleted_tokens: int
-    max_single_file_change_ratio: float
     epoch_number: int
 
 
@@ -173,31 +165,9 @@ class StructuredPatchApplier:
             raise cls._policy_error("epoch_number", "epoch_number 必须是正整数。")
         max_operations = int(schedule_raw[min(epoch - 1, len(schedule_raw) - 1)])
 
-        def nonnegative_integer(key: str, *, minimum: int = 0) -> int:
-            raw = value(key)
-            if type(raw) is not int or raw < minimum:
-                qualifier = "正整数" if minimum == 1 else "非负整数"
-                raise cls._policy_error(key, f"{key} 必须是{qualifier}。")
-            return raw
-
-        ratio_raw = value("max_single_file_change_ratio")
-        if (
-            isinstance(ratio_raw, bool)
-            or not isinstance(ratio_raw, (int, float))
-            or not 0 <= float(ratio_raw) <= 1
-        ):
-            raise cls._policy_error(
-                "max_single_file_change_ratio",
-                "max_single_file_change_ratio 必须介于 0 和 1 之间。",
-            )
-
         return _ResolvedPatchPolicy(
             allowed_operations=allowed,
             max_operations=max_operations,
-            max_changed_files=nonnegative_integer("max_changed_files", minimum=1),
-            max_added_tokens=nonnegative_integer("max_added_tokens"),
-            max_deleted_tokens=nonnegative_integer("max_deleted_tokens"),
-            max_single_file_change_ratio=float(ratio_raw),
             epoch_number=epoch,
         )
 
@@ -283,35 +253,6 @@ class StructuredPatchApplier:
             deleted_tokens=sum(item.deleted_tokens for item in per_file.values()),
             per_file=per_file,
         )
-
-    @classmethod
-    def _enforce_stats(
-        cls,
-        stats: PatchApplicationStats,
-        policy: _ResolvedPatchPolicy,
-    ) -> None:
-        checks = (
-            ("max_changed_files", len(stats.changed_files), policy.max_changed_files),
-            ("max_added_tokens", stats.added_tokens, policy.max_added_tokens),
-            ("max_deleted_tokens", stats.deleted_tokens, policy.max_deleted_tokens),
-        )
-        for rule, actual, limit in checks:
-            if actual > limit:
-                raise cls._budget_error(
-                    rule,
-                    actual=actual,
-                    limit=limit,
-                    epoch_number=policy.epoch_number,
-                )
-        for path, item in stats.per_file.items():
-            if item.change_ratio > policy.max_single_file_change_ratio:
-                raise cls._budget_error(
-                    "max_single_file_change_ratio",
-                    actual=item.change_ratio,
-                    limit=policy.max_single_file_change_ratio,
-                    epoch_number=policy.epoch_number,
-                    path=path,
-                )
 
     def apply(
         self,
@@ -443,15 +384,6 @@ class StructuredPatchApplier:
                 operation_types=operation_types,
                 operation_count=len(operations),
             )
-            self._enforce_stats(stats, resolved_policy)
-            total_characters = sum(
-                len(path.read_text(encoding="utf-8")) for path in root.rglob("*") if path.is_file()
-            )
-            _, max_skill_tokens = self.registry.skill_limits(skill)
-            if total_characters / 4 > max_skill_tokens:
-                raise AnalystBenchError(
-                    "skill_token_budget_exceeded", "候选 Skill 超过近似 Token 上限。"
-                )
             validation = candidate_validator(root) if candidate_validator else None
             version = self.registry.import_version(
                 skill.id,

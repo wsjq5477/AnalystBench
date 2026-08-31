@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -13,17 +14,20 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from analystbench.config import Settings
 from analystbench.db.models import (
     CandidateComparison,
     CandidateMutation,
+    DecisionRecord,
     EvaluationMethod,
     EvaluationSubmission,
     EvaluationSubmissionCaseRun,
     EvaluationSubmissionMethodRun,
     ExecutionProfile,
+    Job,
     OptimizationDataSnapshot,
     OptimizationEpoch,
     OptimizationEvent,
@@ -61,6 +65,13 @@ from analystbench.storage.content import canonical_json, content_hash
 TERMINAL_SUBMISSION_STATES = {"completed", "completed_with_errors", "failed", "cancelled"}
 
 OPTIMIZER_OUTPUT_SCHEMA_VERSION = "structured_skill_patch.v1"
+EXPERIMENT_POLICY_LIMITS = {
+    "candidate_count": {"minimum": 1, "maximum": 4},
+    "screening_case_count": {"minimum": 1, "maximum": 1000},
+    "validation_repeats": {"minimum": 1, "maximum": 7},
+    "max_repeats": {"minimum": 1, "maximum": 15},
+    "early_stop_patience": {"minimum": 1, "maximum": 20},
+}
 OPTIMIZER_ROLE_SPECS: tuple[dict[str, str], ...] = (
     {
         "role": "failure_analyst",
@@ -302,7 +313,7 @@ def _parse_role_output(
             "Optimizer role 的每个 patch 都必须是对象。",
         )
     normalized_findings: list[dict[str, Any]] = []
-    for finding_index, finding in enumerate(findings[:16]):
+    for finding_index, finding in enumerate(findings):
         if not isinstance(finding, dict) or set(finding) - {
             "summary",
             "evidence_refs",
@@ -343,8 +354,8 @@ def _parse_role_output(
             )
         normalized_findings.append(
             {
-                "summary": summary[:1000],
-                "evidence_refs": evidence_refs[:16],
+                "summary": summary,
+                "evidence_refs": evidence_refs,
                 "confidence": confidence_number,
             }
         )
@@ -478,6 +489,36 @@ class OptimizationExperimentService:
                     "optimizer_policy_unsafe_arguments",
                     "Optimizer 执行参数不能改写工具权限或增加可读目录。",
                 )
+            resolved_config = dict(config or {})
+            available_roles = {item["role"] for item in OPTIMIZER_ROLE_SPECS}
+            optimizer_roles = resolved_config.get(
+                "optimizer_roles", [item["role"] for item in OPTIMIZER_ROLE_SPECS]
+            )
+            if (
+                not isinstance(optimizer_roles, list)
+                or not optimizer_roles
+                or any(not isinstance(role, str) for role in optimizer_roles)
+                or not set(optimizer_roles).issubset(available_roles)
+            ):
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid",
+                    "optimizer_roles 必须是公开角色的非空数组。",
+                )
+            attempts = resolved_config.get("optimizer_execution_attempts", 3)
+            if type(attempts) is not int or not 1 <= attempts <= 5:
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid",
+                    "optimizer_execution_attempts 必须介于 1 和 5。",
+                )
+            repair_enabled = resolved_config.get("format_repair_enabled", True)
+            if not isinstance(repair_enabled, bool):
+                raise AnalystBenchError(
+                    "optimizer_policy_invalid",
+                    "format_repair_enabled 必须是布尔值。",
+                )
+            resolved_config["optimizer_roles"] = list(dict.fromkeys(optimizer_roles))
+            resolved_config["optimizer_execution_attempts"] = attempts
+            resolved_config["format_repair_enabled"] = repair_enabled
             version_number = int(
                 session.scalar(
                     select(func.max(OptimizerPolicyVersion.version_number)).where(
@@ -491,7 +532,7 @@ class OptimizationExperimentService:
                 "version_number": version_number,
                 "execution_profile_hash": profile.content_hash,
                 "prompt_bundle": prompt_bundle,
-                "config": config or {},
+                "config": resolved_config,
             }
             item = OptimizerPolicyVersion(
                 id=str(uuid4()),
@@ -502,7 +543,7 @@ class OptimizationExperimentService:
                     canonical_json(prompt_bundle).encode("utf-8")
                 ),
                 config_json=canonical_json(
-                    {"prompt_bundle": prompt_bundle, **(config or {})}
+                    {"prompt_bundle": prompt_bundle, **resolved_config}
                 ),
                 content_hash=content_hash(canonical_json(manifest).encode("utf-8")),
             )
@@ -549,6 +590,23 @@ class OptimizationExperimentService:
                 "Skill 自优化 Verifier 只支持 claude；lexical 仅用于开发调试。",
             )
         resolved_judge["runner"] = judge_runner
+        judge_timeout = resolved_judge.get("timeout_seconds", 600)
+        judge_output_limit = resolved_judge.get("max_output_bytes", 2 * 1024 * 1024)
+        if type(judge_timeout) is not int or not 1 <= judge_timeout <= 7200:
+            raise AnalystBenchError(
+                "optimization_verifier_judge_invalid",
+                "Judge timeout_seconds 必须介于 1 和 7200。",
+            )
+        if (
+            type(judge_output_limit) is not int
+            or not 1024 <= judge_output_limit <= 100 * 1024 * 1024
+        ):
+            raise AnalystBenchError(
+                "optimization_verifier_judge_invalid",
+                "Judge max_output_bytes 必须介于 1024 和 104857600。",
+            )
+        resolved_judge["timeout_seconds"] = judge_timeout
+        resolved_judge["max_output_bytes"] = judge_output_limit
         resolved_gate = dict(gate_policy or {})
         bootstrap_samples = int(resolved_gate.get("bootstrap_samples", 2000))
         confidence = float(resolved_gate.get("bootstrap_confidence", 0.95))
@@ -564,6 +622,28 @@ class OptimizationExperimentService:
                 "optimization_verifier_statistics_invalid",
                 "Verifier Bootstrap/Gate 统计配置超出可用范围。",
             )
+        for field in (
+            "require_bootstrap_lower_bound_positive",
+            "require_token_usage",
+            "reject_failure_increase",
+            "reject_new_failure_tags",
+        ):
+            if field in resolved_gate and not isinstance(resolved_gate[field], bool):
+                raise AnalystBenchError(
+                    "optimization_verifier_gate_invalid",
+                    f"Verifier {field} 必须是布尔值。",
+                )
+        for field in ("critical_dimensions", "protected_guardrail_metrics"):
+            value = resolved_gate.get(field)
+            if value is not None and (
+                not isinstance(value, list)
+                or not value
+                or any(not isinstance(item, str) or not item for item in value)
+            ):
+                raise AnalystBenchError(
+                    "optimization_verifier_gate_invalid",
+                    f"Verifier {field} 必须是非空字符串数组。",
+                )
         with transaction(self.session_factory) as session:
             version_number = int(
                 session.scalar(
@@ -680,6 +760,11 @@ class OptimizationExperimentService:
         optimizer_policy_version_id: str,
         verifier_bundle_version_id: str,
         max_epochs: int | None = None,
+        candidate_count: int | None = None,
+        screening_case_count: int | None = None,
+        validation_repeats: int | None = None,
+        max_repeats: int | None = None,
+        early_stop_patience: int | None = None,
         created_by: str | None = None,
     ) -> OptimizationExperiment:
         self.registry._require_enabled()
@@ -726,6 +811,57 @@ class OptimizationExperimentService:
                     "独立验证模式只能运行一个 Epoch，避免通过晋升结果反复适配 Validation。",
                     [{"observed": epochs, "required": 1}],
                 )
+            requested_policy = {
+                "candidate_count": (
+                    self.settings.skill_optimization_candidate_count
+                    if candidate_count is None
+                    else candidate_count
+                ),
+                "screening_case_count": (
+                    self.settings.skill_optimization_screening_case_count
+                    if screening_case_count is None
+                    else screening_case_count
+                ),
+                "validation_repeats": (
+                    self.settings.skill_optimization_validation_repeats
+                    if validation_repeats is None
+                    else validation_repeats
+                ),
+                "max_repeats": (
+                    self.settings.skill_optimization_max_repeats
+                    if max_repeats is None
+                    else max_repeats
+                ),
+                "early_stop_patience": (
+                    self.settings.skill_optimization_early_stop_patience
+                    if early_stop_patience is None
+                    else early_stop_patience
+                ),
+            }
+            for field, value in requested_policy.items():
+                limits = EXPERIMENT_POLICY_LIMITS[field]
+                if (
+                    type(value) is not int
+                    or value < limits["minimum"]
+                    or value > limits["maximum"]
+                ):
+                    raise AnalystBenchError(
+                        "optimization_experiment_policy_invalid",
+                        f"实验策略 {field} 超出公开范围。",
+                        [{"field": field, "value": value, **limits}],
+                    )
+            if requested_policy["validation_repeats"] > requested_policy["max_repeats"]:
+                raise AnalystBenchError(
+                    "optimization_experiment_policy_invalid",
+                    "validation_repeats 不能大于 max_repeats。",
+                    [
+                        {
+                            "field": "validation_repeats",
+                            "value": requested_policy["validation_repeats"],
+                            "max_repeats": requested_policy["max_repeats"],
+                        }
+                    ],
+                )
             item = OptimizationExperiment(
                 id=str(uuid4()),
                 name=name,
@@ -740,13 +876,7 @@ class OptimizationExperimentService:
                 created_by=created_by,
                 config_snapshot_json=canonical_json(
                     {
-                        "candidate_count": self.settings.skill_optimization_candidate_count,
-                        "screening_case_count": (
-                            self.settings.skill_optimization_screening_case_count
-                        ),
-                        "validation_repeats": self.settings.skill_optimization_validation_repeats,
-                        "max_repeats": self.settings.skill_optimization_max_repeats,
-                        "early_stop_patience": self.settings.skill_optimization_early_stop_patience,
+                        **requested_policy,
                         "min_overall_delta": self.settings.skill_optimization_min_overall_delta,
                         "minimum_independent_validation_cases": (
                             self.settings.skill_optimization_minimum_independent_validation_cases
@@ -799,6 +929,7 @@ class OptimizationExperimentService:
                 session, "skill_optimization_advance", {"experiment_id": item.id}
             )
             session.flush()
+            session.refresh(item)
             session.expunge(item)
             return item
 
@@ -943,14 +1074,15 @@ class OptimizationExperimentService:
         runner_config: dict[str, Any],
         workspace: Path,
         prompt: str,
+        attempts: int = 3,
     ) -> Any:
-        """Run one prompt with three total attempts and exponential backoff."""
+        """Run one prompt with a frozen attempt count and exponential backoff."""
 
-        for attempt in range(3):
+        for attempt in range(attempts):
             try:
                 return runner.execute(runner_config, workspace, prompt)
             except AgentRunnerError:
-                if attempt == 2:
+                if attempt == attempts - 1:
                     raise
                 self._optimizer_backoff(float(2**attempt))
         raise AssertionError("unreachable")
@@ -1010,13 +1142,20 @@ class OptimizationExperimentService:
         role: str,
         prompt_version: str,
         candidate_count: int,
+        execution_attempts: int = 3,
+        format_repair_enabled: bool = True,
     ) -> dict[str, Any]:
         result = self._execute_optimizer_runner(
-            runner, runner_config, workspace, prompt
+            runner, runner_config, workspace, prompt, attempts=execution_attempts
         )
         try:
             parsed = _decode_optimizer_json(result.final_report)
         except _OptimizerJSONDecodeError:
+            if not format_repair_enabled:
+                raise AnalystBenchError(
+                    "optimizer_output_invalid",
+                    "Optimizer 未返回有效 JSON，且本实验未启用格式修复。",
+                ) from None
             repair_prompt = (
                 f"Format-repair request for role {role}, prompt version "
                 f"{prompt_version}. Preserve the proposed meaning, but return one "
@@ -1027,7 +1166,11 @@ class OptimizationExperimentService:
                 f"{result.final_report[:8000]}"
             )
             repaired = self._execute_optimizer_runner(
-                runner, runner_config, workspace, repair_prompt
+                runner,
+                runner_config,
+                workspace,
+                repair_prompt,
+                attempts=execution_attempts,
             )
             try:
                 parsed = _decode_optimizer_json(repaired.final_report)
@@ -1053,10 +1196,15 @@ class OptimizationExperimentService:
         skill_root: Path,
         train_evidence: dict[str, Any],
         candidate_count: int,
+        role_specs: list[Mapping[str, str]] | None = None,
+        execution_attempts: int = 3,
+        format_repair_enabled: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         role_outputs: list[dict[str, Any]] = []
         role_errors: list[dict[str, str]] = []
-        for role_index, role_spec in enumerate(OPTIMIZER_ROLE_SPECS, start=1):
+        for role_index, role_spec in enumerate(
+            role_specs or list(OPTIMIZER_ROLE_SPECS), start=1
+        ):
             prompt = self._role_prompt(
                 instruction=instruction,
                 role_spec=role_spec,
@@ -1075,6 +1223,8 @@ class OptimizationExperimentService:
                         role=role_spec["role"],
                         prompt_version=role_spec["prompt_version"],
                         candidate_count=candidate_count,
+                        execution_attempts=execution_attempts,
+                        format_repair_enabled=format_repair_enabled,
                     )
                 )
             except AgentRunnerError as exc:
@@ -1199,8 +1349,6 @@ class OptimizationExperimentService:
     def _rejected_history(
         self,
         experiment_id: str,
-        *,
-        limit: int = 10,
     ) -> list[dict[str, Any]]:
         with transaction(self.session_factory) as session:
             experiment = session.get(OptimizationExperiment, experiment_id)
@@ -1248,7 +1396,6 @@ class OptimizationExperimentService:
                     )
                     .where(*conditions)
                     .order_by(CandidateMutation.created_at.desc())
-                    .limit(limit)
                 )
             )
         return [
@@ -1338,6 +1485,12 @@ class OptimizationExperimentService:
                 )
             )
             runner = create_runner(runner_id)
+            selected_roles = policy_config.get(
+                "optimizer_roles", [item["role"] for item in OPTIMIZER_ROLE_SPECS]
+            )
+            role_specs = [
+                item for item in OPTIMIZER_ROLE_SPECS if item["role"] in selected_roles
+            ]
             role_outputs, role_errors = self._run_optimizer_analysts(
                 runner=runner,
                 runner_config=runner_config,
@@ -1346,6 +1499,13 @@ class OptimizationExperimentService:
                 skill_root=skill_root,
                 train_evidence=train_evidence,
                 candidate_count=candidate_count,
+                role_specs=role_specs,
+                execution_attempts=int(
+                    policy_config.get("optimizer_execution_attempts", 3)
+                ),
+                format_repair_enabled=bool(
+                    policy_config.get("format_repair_enabled", True)
+                ),
             )
         selected = _merge_role_patches(role_outputs, candidate_count)
         with transaction(self.session_factory) as session:
@@ -1514,11 +1674,7 @@ class OptimizationExperimentService:
                     self.settings.skill_optimization_screening_case_count,
                 )
             )
-            screening_paths = (
-                optimization_paths
-                if snapshot.mode == "development_regression"
-                else optimization_paths[:screening_count]
-            )
+            screening_paths = optimization_paths[:screening_count]
             return (
                 snapshot.dataset_key,
                 validation_paths,
@@ -1574,6 +1730,9 @@ class OptimizationExperimentService:
         )
         for repeat_index in repeat_indices:
             manifest = {
+                "experiment_id": experiment.id,
+                "epoch_id": epoch.id,
+                "candidate_mutation_id": candidate_mutation_id,
                 "dataset_key": dataset_key,
                 "case_paths": case_paths,
                 "method_id": variant.materialized_method_id,
@@ -1631,6 +1790,22 @@ class OptimizationExperimentService:
                 judge_configuration=judge_configuration,
             )
             with transaction(self.session_factory) as session:
+                existing_for_submission = session.scalar(
+                    select(OptimizationRunGroup).where(
+                        OptimizationRunGroup.evaluation_submission_id
+                        == submission.id
+                    )
+                )
+                if existing_for_submission is not None:
+                    if (
+                        existing_for_submission.experiment_id != experiment.id
+                        or existing_for_submission.run_config_hash != run_hash
+                    ):
+                        raise AnalystBenchError(
+                            "optimization_run_group_conflict",
+                            "同一评测批次已绑定到不同的 Run Group 配置。",
+                        )
+                    continue
                 session.add(
                     OptimizationRunGroup(
                         id=str(uuid4()),
@@ -2082,6 +2257,19 @@ class OptimizationExperimentService:
                         -5.0,
                     )
                 ),
+                critical_dimensions=screening_policy.get(
+                    "critical_dimensions", ["root_cause", "classification"]
+                ),
+                protected_guardrail_metrics=screening_policy.get(
+                    "protected_guardrail_metrics",
+                    ["forbidden_hit_count", "missing_chain_count"],
+                ),
+                reject_failure_increase=bool(
+                    screening_policy.get("reject_failure_increase", True)
+                ),
+                reject_new_failure_tags=bool(
+                    screening_policy.get("reject_new_failure_tags", True)
+                ),
             )
             self._save_comparison(
                 experiment,
@@ -2213,12 +2401,25 @@ class OptimizationExperimentService:
             critical_family_max_regression=float(
                 policy.get("critical_family_max_regression", -2.0)
             ),
-            require_token_usage=True,
+            require_token_usage=bool(policy.get("require_token_usage", True)),
             min_candidate_win_probability=float(
                 policy.get("min_candidate_win_probability", 0.0)
             ),
             require_bootstrap_lower_bound_positive=bool(
                 policy.get("require_bootstrap_lower_bound_positive", True)
+            ),
+            critical_dimensions=policy.get(
+                "critical_dimensions", ["root_cause", "classification"]
+            ),
+            protected_guardrail_metrics=policy.get(
+                "protected_guardrail_metrics",
+                ["forbidden_hit_count", "missing_chain_count"],
+            ),
+            reject_failure_increase=bool(
+                policy.get("reject_failure_increase", True)
+            ),
+            reject_new_failure_tags=bool(
+                policy.get("reject_new_failure_tags", True)
             ),
         )
         self._save_comparison(
@@ -3154,6 +3355,265 @@ class OptimizationExperimentService:
             session.expunge(item)
             return item
 
+    def delete(self, experiment_id: str) -> dict[str, int]:
+        """Delete one inactive experiment and all data owned by it."""
+
+        self.registry._require_enabled()
+        quarantined: list[tuple[Path, Path]] = []
+        workspace_roots: list[Path] = []
+        committed = False
+        try:
+            with transaction(self.session_factory) as session:
+                if session.get_bind().dialect.name == "sqlite":
+                    session.execute(text("BEGIN IMMEDIATE"))
+                experiment = session.get(OptimizationExperiment, experiment_id)
+                if experiment is None:
+                    raise AnalystBenchError(
+                        "optimization_experiment_not_found",
+                        "找不到实验。",
+                        status_code=404,
+                    )
+                if experiment.status == "running":
+                    raise AnalystBenchError(
+                        "optimization_experiment_delete_running",
+                        "实验仍在运行，请先取消并等待任务停止。",
+                        status_code=409,
+                    )
+
+                run_groups = list(
+                    session.scalars(
+                        select(OptimizationRunGroup).where(
+                            OptimizationRunGroup.experiment_id == experiment_id
+                        )
+                    )
+                )
+                submission_ids = {
+                    group.evaluation_submission_id for group in run_groups
+                }
+                for submission in session.scalars(
+                    select(EvaluationSubmission).where(
+                        EvaluationSubmission.purpose == "skill_optimization"
+                    )
+                ):
+                    try:
+                        context = json.loads(
+                            submission.optimization_context_json or "{}"
+                        )
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if (
+                        isinstance(context, dict)
+                        and context.get("experiment_id") == experiment_id
+                    ):
+                        submission_ids.add(submission.id)
+                submissions = (
+                    list(
+                        session.scalars(
+                            select(EvaluationSubmission).where(
+                                EvaluationSubmission.id.in_(submission_ids)
+                            )
+                        )
+                    )
+                    if submission_ids
+                    else []
+                )
+                if any(
+                    submission.status not in TERMINAL_SUBMISSION_STATES
+                    for submission in submissions
+                ):
+                    raise AnalystBenchError(
+                        "optimization_experiment_delete_running",
+                        "实验仍有评测批次在排队或运行，请先取消并等待任务停止。",
+                        status_code=409,
+                    )
+
+                case_runs = (
+                    list(
+                        session.scalars(
+                            select(EvaluationSubmissionCaseRun).where(
+                                EvaluationSubmissionCaseRun.submission_id.in_(
+                                    submission_ids
+                                )
+                            )
+                        )
+                    )
+                    if submission_ids
+                    else []
+                )
+                case_run_ids = {case_run.id for case_run in case_runs}
+                method_runs = (
+                    list(
+                        session.scalars(
+                            select(EvaluationSubmissionMethodRun).where(
+                                EvaluationSubmissionMethodRun.case_run_id.in_(
+                                    case_run_ids
+                                )
+                            )
+                        )
+                    )
+                    if case_run_ids
+                    else []
+                )
+                if any(
+                    method_run.status in {"running", "cancelling"}
+                    for method_run in method_runs
+                ):
+                    raise AnalystBenchError(
+                        "optimization_experiment_delete_running",
+                        "实验仍有命令在运行，请等待任务停止。",
+                        status_code=409,
+                    )
+                method_run_ids = {method_run.id for method_run in method_runs}
+
+                epoch_ids = set(
+                    session.scalars(
+                        select(OptimizationEpoch.id).where(
+                            OptimizationEpoch.experiment_id == experiment_id
+                        )
+                    )
+                )
+                candidate_ids = (
+                    set(
+                        session.scalars(
+                            select(CandidateMutation.id).where(
+                                CandidateMutation.epoch_id.in_(epoch_ids)
+                            )
+                        )
+                    )
+                    if epoch_ids
+                    else set()
+                )
+                identifiers = (
+                    {experiment_id}
+                    | submission_ids
+                    | case_run_ids
+                    | method_run_ids
+                    | epoch_ids
+                    | candidate_ids
+                )
+                related_jobs = [
+                    job
+                    for job in session.scalars(select(Job))
+                    if self.submissions._job_references(
+                        job.payload_json, identifiers
+                    )
+                ]
+                if any(job.status == "running" for job in related_jobs):
+                    raise AnalystBenchError(
+                        "optimization_experiment_delete_running",
+                        "实验仍有后台任务在运行，请稍后重试删除。",
+                        status_code=409,
+                    )
+
+                run_directories = {
+                    self.submissions._safe_submission_run_directory(
+                        case_run.run_directory
+                    )
+                    for case_run in case_runs
+                }
+                for run_directory in sorted(
+                    run_directories, key=lambda value: value.as_posix()
+                ):
+                    if not run_directory.exists():
+                        continue
+                    if not run_directory.is_dir():
+                        raise AnalystBenchError(
+                            "evaluation_submission_delete_path_invalid",
+                            "批次结果路径不是目录，已拒绝自动删除。",
+                            status_code=409,
+                        )
+                    quarantine = run_directory.with_name(
+                        f".{run_directory.name}.delete-{uuid4().hex}"
+                    )
+                    run_directory.rename(quarantine)
+                    quarantined.append((run_directory, quarantine))
+
+                workspace_roots = [
+                    self.settings.workspace_root_path / "evaluation" / submission_id
+                    for submission_id in submission_ids
+                ]
+                for job in related_jobs:
+                    session.delete(job)
+                session.execute(
+                    sql_delete(OptimizationSignal).where(
+                        OptimizationSignal.experiment_id == experiment_id
+                    )
+                )
+                session.execute(
+                    sql_delete(CandidateComparison).where(
+                        CandidateComparison.experiment_id == experiment_id
+                    )
+                )
+                session.execute(
+                    sql_delete(DecisionRecord).where(
+                        DecisionRecord.experiment_id == experiment_id
+                    )
+                )
+                session.execute(
+                    sql_delete(OptimizationEvent).where(
+                        OptimizationEvent.experiment_id == experiment_id
+                    )
+                )
+                session.execute(
+                    sql_delete(OptimizationRunGroup).where(
+                        OptimizationRunGroup.experiment_id == experiment_id
+                    )
+                )
+                if candidate_ids:
+                    session.execute(
+                        sql_delete(CandidateMutation).where(
+                            CandidateMutation.id.in_(candidate_ids)
+                        )
+                    )
+                if epoch_ids:
+                    session.execute(
+                        sql_delete(OptimizationEpoch).where(
+                            OptimizationEpoch.id.in_(epoch_ids)
+                        )
+                    )
+                if method_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmissionMethodRun).where(
+                            EvaluationSubmissionMethodRun.id.in_(method_run_ids)
+                        )
+                    )
+                if case_run_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmissionCaseRun).where(
+                            EvaluationSubmissionCaseRun.id.in_(case_run_ids)
+                        )
+                    )
+                if submission_ids:
+                    session.execute(
+                        sql_delete(EvaluationSubmission).where(
+                            EvaluationSubmission.id.in_(submission_ids)
+                        )
+                    )
+                session.delete(experiment)
+            committed = True
+
+            deleted_directories = 0
+            for _original, quarantine in quarantined:
+                shutil.rmtree(quarantine, ignore_errors=True)
+                if not quarantine.exists():
+                    deleted_directories += 1
+            for workspace_root in workspace_roots:
+                if workspace_root.is_dir():
+                    shutil.rmtree(workspace_root, ignore_errors=True)
+            return {
+                "experiments_deleted": 1,
+                "submissions_deleted": len(submission_ids),
+                "case_runs_deleted": len(case_run_ids),
+                "method_runs_deleted": len(method_run_ids),
+                "local_directories_deleted": deleted_directories,
+            }
+        except Exception:
+            if not committed:
+                for original, quarantine in reversed(quarantined):
+                    if quarantine.exists() and not original.exists():
+                        quarantine.rename(original)
+            raise
+
     def resume(self, experiment_id: str) -> OptimizationExperiment:
         self.registry._require_enabled()
         self._verify_snapshot(experiment_id)
@@ -3201,6 +3661,7 @@ class OptimizationExperimentService:
                 )
             )
             session.flush()
+            session.refresh(item)
             session.expunge(item)
             return item
 

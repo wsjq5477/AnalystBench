@@ -45,8 +45,9 @@ class SemanticJudge:
         self.settings = settings
         self.runner_id = runner_id
         self.configuration = {
-            "timeout_seconds": 600,
+            "timeout_seconds": 3600,
             "max_output_bytes": 2 * 1024 * 1024,
+            **({"environment_mode": "local"} if runner_id == "claude" else {}),
             **(configuration or {}),
         }
         self.audit: dict[str, Any] = {}

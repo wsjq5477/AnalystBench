@@ -21,8 +21,16 @@ test("Skill optimization exposes score-backed epoch summaries and safe lifecycle
   assert.match(app, /epoch\.summary\.cumulative_delta/);
   assert.match(app, /optimizationTokenChanges\(candidate\.change_stats\)/);
   assert.match(app, /candidate\.intent\.change_type/);
+  assert.match(app, /结构化 Patch（实际修改内容）/);
+  assert.match(app, /文件 Diff（应用后的结果）/);
+  assert.match(app, /candidateScoreSummary\(candidate\)\.baseline_score/);
+  assert.match(app, /candidateScoreSummary\(candidate\)\.candidate_score/);
+  assert.match(app, /运行输出 Token 增长阈值/);
+  assert.match(app, /Skill 内容没有 Token 上限/);
   assert.match(app, /导出 JSON/);
   assert.match(app, /环境预检/);
+  assert.match(app, /删除实验/);
+  assert.match(app, /optimizationDeleting/);
   assert.match(app, /原始来源目录不会被修改/);
   assert.match(app, /显式回滚/);
   assert.match(app, /更早 Epoch/);
@@ -55,8 +63,15 @@ test("Skill optimization exposes score-backed epoch summaries and safe lifecycle
   assert.match(options, /validation_case_paths:\s*form\.data_mode/);
   assert.match(options, /hidden_test_case_paths:\s*form\.data_mode/);
   assert.match(options, /prospective_holdout_case_paths:\s*form\.data_mode/);
+  assert.match(options, /deleteOptimizationExperiment\(experiment\)/);
+  assert.match(options, /专属评测数据将被永久删除/);
+  assert.match(options, /value === null \|\| value === undefined \|\| value === ""/);
+  assert.match(options, /candidateScoreSummary\(candidate\)/);
+  assert.match(options, /optimizationPatchText\(value\)/);
 
   assert.match(api, /skill-optimization\/experiments\/\$\{experimentId\}\/export/);
+  assert.match(api, /deleteOptimizationExperiment\(experimentId\)/);
+  assert.match(api, /method: "delete"/);
   assert.match(api, /responseType: "blob"/);
   assert.match(api, /skills\/\$\{skillId\}\/versions\/\$\{versionId\}\/export/);
   assert.match(api, /bindings\/\$\{targetId\}\/rollback/);

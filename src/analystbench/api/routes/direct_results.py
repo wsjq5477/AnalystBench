@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -159,6 +159,32 @@ def _result_date(data: dict[str, Any], rel_path: Path) -> str:
     return ""
 
 
+def _result_sort_key(data: dict[str, Any], rel_path: Path) -> str:
+    """Return a stable, second-or-better precision key for latest-run comparisons."""
+    timestamp = ""
+    if rel_path.name == "result.json" and len(rel_path.parts) >= 6 and rel_path.parts[3] == "runs":
+        timestamp = rel_path.parts[4]
+    elif rel_path.name == "result.json" and len(rel_path.parts) >= 4:
+        timestamp = rel_path.parts[3]
+
+    digits = "".join(char for char in timestamp if char.isdigit())
+    if len(digits) >= 8:
+        return digits[:20].ljust(20, "0")
+
+    for field in ("completed_at", "created_at", "started_at"):
+        value = data.get(field)
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed.strftime("%Y%m%d%H%M%S%f")
+    return ""
+
+
 def _generation_durations(data: dict[str, Any]) -> dict[str, float]:
     durations: dict[str, float] = {}
     generation = data.get("generation") or {}
@@ -205,6 +231,11 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     daily_case_durations: dict[
         str, dict[str, dict[str, dict[str, list[float]]]]
     ] = {}  # date > ts > cat/case_dir > candidate -> [duration_ms]
+    latest_results: dict[
+        str,
+        dict[str, dict[str, dict[str, tuple[str, float, float | None]]]],
+    ] = {}  # ts > cat > case_dir > candidate -> (sort_key, score, duration_ms)
+    global_latest_run = ""
 
     if formal_dir.is_dir():
         for json_file in formal_dir.rglob("result.json"):
@@ -231,6 +262,9 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             cat_key = rel_path.parts[1]
             case_dir = rel_path.parts[2]
             result_date = _result_date(data, rel_path)
+            result_sort_key = _result_sort_key(data, rel_path)
+            if result_sort_key > global_latest_run:
+                global_latest_run = result_sort_key
 
             # Extract test_set/category names from case.json or result data
             case_obj = data.get("case") or data.get("case_source") or {}
@@ -273,6 +307,26 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                     durations.setdefault(ts_key, {}).setdefault(cat_key, {}).setdefault(
                         case_dir, {}
                     ).setdefault(candidate_name, []).append(float(duration))
+                normalized_duration = (
+                    float(duration)
+                    if isinstance(duration, (int, float))
+                    and not isinstance(duration, bool)
+                    and duration >= 0
+                    else None
+                )
+                if result_sort_key:
+                    latest_for_candidate = (
+                        latest_results.setdefault(ts_key, {})
+                        .setdefault(cat_key, {})
+                        .setdefault(case_dir, {})
+                    )
+                    current_latest = latest_for_candidate.get(candidate_name)
+                    if current_latest is None or result_sort_key >= current_latest[0]:
+                        latest_for_candidate[candidate_name] = (
+                            result_sort_key,
+                            score,
+                            normalized_duration,
+                        )
                 if result_date:
                     case_key = f"{cat_key}/{case_dir}"
                     daily_case_scores.setdefault(result_date, {}).setdefault(ts_key, {}).setdefault(
@@ -318,6 +372,47 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     # Build result structure
     def _avg(lst: list[float]) -> float:
         return sum(lst) / len(lst) if lst else 0.0
+
+    def _latest_case_metrics(
+        ts_key: str,
+        cat_key: str,
+        case_dir: str,
+        candidate_name: str,
+    ) -> tuple[float, float | None, str]:
+        latest = (
+            latest_results.get(ts_key, {})
+            .get(cat_key, {})
+            .get(case_dir, {})
+            .get(candidate_name)
+        )
+        if latest is not None:
+            return latest[1], latest[2], latest[0]
+        return (
+            _avg(scores[ts_key][cat_key][case_dir][candidate_name]),
+            None,
+            "",
+        )
+
+    def _candidate_view(
+        candidate_name: str,
+        average_scores: list[float],
+        average_durations: list[float],
+        latest_scores: list[float],
+        latest_durations: list[float],
+        latest_run_keys: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "name": candidate_name,
+            "avg_score": round(_avg(average_scores), 2),
+            "avg_duration_ms": (
+                round(_avg(average_durations)) if average_durations else None
+            ),
+            "latest_score": round(_avg(latest_scores or average_scores), 2),
+            "latest_duration_ms": (
+                round(_avg(latest_durations)) if latest_durations else None
+            ),
+            "latest_run_key": max(latest_run_keys, default=""),
+        }
 
     def _daily_rows(test_set: str | None = None) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -391,14 +486,22 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
         categories: list[dict[str, Any]] = []
         ts_candidate_scores: dict[str, list[float]] = {}
         ts_candidate_durations: dict[str, list[float]] = {}
+        ts_candidate_latest_scores: dict[str, list[float]] = {}
+        ts_candidate_latest_durations: dict[str, list[float]] = {}
+        ts_candidate_latest_runs: dict[str, list[str]] = {}
         for cat_key in sorted(scores[ts_key].keys()):
             cat_info = cat_data.get(f"{ts_key}/{cat_key}", {"key": cat_key, "name": cat_key})
             case_dirs = scores[ts_key][cat_key]
             # Category-level: average across all case_dirs for each candidate
             cat_candidate_scores: dict[str, list[float]] = {}
             cat_candidate_durations: dict[str, list[float]] = {}
+            cat_candidate_latest_scores: dict[str, list[float]] = {}
+            cat_candidate_latest_durations: dict[str, list[float]] = {}
+            cat_candidate_latest_runs: dict[str, list[str]] = {}
+            cases: list[dict[str, Any]] = []
             case_count = len(case_dirs)
             for case_dir in case_dirs:
+                case_candidates: list[dict[str, Any]] = []
                 for c_name in case_dirs[case_dir]:
                     score_avg = _avg(case_dirs[case_dir][c_name])
                     if c_name not in cat_candidate_scores:
@@ -418,16 +521,53 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                         cat_candidate_durations.setdefault(c_name, []).append(duration_avg)
                         ts_candidate_durations.setdefault(c_name, []).append(duration_avg)
 
+                    latest_score, latest_duration, latest_run_key = (
+                        _latest_case_metrics(ts_key, cat_key, case_dir, c_name)
+                    )
+                    cat_candidate_latest_scores.setdefault(c_name, []).append(
+                        latest_score
+                    )
+                    ts_candidate_latest_scores.setdefault(c_name, []).append(
+                        latest_score
+                    )
+                    if latest_duration is not None:
+                        cat_candidate_latest_durations.setdefault(c_name, []).append(
+                            latest_duration
+                        )
+                        ts_candidate_latest_durations.setdefault(c_name, []).append(
+                            latest_duration
+                        )
+                    if latest_run_key:
+                        cat_candidate_latest_runs.setdefault(c_name, []).append(
+                            latest_run_key
+                        )
+                        ts_candidate_latest_runs.setdefault(c_name, []).append(
+                            latest_run_key
+                        )
+                    case_candidates.append(
+                        _candidate_view(
+                            c_name,
+                            case_dirs[case_dir][c_name],
+                            duration_values,
+                            [latest_score],
+                            [latest_duration] if latest_duration is not None else [],
+                            [latest_run_key] if latest_run_key else [],
+                        )
+                    )
+                case_candidates.sort(
+                    key=lambda item: all_candidate_names.index(item["name"])
+                )
+                cases.append({"key": case_dir, "candidates": case_candidates})
+
             cat_candidates = [
-                {
-                    "name": c_name,
-                    "avg_score": round(_avg(cat_candidate_scores.get(c_name, [])), 2),
-                    "avg_duration_ms": (
-                        round(_avg(cat_candidate_durations[c_name]))
-                        if c_name in cat_candidate_durations
-                        else None
-                    ),
-                }
+                _candidate_view(
+                    c_name,
+                    cat_candidate_scores.get(c_name, []),
+                    cat_candidate_durations.get(c_name, []),
+                    cat_candidate_latest_scores.get(c_name, []),
+                    cat_candidate_latest_durations.get(c_name, []),
+                    cat_candidate_latest_runs.get(c_name, []),
+                )
                 for c_name in all_candidate_names
                 if c_name in cat_candidate_scores
             ]
@@ -436,20 +576,20 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                     "key": cat_info["key"],
                     "name": cat_info["name"],
                     "case_count": case_count,
+                    "cases": cases,
                     "candidates": cat_candidates,
                 }
             )
 
         ts_candidates = [
-            {
-                "name": c_name,
-                "avg_score": round(_avg(ts_candidate_scores.get(c_name, [])), 2),
-                "avg_duration_ms": (
-                    round(_avg(ts_candidate_durations[c_name]))
-                    if c_name in ts_candidate_durations
-                    else None
-                ),
-            }
+            _candidate_view(
+                c_name,
+                ts_candidate_scores.get(c_name, []),
+                ts_candidate_durations.get(c_name, []),
+                ts_candidate_latest_scores.get(c_name, []),
+                ts_candidate_latest_durations.get(c_name, []),
+                ts_candidate_latest_runs.get(c_name, []),
+            )
             for c_name in all_candidate_names
             if c_name in ts_candidate_scores
         ]
@@ -463,16 +603,39 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             }
         )
 
+    global_latest_scores: dict[str, list[float]] = {}
+    global_latest_durations: dict[str, list[float]] = {}
+    global_candidate_latest_runs: dict[str, list[str]] = {}
+    for ts_key in scores:
+        for cat_key in scores[ts_key]:
+            for case_dir, case_scores in scores[ts_key][cat_key].items():
+                for candidate_name in case_scores:
+                    latest_score, latest_duration, latest_run_key = (
+                        _latest_case_metrics(
+                            ts_key, cat_key, case_dir, candidate_name
+                        )
+                    )
+                    global_latest_scores.setdefault(candidate_name, []).append(
+                        latest_score
+                    )
+                    if latest_duration is not None:
+                        global_latest_durations.setdefault(candidate_name, []).append(
+                            latest_duration
+                        )
+                    if latest_run_key:
+                        global_candidate_latest_runs.setdefault(
+                            candidate_name, []
+                        ).append(latest_run_key)
+
     global_candidates = [
-        {
-            "name": c_name,
-            "avg_score": round(_avg(candidate_scores_global[c_name]), 2),
-            "avg_duration_ms": (
-                round(_avg(candidate_durations_global[c_name]))
-                if c_name in candidate_durations_global
-                else None
-            ),
-        }
+        _candidate_view(
+            c_name,
+            candidate_scores_global[c_name],
+            candidate_durations_global.get(c_name, []),
+            global_latest_scores.get(c_name, []),
+            global_latest_durations.get(c_name, []),
+            global_candidate_latest_runs.get(c_name, []),
+        )
         for c_name in all_candidate_names
     ]
 
@@ -480,6 +643,7 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
         "test_sets": result_test_sets,
         "candidates": global_candidates,
         "daily_scores": _daily_rows(),
+        "global_latest_run": global_latest_run,
     }
 
 

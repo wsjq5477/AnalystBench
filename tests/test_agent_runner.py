@@ -16,6 +16,7 @@ def test_build_command_resolves_executable_from_path(monkeypatch) -> None:
 
     assert command[0] == resolved
     assert command[1:4] == ["-p", "--output-format", "json"]
+    assert "--no-session-persistence" in command
     assert "prompt" not in command
 
 
@@ -57,6 +58,33 @@ def test_execute_uses_one_time_isolated_home_and_preserves_explicit_credentials(
     assert environment["ANALYSTBENCH_ISOLATED_HOME"] == "1"
     assert not isolated_home.exists()
     assert result.final_report == "done"
+
+
+def test_execute_local_claude_reuses_user_auth_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_home = tmp_path / "real-home"
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"result":"done"}', stderr="")
+
+    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr("analystbench.execution.runner.subprocess.run", fake_run)
+
+    CommandAgentRunner("claude").execute(
+        {"environment_mode": "local"}, workspace, "prompt"
+    )
+
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["HOME"] == str(real_home)
+    assert environment["CLAUDE_CONFIG_DIR"] == str(real_home / ".claude")
+    assert "ANALYSTBENCH_ISOLATED_HOME" not in environment
 
 
 def test_execute_classifies_claude_not_logged_in(monkeypatch, tmp_path: Path) -> None:

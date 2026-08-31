@@ -1,6 +1,7 @@
 """Controlled non-interactive claude and OpenCode subprocess runners."""
 
 import json
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -72,7 +73,14 @@ class CommandAgentRunner:
         if self.runner_id == "claude":
             # In print mode claude accepts the prompt on stdin, which avoids the
             # operating system command-line length limit.
-            command = [executable, *extra_args, "-p", "--output-format", "json"]
+            command = [
+                executable,
+                *extra_args,
+                "-p",
+                "--output-format",
+                "json",
+                "--no-session-persistence",
+            ]
             if configuration.get("environment_mode") == "bare":
                 command.append("--bare")
             allowed_tools = configuration.get("allowed_tools", ["Read", "Grep", "Glob"])
@@ -95,17 +103,24 @@ class CommandAgentRunner:
         self, configuration: dict[str, Any], workspace: Path, prompt: str
     ) -> AgentRunResult:
         command = self.build_command(configuration, workspace, prompt)
-        timeout_seconds = int(configuration.get("timeout_seconds", 1800))
+        timeout_seconds = int(configuration.get("timeout_seconds", 21600))
         max_output_bytes = int(configuration.get("max_output_bytes", 10 * 1024 * 1024))
+        local_environment: dict[str, str] | None = None
+        if self.runner_id == "claude" and configuration.get("environment_mode") == "local":
+            configured_directory = os.environ.get("CLAUDE_CONFIG_DIR")
+            claude_config_directory = (
+                Path(configured_directory).expanduser().resolve()
+                if configured_directory
+                else Path.home().joinpath(".claude").resolve()
+            )
+            local_environment = os.environ.copy()
+            local_environment["CLAUDE_CONFIG_DIR"] = str(claude_config_directory)
         try:
-            with tempfile.TemporaryDirectory(
-                prefix="analystbench-agent-home-",
-                dir=workspace.parent,
-            ) as isolated_home:
+            if local_environment is not None:
                 process = subprocess.run(
                     command,
                     cwd=workspace,
-                    env=isolated_process_environment(Path(isolated_home)),
+                    env=local_environment,
                     input=prompt if self.runner_id == "claude" else None,
                     capture_output=True,
                     text=True,
@@ -114,6 +129,23 @@ class CommandAgentRunner:
                     timeout=timeout_seconds,
                     shell=False,
                 )
+            else:
+                with tempfile.TemporaryDirectory(
+                    prefix="analystbench-agent-home-",
+                    dir=workspace.parent,
+                ) as isolated_home:
+                    process = subprocess.run(
+                        command,
+                        cwd=workspace,
+                        env=isolated_process_environment(Path(isolated_home)),
+                        input=prompt if self.runner_id == "claude" else None,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=timeout_seconds,
+                        shell=False,
+                    )
         except FileNotFoundError as exc:
             raise AgentRunnerError("runner_unavailable", str(exc)) from exc
         except subprocess.TimeoutExpired as exc:

@@ -470,7 +470,7 @@ Web 前端、Agent Trace/OTLP 评分、更多 Agent Adapter、远程执行集群
 - [x] Manifest、工作区、报告文件和审计产物使用稳定 Target Key。
 - [x] Target 冻结时解析 `{model}`，实际 argv 精确传递选中模型参数。
 - [x] 使用内部 Materialized Method 复用 P15 隔离、取消、重试、租约和评分编排。
-- [x] JobQueue 原子执行 Worker 全局、Harness 共享和 Target 可选并发门禁。
+- [x] JobQueue 原子执行 Worker 全局与 Model Key 跨 Harness 全局并发门禁。
 - [x] 失败、超时、取消和重试继续保留 P18 实际执行耗时。
 
 验收门禁：两个 Case × 三个 Harness × 多个 Model 能并发生成互相隔离的报告，

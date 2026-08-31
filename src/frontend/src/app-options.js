@@ -81,6 +81,7 @@ export default {
       showSkillDialog: false,
       skillScanning: false,
       skillSaving: false,
+      skillImportingId: "",
       skillForm: { harness_id: "", key: "" },
       evaluationSubmissions: [],
       evaluationSchedules: [],
@@ -108,7 +109,7 @@ export default {
         key: "",
         tool_dir: "",
         command_template: "",
-        timeout_seconds: 1800,
+        timeout_seconds: 21600,
         max_output_bytes: 10485760,
         concurrency_limit: 1,
       },
@@ -121,12 +122,15 @@ export default {
         key: "",
         skill_base_dir: "",
         command_template: "",
-        timeout_seconds: 1800,
-        concurrency_limit: 1,
       },
       showModelDialog: false,
       modelSaving: false,
-      modelForm: { key: "" },
+      editingModelId: "",
+      modelForm: {
+        key: "",
+        timeout_seconds: 21600,
+        concurrency_limit: 1,
+      },
       catalogActionId: "",
       showScheduleDialog: false,
       scheduleSaving: false,
@@ -180,12 +184,15 @@ export default {
       selectedOptimizationBinding: null,
       selectedOptimizationBindingHistory: [],
       optimizationPreflight: null,
+      optimizationCapabilities: null,
+      optimizationAdvancedOpen: false,
       optimizationPreflightRunning: false,
       optimizationExportFormat: "",
       optimizationVersionActionId: "",
       optimizationEpochOffset: 0,
       optimizationEpochLimit: 3,
       optimizationLoading: false,
+      optimizationDeleting: false,
       showOptimizationDialog: false,
       optimizationSaving: false,
       optimizationDialogStep: 1,
@@ -209,6 +216,40 @@ export default {
         max_latency_growth: 0.2,
         max_token_growth: 0.2,
         max_epochs: 1,
+        candidate_count: 2,
+        screening_case_count: 2,
+        validation_repeats: 3,
+        max_repeats: 7,
+        early_stop_patience: 2,
+        edit_budget_schedule: "4,4,3,2,1",
+        screening_minimum_delta: -1,
+        screening_max_latency_growth: 0.5,
+        screening_critical_dimension_min_delta: -5,
+        bootstrap_samples: 2000,
+        bootstrap_confidence: 0.95,
+        critical_dimension_min_delta: 0,
+        critical_family_max_regression: -2,
+        min_candidate_win_probability: 0,
+        require_bootstrap_lower_bound_positive: true,
+        require_token_usage: true,
+        reject_failure_increase: true,
+        reject_new_failure_tags: true,
+        critical_dimensions: "root_cause,classification",
+        protected_guardrail_metrics:
+          "forbidden_hit_count,missing_chain_count",
+        optimizer_roles: [
+          "failure_analyst",
+          "success_analyst",
+          "generalization_analyst",
+          "simplification_analyst",
+        ],
+        optimizer_execution_attempts: 3,
+        format_repair_enabled: true,
+        optimizer_timeout_seconds: 1800,
+        optimizer_max_output_bytes: 10485760,
+        judge_timeout_seconds: 600,
+        judge_max_output_bytes: 2097152,
+        package_test_timeout_seconds: 30,
       },
     };
   },
@@ -1393,6 +1434,35 @@ export default {
         this.skillSaving = false;
       }
     },
+    async importHostSkillVersion(skill) {
+      if (
+        !window.confirm(
+          `从宿主目录重新读取 /${skill.key}，并导入为不可变新版本吗？该操作不会覆盖已有版本，也不会自动切换现有 Target 的 Active 版本。`,
+        )
+      ) {
+        return;
+      }
+      this.skillImportingId = skill.id;
+      try {
+        const existingVersions = await analystBenchApi.listSkillVersions(skill.id);
+        const version = await analystBenchApi.importSkillVersion(skill.id, {
+          source_type: "import",
+          created_by: "web-ui",
+        });
+        const alreadyImported = existingVersions.some(
+          (item) => item.id === version.id,
+        );
+        this.showToast(
+          alreadyImported
+            ? `宿主机当前内容已是 Managed Skill v${version.version}`
+            : `已将宿主机内容导入为 Managed Skill v${version.version}；现有 Active 版本未改变`,
+        );
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "导入 Skill 新版本失败");
+      } finally {
+        this.skillImportingId = "";
+      }
+    },
     openHarnessDialog(harness = null) {
       this.editingHarnessId = harness ? harness.id : "";
       this.harnessForm = harness
@@ -1400,15 +1470,11 @@ export default {
             key: harness.key,
             skill_base_dir: harness.skill_base_dir || "",
             command_template: harness.command_template,
-            timeout_seconds: harness.timeout_seconds,
-            concurrency_limit: harness.concurrency_limit,
           }
         : {
             key: "",
             skill_base_dir: "",
             command_template: "",
-            timeout_seconds: 1800,
-            concurrency_limit: 1,
           };
       this.showHarnessDialog = true;
     },
@@ -1427,8 +1493,6 @@ export default {
         const payload = {
           skill_base_dir: form.skill_base_dir.trim(),
           command_template: form.command_template.trim(),
-          timeout_seconds: form.timeout_seconds,
-          concurrency_limit: form.concurrency_limit,
         };
         const item = this.editingHarnessId
           ? await analystBenchApi.reviseEvaluationHarness(this.editingHarnessId, payload)
@@ -1525,8 +1589,19 @@ export default {
         this.catalogActionId = "";
       }
     },
-    openModelDialog() {
-      this.modelForm = { key: "" };
+    openModelDialog(model = null) {
+      this.editingModelId = model ? model.id : "";
+      this.modelForm = model
+        ? {
+            key: model.key,
+            timeout_seconds: model.timeout_seconds,
+            concurrency_limit: model.concurrency_limit,
+          }
+        : {
+            key: "",
+            timeout_seconds: 21600,
+            concurrency_limit: 1,
+          };
       this.showModelDialog = true;
     },
     async saveEvaluationModel() {
@@ -1537,10 +1612,25 @@ export default {
       }
       this.modelSaving = true;
       try {
-        await analystBenchApi.createEvaluationModel({ key: form.key.trim() });
+        const payload = {
+          timeout_seconds: form.timeout_seconds,
+          concurrency_limit: form.concurrency_limit,
+        };
+        if (this.editingModelId) {
+          await analystBenchApi.reviseEvaluationModel(this.editingModelId, payload);
+        } else {
+          await analystBenchApi.createEvaluationModel({
+            key: form.key.trim(),
+            ...payload,
+          });
+        }
         await this.loadEvaluationCatalog();
         this.showModelDialog = false;
-        this.showToast("模型已保存");
+        this.showToast(
+          this.editingModelId
+            ? "模型限制已保存为新版本，并全局应用"
+            : "模型已保存",
+        );
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "保存模型失败");
       } finally {
@@ -1581,7 +1671,7 @@ export default {
             key: "",
             tool_dir: "",
             command_template: "",
-            timeout_seconds: 1800,
+            timeout_seconds: 21600,
             max_output_bytes: 10485760,
             concurrency_limit: 1,
           };
@@ -2284,16 +2374,18 @@ export default {
     async loadOptimizationWorkspace() {
       this.optimizationLoading = true;
       try {
-        const [skills, targets, experiments] = await Promise.all([
+        const [skills, targets, experiments, capabilities] = await Promise.all([
           analystBenchApi.listSkills(),
           analystBenchApi.listEvaluationTargets(),
           analystBenchApi.listOptimizationExperiments(),
+          analystBenchApi.getOptimizationCapabilities(),
           this.loadLocalCaseTree(),
           this.loadEvaluationCatalog(),
         ]);
         this.skills = skills;
         this.evaluationTargets = targets;
         this.optimizationExperiments = experiments;
+        this.optimizationCapabilities = capabilities;
         this.connection = "connected";
         if (
           !this.selectedOptimizationExperimentId ||
@@ -2511,6 +2603,7 @@ export default {
         .filter((item) => item.ready)
         .map((item) => item.path);
       const defaultCombination = this.optimizationCombinationOptions[0];
+      const defaults = this.optimizationCapabilities?.defaults || {};
       this.optimizationDialogStep = 1;
       this.optimizationForm = {
         name: `Skill 优化 ${new Date().toLocaleDateString()}`,
@@ -2527,11 +2620,75 @@ export default {
         optimizer_instruction:
           "根据失败证据对当前 Skill 做小步、通用、可迁移的优化。不要写入具体 Case 答案。",
         judge_runner: "claude",
-        min_overall_delta: 1,
-        max_latency_growth: 0.2,
-        max_token_growth: 0.2,
-        max_epochs: 1,
+        min_overall_delta: Number(defaults.min_overall_delta ?? 1),
+        max_latency_growth: Number(defaults.max_latency_growth ?? 0.2),
+        max_token_growth: Number(defaults.max_token_growth ?? 0.2),
+        max_epochs: Math.min(1, Number(defaults.max_epochs || 1)),
+        candidate_count: Number(defaults.candidate_count ?? 2),
+        screening_case_count: Number(defaults.screening_case_count ?? 2),
+        validation_repeats: Number(defaults.validation_repeats ?? 3),
+        max_repeats: Number(defaults.max_repeats ?? 7),
+        early_stop_patience: Number(defaults.early_stop_patience ?? 2),
+        edit_budget_schedule: (defaults.edit_budget_schedule || [4, 4, 3, 2, 1]).join(","),
+        screening_minimum_delta: Number(defaults.screening_minimum_delta ?? -1),
+        screening_max_latency_growth: Number(
+          defaults.screening_max_latency_growth ?? 0.5,
+        ),
+        screening_critical_dimension_min_delta: Number(
+          defaults.screening_critical_dimension_min_delta ?? -5,
+        ),
+        bootstrap_samples: Number(defaults.bootstrap_samples ?? 2000),
+        bootstrap_confidence: Number(defaults.bootstrap_confidence ?? 0.95),
+        critical_dimension_min_delta: Number(
+          defaults.critical_dimension_min_delta ?? 0,
+        ),
+        critical_family_max_regression: Number(
+          defaults.critical_family_max_regression ?? -2,
+        ),
+        min_candidate_win_probability: Number(
+          defaults.min_candidate_win_probability ?? 0,
+        ),
+        require_bootstrap_lower_bound_positive:
+          defaults.require_bootstrap_lower_bound_positive ?? true,
+        require_token_usage: defaults.require_token_usage ?? true,
+        reject_failure_increase: defaults.reject_failure_increase ?? true,
+        reject_new_failure_tags: defaults.reject_new_failure_tags ?? true,
+        critical_dimensions: (
+          defaults.critical_dimensions || ["root_cause", "classification"]
+        ).join(","),
+        protected_guardrail_metrics: (
+          defaults.protected_guardrail_metrics || [
+            "forbidden_hit_count",
+            "missing_chain_count",
+          ]
+        ).join(","),
+        optimizer_roles: (
+          this.optimizationCapabilities?.optimizer_roles || [
+            { role: "failure_analyst" },
+            { role: "success_analyst" },
+            { role: "generalization_analyst" },
+            { role: "simplification_analyst" },
+          ]
+        ).map((item) => item.role),
+        optimizer_execution_attempts: Number(
+          defaults.optimizer_execution_attempts ?? 3,
+        ),
+        format_repair_enabled: defaults.format_repair_enabled ?? true,
+        optimizer_timeout_seconds: Number(
+          defaults.optimizer_timeout_seconds ?? 1800,
+        ),
+        optimizer_max_output_bytes: Number(
+          defaults.optimizer_max_output_bytes ?? 10485760,
+        ),
+        judge_timeout_seconds: Number(defaults.judge_timeout_seconds ?? 600),
+        judge_max_output_bytes: Number(
+          defaults.judge_max_output_bytes ?? 2097152,
+        ),
+        package_test_timeout_seconds: Number(
+          defaults.package_test_timeout_seconds ?? 30,
+        ),
       };
+      this.optimizationAdvancedOpen = false;
       this.showOptimizationDialog = true;
     },
     toggleOptimizationCase(casePath) {
@@ -2610,6 +2767,18 @@ export default {
       }
       this.optimizationSaving = true;
       try {
+        const editBudgetSchedule = String(form.edit_budget_schedule)
+          .split(",")
+          .map((item) => Number(item.trim()))
+          .filter((item) => Number.isInteger(item));
+        if (!editBudgetSchedule.length) {
+          throw new Error("每轮最大操作数必须是逗号分隔的整数");
+        }
+        const stringList = (value) =>
+          String(value || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean);
         const resolved = await analystBenchApi.resolveHostSkillCombination({
           harness_id: combination.harness.id,
           model_id: combination.model?.id || null,
@@ -2646,8 +2815,8 @@ export default {
           runner: form.optimizer_runner,
           configuration: {
             executable: form.optimizer_executable,
-            timeout_seconds: 1800,
-            max_output_bytes: 10485760,
+            timeout_seconds: Number(form.optimizer_timeout_seconds),
+            max_output_bytes: Number(form.optimizer_max_output_bytes),
             environment_mode: "local",
             allowed_tools: ["Read", "Grep", "Glob"],
           },
@@ -2662,7 +2831,13 @@ export default {
           key: `${skillKey}-optimizer-${suffix}`,
           execution_profile_id: profile.id,
           prompt_bundle: { instruction: form.optimizer_instruction },
-          config: {},
+          config: {
+            optimizer_roles: form.optimizer_roles,
+            optimizer_execution_attempts: Number(
+              form.optimizer_execution_attempts,
+            ),
+            format_repair_enabled: Boolean(form.format_repair_enabled),
+          },
         });
         const verifier = await analystBenchApi.createVerifierBundle({
           key: `${skillKey}-gate-${suffix}`,
@@ -2673,25 +2848,56 @@ export default {
               "replace",
               "delete",
             ],
-            edit_budget_schedule: [4, 4, 3, 2, 1],
-            max_changed_files: 2,
-            max_added_tokens: 600,
-            max_deleted_tokens: 300,
-            max_single_file_change_ratio: 0.25,
+            edit_budget_schedule: editBudgetSchedule,
             static_validation: {
               content_security_scan: { enabled: true },
               case_leak_scan: { enabled: true },
               referenced_file_check: { enabled: true },
               script_syntax: { enabled: true },
-              package_tests: { enabled: true, max_timeout_seconds: 30 },
+              package_tests: {
+                enabled: true,
+                max_timeout_seconds: Number(form.package_test_timeout_seconds),
+              },
             },
           },
           gate_policy: {
             min_overall_delta: Number(form.min_overall_delta),
             max_latency_growth: Number(form.max_latency_growth),
             max_token_growth: Number(form.max_token_growth),
+            screening_minimum_delta: Number(form.screening_minimum_delta),
+            screening_max_latency_growth: Number(
+              form.screening_max_latency_growth,
+            ),
+            screening_critical_dimension_min_delta: Number(
+              form.screening_critical_dimension_min_delta,
+            ),
+            bootstrap_samples: Number(form.bootstrap_samples),
+            bootstrap_confidence: Number(form.bootstrap_confidence),
+            critical_dimension_min_delta: Number(
+              form.critical_dimension_min_delta,
+            ),
+            critical_family_max_regression: Number(
+              form.critical_family_max_regression,
+            ),
+            min_candidate_win_probability: Number(
+              form.min_candidate_win_probability,
+            ),
+            require_bootstrap_lower_bound_positive: Boolean(
+              form.require_bootstrap_lower_bound_positive,
+            ),
+            require_token_usage: Boolean(form.require_token_usage),
+            reject_failure_increase: Boolean(form.reject_failure_increase),
+            reject_new_failure_tags: Boolean(form.reject_new_failure_tags),
+            critical_dimensions: stringList(form.critical_dimensions),
+            protected_guardrail_metrics: stringList(
+              form.protected_guardrail_metrics,
+            ),
           },
-          judge_config: { runner: form.judge_runner },
+          judge_config: {
+            runner: form.judge_runner,
+            timeout_seconds: Number(form.judge_timeout_seconds),
+            max_output_bytes: Number(form.judge_max_output_bytes),
+          },
         });
         const preflight = await analystBenchApi.runOptimizationPreflight({
           skill_key: skillKey,
@@ -2732,6 +2938,11 @@ export default {
             form.data_mode === "independent_validation"
               ? 1
               : Number(form.max_epochs),
+          candidate_count: Number(form.candidate_count),
+          screening_case_count: Number(form.screening_case_count),
+          validation_repeats: Number(form.validation_repeats),
+          max_repeats: Number(form.max_repeats),
+          early_stop_patience: Number(form.early_stop_patience),
         });
         await analystBenchApi.startOptimizationExperiment(experiment.id);
         this.showOptimizationDialog = false;
@@ -2772,6 +2983,33 @@ export default {
         this.showToast("实验已取消");
       } catch (error) {
         this.showToast(error instanceof Error ? error.message : "取消实验失败");
+      }
+    },
+    async deleteOptimizationExperiment(experiment) {
+      if (
+        !window.confirm(
+          `删除实验“${experiment.name}”吗？实验记录及其专属评测数据将被永久删除。`,
+        )
+      ) {
+        return;
+      }
+      this.optimizationDeleting = true;
+      try {
+        await analystBenchApi.deleteOptimizationExperiment(experiment.id);
+        this.selectedOptimizationExperimentId = "";
+        this.selectedOptimizationDetail = null;
+        this.selectedOptimizationEvents = [];
+        this.selectedOptimizationVersions = [];
+        this.selectedOptimizationBinding = null;
+        this.selectedOptimizationBindingHistory = [];
+        this.optimizationPreflight = null;
+        this.optimizationEpochOffset = 0;
+        await this.loadOptimizationWorkspace();
+        this.showToast("实验已删除");
+      } catch (error) {
+        this.showToast(error instanceof Error ? error.message : "删除实验失败");
+      } finally {
+        this.optimizationDeleting = false;
       }
     },
     async openOptimizationCandidate(candidate) {
@@ -2866,9 +3104,72 @@ export default {
       }[status] || status;
     },
     signedDelta(value) {
+      if (value === null || value === undefined || value === "") return "—";
       const number = Number(value);
       if (!Number.isFinite(number)) return "—";
       return `${number > 0 ? "+" : ""}${number.toFixed(2)}`;
+    },
+    optimizationScore(value) {
+      if (value === null || value === undefined || value === "") return "—";
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return Number.isInteger(number) ? String(number) : number.toFixed(2);
+    },
+    candidateScoreSummary(candidate) {
+      const comparison =
+        this.candidateComparison(candidate, "paired_repeated_validation") ||
+        this.candidateComparison(candidate, "screening");
+      if (!comparison) return null;
+      const metrics = comparison.metrics || {};
+      const score = (key) => {
+        const explicit = metrics[key];
+        if (explicit !== null && explicit !== undefined && explicit !== "") {
+          const number = Number(explicit);
+          if (Number.isFinite(number)) return number;
+        }
+        const values = (metrics.pairs || [])
+          .map((pair) => pair?.[key])
+          .filter(
+            (item) =>
+              item !== null &&
+              item !== undefined &&
+              item !== "" &&
+              Number.isFinite(Number(item)),
+          )
+          .map(Number);
+        return values.length
+          ? values.reduce((total, item) => total + item, 0) / values.length
+          : null;
+      };
+      const baselineScore = score("baseline_score");
+      const candidateScore = score("candidate_score");
+      const rawDelta = metrics.overall_delta;
+      const explicitDelta =
+        rawDelta !== null &&
+        rawDelta !== undefined &&
+        rawDelta !== "" &&
+        Number.isFinite(Number(rawDelta))
+          ? Number(rawDelta)
+          : null;
+      return {
+        stage:
+          comparison.type === "paired_repeated_validation"
+            ? "FULL VALIDATION"
+            : "SCREENING",
+        baseline_score: baselineScore,
+        candidate_score: candidateScore,
+        delta:
+          explicitDelta ??
+          (baselineScore !== null && candidateScore !== null
+            ? candidateScore - baselineScore
+            : null),
+      };
+    },
+    optimizationPatchText(value) {
+      if (!value || typeof value !== "object" || !Object.keys(value).length) {
+        return "未生成结构化 Patch。";
+      }
+      return JSON.stringify(value, null, 2);
     },
     optimizationObjectRows(value) {
       return Object.entries(value || {}).map(([key, item]) => ({

@@ -9,8 +9,13 @@ from sqlalchemy import select
 
 from alembic import command
 from analystbench.api.app import create_app
+from analystbench.catalog.case_library import (
+    ROOT_CATEGORY_CHAIN_STRATEGY,
+    _normalize_structured_reference,
+)
 from analystbench.config import Settings
-from analystbench.db.models import Case, CaseTrace, DatasetVersion
+from analystbench.db.models import Case, CaseDraft, CaseTrace, DatasetVersion
+from analystbench.db.transaction import transaction
 from analystbench.execution.runner import AgentRunnerError
 from analystbench.scoring.reporting import render_markdown
 from analystbench.worker import LocalWorker
@@ -130,6 +135,104 @@ def test_labeled_reference_is_normalized_to_root_category_and_three_equal_chain_
             < 0.01
         )
         assert claims[2]["evidence_keyword"] == "suspend to mem is timeout"
+
+
+def test_root_category_chain_strategy_discards_generated_forbidden_claims() -> None:
+    payload = case_payload()
+    payload["eval_spec_draft"]["scoring_strategy"] = copy.deepcopy(
+        ROOT_CATEGORY_CHAIN_STRATEGY
+    )
+    payload["eval_spec_draft"]["forbidden_claims"] = [
+        {"id": "forbidden-1", "statement": "model invented"}
+    ]
+
+    _normalize_structured_reference(payload)
+
+    assert payload["eval_spec_draft"]["forbidden_claims"] == []
+
+
+def test_publish_renormalizes_legacy_structured_forbidden_claims(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    payload = case_payload()
+    payload["case"]["reference_answer"] = (
+        "问题分类：HM_PANIC_SYSMGR\n"
+        "问题根因：调度问题\n"
+        "证据1：schedule timeout\n"
+        "结论1：调度超时"
+    )
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": payload, "case_key": "legacy-forbidden"},
+        ).json()
+        ready = client.post(
+            f"/api/v1/case-drafts/{created['id']}/answers",
+            json={"answers": [{"question_id": created["questions"][0]["id"], "value": "approved"}]},
+        ).json()
+        assert ready["status"] == "ready"
+
+        session_factory = client.app.state.case_library_service.session_factory
+        with transaction(session_factory) as session:
+            stored = session.get(CaseDraft, created["id"])
+            assert stored is not None
+            working = json.loads(stored.working_json)
+            working["eval_spec_draft"]["forbidden_claims"] = [
+                {
+                    "id": "forbidden-1",
+                    "type": "root_cause",
+                    "statement": "legacy generated item",
+                    "reason": "legacy shape",
+                    "review_required": True,
+                }
+            ]
+            stored.working_json = json.dumps(working, ensure_ascii=False)
+
+        published = client.post(f"/api/v1/case-drafts/{created['id']}:publish")
+        assert published.status_code == 200
+        stored = client.app.state.case_library_service.get_draft(created["id"])
+        normalized = json.loads(stored.working_json)
+        assert normalized["eval_spec_draft"]["forbidden_claims"] == []
+
+
+def test_failed_publish_remains_retryable_and_removes_orphan_case(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/v1/case-drafts",
+            json={"payload": case_payload(), "case_key": "retry-publish"},
+        ).json()
+        ready = client.post(
+            f"/api/v1/case-drafts/{created['id']}/answers",
+            json={"answers": [{"question_id": created["questions"][0]["id"], "value": "approved"}]},
+        ).json()
+        assert ready["status"] == "ready"
+
+        session_factory = client.app.state.case_library_service.session_factory
+        with transaction(session_factory) as session:
+            stored = session.get(CaseDraft, created["id"])
+            assert stored is not None
+            working = json.loads(stored.working_json)
+            working["eval_spec_draft"]["forbidden_claims"] = [
+                {"id": "forbidden-1", "statement": "invalid legacy item"}
+            ]
+            stored.working_json = json.dumps(working, ensure_ascii=False)
+
+        failed = client.post(f"/api/v1/case-drafts/{created['id']}:publish")
+        assert failed.status_code == 400
+        retryable = client.get(f"/api/v1/case-drafts/{created['id']}").json()
+        assert retryable["status"] == "ready"
+        assert retryable["error"]["stage"] == "publish"
+
+        with transaction(session_factory) as session:
+            stored = session.get(CaseDraft, created["id"])
+            assert stored is not None
+            working = json.loads(stored.working_json)
+            working["eval_spec_draft"]["forbidden_claims"] = []
+            stored.working_json = json.dumps(working, ensure_ascii=False)
+
+        published = client.post(f"/api/v1/case-drafts/{created['id']}:publish")
+        assert published.status_code == 200
+        assert published.json()["status"] == "published"
 
 
 def test_case_field_question_explains_claim_and_then_asks_one_approval(
@@ -301,6 +404,7 @@ def test_case_generation_persists_bounded_runner_diagnostics(
 
     class FailingRunner:
         def execute(self, configuration, workspace, prompt):
+            assert configuration["environment_mode"] == "local"
             raise AgentRunnerError(
                 "agent_authentication_required",
                 "Claude CLI 未登录。",

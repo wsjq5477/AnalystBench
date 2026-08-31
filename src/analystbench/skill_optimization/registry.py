@@ -57,13 +57,12 @@ class SkillRegistryService:
 
     def _resolved_skill_limits(
         self, configured: dict[str, Any] | None
-    ) -> tuple[PackageLimits, int]:
+    ) -> PackageLimits:
         values = configured or {}
         allowed = {
             "max_files",
             "max_total_bytes",
             "max_single_file_bytes",
-            "max_skill_tokens",
         }
         unknown = sorted(set(values) - allowed)
         if unknown:
@@ -76,7 +75,6 @@ class SkillRegistryService:
             "max_files": self.limits.max_files,
             "max_total_bytes": self.limits.max_total_bytes,
             "max_single_file_bytes": self.limits.max_single_file_bytes,
-            "max_skill_tokens": self.settings.skill_optimization_max_skill_tokens,
         }
         resolved: dict[str, int] = {}
         for key, maximum in global_values.items():
@@ -93,22 +91,22 @@ class SkillRegistryService:
                     [{"field": key, "requested": raw, "global_maximum": maximum}],
                 )
             resolved[key] = raw
-        return (
-            PackageLimits(
-                max_files=resolved["max_files"],
-                max_total_bytes=resolved["max_total_bytes"],
-                max_single_file_bytes=resolved["max_single_file_bytes"],
-            ),
-            resolved["max_skill_tokens"],
+        return PackageLimits(
+            max_files=resolved["max_files"],
+            max_total_bytes=resolved["max_total_bytes"],
+            max_single_file_bytes=resolved["max_single_file_bytes"],
         )
 
-    def skill_limits(self, skill: Skill) -> tuple[PackageLimits, int]:
+    def skill_limits(self, skill: Skill) -> PackageLimits:
         try:
             configured = json.loads(skill.limits_json or "{}")
         except (TypeError, json.JSONDecodeError):
             configured = {}
         if not isinstance(configured, dict):
             raise AnalystBenchError("skill_limits_invalid", "Skill limits 必须是对象。")
+        # Older registries may have persisted this removed hidden limit. Ignore
+        # it when reading existing Skills so they remain usable after upgrade.
+        configured.pop("max_skill_tokens", None)
         return self._resolved_skill_limits(configured)
 
     def _require_enabled(self) -> None:
@@ -383,6 +381,56 @@ class SkillRegistryService:
             raise
         return item, version
 
+    def resolve_managed_host_skill(
+        self, *, harness_id: str, skill_key: str
+    ) -> tuple[Skill, SkillPackageVersion] | None:
+        """Resolve an already-managed host Skill without rereading its source package.
+
+        The host directory is an import source, not an execution source of truth.
+        Once a Skill is managed, ordinary evaluations and optimization tasks must
+        keep using the immutable Active version even if the host copy is edited.
+        Importing that edit is a separate, explicit action.
+        """
+
+        self._require_enabled()
+        harness, source = self._host_skill_source(
+            harness_id=harness_id, skill_key=skill_key
+        )
+        key = skill_key.strip()
+        with transaction(self.session_factory) as session:
+            existing = session.scalar(select(Skill).where(Skill.skill_key == key))
+            if existing is None:
+                return None
+            expected_source = Path(existing.source_path).expanduser().resolve()
+            if (
+                existing.archived_at is not None
+                or existing.harness_key != harness.harness_key
+                or expected_source != source
+            ):
+                raise AnalystBenchError(
+                    "host_skill_identity_conflict",
+                    "同名 Skill 已由其他 Harness 或宿主路径纳管。",
+                    status_code=409,
+                )
+            initial = session.scalar(
+                select(SkillPackageVersion)
+                .where(
+                    SkillPackageVersion.skill_id == existing.id,
+                    SkillPackageVersion.parent_version_id.is_(None),
+                )
+                .order_by(SkillPackageVersion.version_number)
+                .limit(1)
+            )
+            if initial is None:
+                raise AnalystBenchError(
+                    "host_skill_initial_version_missing",
+                    "已纳管 Skill 缺少初始不可变版本。",
+                    status_code=409,
+                )
+            session.expunge(existing)
+            session.expunge(initial)
+            return existing, initial
+
     def create(
         self,
         *,
@@ -443,7 +491,7 @@ class SkillRegistryService:
                     status_code=403,
                 )
         normalized_limits = dict(limits or {})
-        package_limits, _ = self._resolved_skill_limits(normalized_limits)
+        package_limits = self._resolved_skill_limits(normalized_limits)
         inspect_package(source, package_limits)
         install_path = validate_install_path(
             install_relative_path or f".claude/skills/{key}", skill_key=key
@@ -534,7 +582,7 @@ class SkillRegistryService:
     ) -> SkillPackageVersion:
         self._require_enabled()
         detached_skill = self.get(skill_id)
-        package_limits, _ = self.skill_limits(detached_skill)
+        package_limits = self.skill_limits(detached_skill)
         source_snapshot = inspect_package(
             self._source(source_path or detached_skill.source_path), package_limits
         )
@@ -722,7 +770,7 @@ class SkillRegistryService:
         self.store.materialize(
             skill_id=skill.id, commit=version.git_commit, destination=destination
         )
-        package_limits, _ = self.skill_limits(skill)
+        package_limits = self.skill_limits(skill)
         try:
             frozen_manifest = json.loads(version.manifest_json or "{}")
         except (TypeError, json.JSONDecodeError):
@@ -807,7 +855,7 @@ class SkillRegistryService:
                 commit=version.git_commit,
                 destination=package,
             )
-            package_limits, _ = self.skill_limits(skill)
+            package_limits = self.skill_limits(skill)
             include_modes = any(
                 isinstance(item, dict) and "mode" in item
                 for item in package_files
@@ -1148,7 +1196,7 @@ class SkillRegistryService:
             method = EvaluationMethod(
                 id=str(uuid4()),
                 method_key=f"sv-{variant_hash.removeprefix('sha256:')[:16]}",
-                name=f"{base_method.name} + {skill.invoke_as} v{version.version_number}",
+                name=base_method.method_key,
                 version_number=1,
                 tool_dir=base_method.tool_dir,
                 command_template=command_template,

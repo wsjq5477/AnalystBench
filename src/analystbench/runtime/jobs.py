@@ -9,8 +9,8 @@ from sqlalchemy import and_, case, or_, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from analystbench.db.models import (
-    EvaluationHarness,
     EvaluationMethod,
+    EvaluationModel,
     EvaluationSubmission,
     EvaluationSubmissionMethodRun,
     EvaluationTarget,
@@ -207,38 +207,47 @@ class JobQueue:
         self,
         session: Session,
         method_id: str,
-    ) -> tuple[str, str, int | None, int] | None:
+    ) -> tuple[str | None, int | None] | None:
         row = session.execute(
-            select(EvaluationTarget, EvaluationHarness)
-            .join(EvaluationHarness, EvaluationHarness.id == EvaluationTarget.harness_id)
+            select(EvaluationTarget.model_id)
             .where(EvaluationTarget.materialized_method_id == method_id)
         ).one_or_none()
         if row is None:
             row = session.execute(
-                select(EvaluationTarget, EvaluationHarness)
+                select(EvaluationTarget.model_id)
                 .join(
                     EvaluationVariant,
                     EvaluationVariant.evaluation_target_id == EvaluationTarget.id,
-                )
-                .join(
-                    EvaluationHarness,
-                    EvaluationHarness.id == EvaluationTarget.harness_id,
                 )
                 .where(EvaluationVariant.materialized_method_id == method_id)
             ).one_or_none()
         if row is None:
             return None
-        target, harness = row
-        return target.id, harness.id, target.concurrency_limit, harness.concurrency_limit
+        model_id = row[0]
+        if model_id is None:
+            return None, None
+        model_key = session.scalar(
+            select(EvaluationModel.model_key).where(EvaluationModel.id == model_id)
+        )
+        if model_key is None:
+            return None, None
+        # Capacity is operational, not frozen evaluation identity. The newest
+        # setting for a model key governs every Harness and historical version.
+        concurrency_limit = session.scalar(
+            select(EvaluationModel.concurrency_limit)
+            .where(EvaluationModel.model_key == model_key)
+            .order_by(EvaluationModel.version_number.desc())
+            .limit(1)
+        )
+        return model_key, concurrency_limit
 
     def _active_evaluation_resources(
         self,
         session: Session,
         now: datetime,
-    ) -> tuple[Counter[str], Counter[str], Counter[str]]:
+    ) -> tuple[Counter[str], Counter[str]]:
         active_methods = Counter[str]()
-        active_targets = Counter[str]()
-        active_harnesses = Counter[str]()
+        active_models = Counter[str]()
         jobs = session.scalars(
             select(Job).where(
                 Job.kind == "evaluation_method_run",
@@ -250,20 +259,17 @@ class JobQueue:
         for job in jobs:
             method_id = self._method_id(session, job)
             if method_id is not None:
+                active_methods[method_id] += 1
                 resources = self._target_resources(session, method_id)
-                if resources is None:
-                    active_methods[method_id] += 1
-                else:
-                    target_id, harness_id, _target_limit, _harness_limit = resources
-                    active_targets[target_id] += 1
-                    active_harnesses[harness_id] += 1
-        return active_methods, active_targets, active_harnesses
+                if resources is not None and resources[0] is not None:
+                    active_models[resources[0]] += 1
+        return active_methods, active_models
 
     def _claim_allowed(
         self,
         session: Session,
         job: Job,
-        active_resources: tuple[Counter[str], Counter[str], Counter[str]],
+        active_resources: tuple[Counter[str], Counter[str]],
         now: datetime,
     ) -> bool:
         if job.kind == "skill_optimization_advance":
@@ -271,14 +277,11 @@ class JobQueue:
         method_id = self._method_id(session, job)
         if method_id is None:
             return True
-        active_methods, active_targets, active_harnesses = active_resources
+        active_methods, active_models = active_resources
         target_resources = self._target_resources(session, method_id)
-        if target_resources is not None:
-            target_id, harness_id, target_limit, harness_limit = target_resources
-            return (
-                (target_limit is None or active_targets[target_id] < target_limit)
-                and active_harnesses[harness_id] < harness_limit
-            )
+        if target_resources is not None and target_resources[0] is not None:
+            model_key, model_limit = target_resources
+            return model_limit is None or active_models[model_key] < model_limit
         concurrency_limit = session.scalar(
             select(EvaluationMethod.concurrency_limit).where(EvaluationMethod.id == method_id)
         )

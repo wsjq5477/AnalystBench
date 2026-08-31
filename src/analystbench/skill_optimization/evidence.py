@@ -7,11 +7,6 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Any
 
-MAX_CLAIM_FINDINGS_PER_REPORT = 32
-MAX_CLAIM_FINDINGS_PER_SUMMARY = 64
-MAX_FAILED_CASES = 50
-MAX_METRIC_KEYS = 32
-MAX_SUMMARY_KEYS = 64
 MAX_LABEL_LENGTH = 128
 SAFE_NUMERIC_METRICS = frozenset(
     {
@@ -72,8 +67,6 @@ def _bounded_numeric_metrics(value: object) -> dict[str, float]:
         return {}
     metrics: dict[str, float] = {}
     for raw_name in sorted(set(value).intersection(SAFE_NUMERIC_METRICS)):
-        if len(metrics) >= MAX_METRIC_KEYS:
-            break
         number = _finite_number(value[raw_name])
         if number is not None:
             metrics[_label(raw_name)] = number
@@ -98,7 +91,7 @@ def extract_report_evidence(
     claim_findings: list[dict[str, Any]] = []
     success_patterns: set[str] = set()
     claims = report.get("claims") if isinstance(report.get("claims"), list) else []
-    for claim_index, claim in enumerate(claims[:MAX_CLAIM_FINDINGS_PER_REPORT]):
+    for claim_index, claim in enumerate(claims):
         if not isinstance(claim, dict):
             continue
         dimension = _claim_dimension(claim.get("type"))
@@ -155,7 +148,7 @@ def extract_report_evidence(
         "failure_tags": sorted(failure_tags),
         "metrics": metrics,
         "claim_findings": claim_findings,
-        "success_patterns": sorted(success_patterns)[:MAX_SUMMARY_KEYS],
+        "success_patterns": sorted(success_patterns),
     }
 
 
@@ -183,31 +176,31 @@ def build_evidence_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
             success_patterns[_label(pattern)] += 1
         for name, value in _bounded_numeric_metrics(signal.get("metrics")).items():
             metric_values[name].append(value)
-        if len(claim_findings) < MAX_CLAIM_FINDINGS_PER_SUMMARY:
-            for raw_finding in signal.get("claim_findings") or []:
-                if (
-                    len(claim_findings) >= MAX_CLAIM_FINDINGS_PER_SUMMARY
-                    or not isinstance(raw_finding, dict)
-                ):
-                    break
-                # Deliberately copy only structural scoring fields. In
-                # particular, statement/quote/evidence text from the Case or
-                # candidate report can never enter optimizer evidence.
-                finding: dict[str, Any] = {
-                    "case_path": str(signal.get("case_path") or "")[:1024],
-                    "case_family": family,
-                    "claim_index": int(raw_finding.get("claim_index") or 0),
-                    "dimension": _claim_dimension(raw_finding.get("dimension")),
-                    "relation": _claim_relation(raw_finding.get("relation")),
-                }
-                for key in ("score", "weight", "conclusion_similarity"):
-                    number = _finite_number(raw_finding.get(key))
-                    if number is not None:
-                        finding[key] = number
-                if isinstance(raw_finding.get("keyword_match"), bool):
-                    finding["keyword_match"] = raw_finding["keyword_match"]
-                claim_findings.append(finding)
-        if not signal.get("succeeded", False) or (isinstance(score, (int, float)) and score < 70):
+        for raw_finding in signal.get("claim_findings") or []:
+            if not isinstance(raw_finding, dict):
+                continue
+            # Deliberately copy only structural scoring fields. In
+            # particular, statement/quote/evidence text from the Case or
+            # candidate report can never enter optimizer evidence.
+            finding: dict[str, Any] = {
+                "case_path": str(signal.get("case_path") or "")[:1024],
+                "case_family": family,
+                "claim_index": int(raw_finding.get("claim_index") or 0),
+                "dimension": _claim_dimension(raw_finding.get("dimension")),
+                "relation": _claim_relation(raw_finding.get("relation")),
+            }
+            for key in ("score", "weight", "conclusion_similarity"):
+                number = _finite_number(raw_finding.get(key))
+                if number is not None:
+                    finding[key] = number
+            if isinstance(raw_finding.get("keyword_match"), bool):
+                finding["keyword_match"] = raw_finding["keyword_match"]
+            claim_findings.append(finding)
+        if (
+            not signal.get("succeeded", False)
+            or bool(signal.get("failure_tags"))
+            or (isinstance(score, (int, float)) and score < 100)
+        ):
             failed_cases.append(
                 {
                     "case_path": signal.get("case_path"),
@@ -225,31 +218,27 @@ def build_evidence_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
                 "sample_count": len(values),
                 "median_score": float(statistics.median(values)) if values else None,
             }
-            for name, values in sorted(family_scores.items())[:MAX_SUMMARY_KEYS]
+            for name, values in sorted(family_scores.items())
         },
         "dimensions": {
             name: {
                 "sample_count": len(values),
                 "median_score": float(statistics.median(values)) if values else None,
             }
-            for name, values in sorted(dimension_scores.items())[:MAX_SUMMARY_KEYS]
+            for name, values in sorted(dimension_scores.items())
         },
         "failure_tags": dict(
-            sorted(failure_tags.items(), key=lambda item: (-item[1], item[0]))[
-                :MAX_SUMMARY_KEYS
-            ]
+            sorted(failure_tags.items(), key=lambda item: (-item[1], item[0]))
         ),
         "success_patterns": dict(
-            sorted(success_patterns.items(), key=lambda item: (-item[1], item[0]))[
-                :MAX_SUMMARY_KEYS
-            ]
+            sorted(success_patterns.items(), key=lambda item: (-item[1], item[0]))
         ),
         "metrics": {
             name: {
                 "sample_count": len(values),
                 "median": float(statistics.median(values)) if values else None,
             }
-            for name, values in sorted(metric_values.items())[:MAX_METRIC_KEYS]
+            for name, values in sorted(metric_values.items())
         },
         "claim_findings": claim_findings,
         "failed_cases": sorted(
@@ -259,5 +248,9 @@ def build_evidence_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
                 item["score"] if item["score"] is not None else -1,
                 str(item["case_path"]),
             ),
-        )[:MAX_FAILED_CASES],
+        ),
+        "truncation": {
+            "applied": False,
+            "message": "Optimizer evidence is complete; no claims or cases were dropped.",
+        },
     }

@@ -25,6 +25,7 @@ from analystbench.catalog.case_library import report_payload_from_text
 from analystbench.config import Settings
 from analystbench.db.models import (
     EvaluationMethod,
+    EvaluationModel,
     EvaluationSchedule,
     EvaluationScheduleRun,
     EvaluationSubmission,
@@ -49,7 +50,7 @@ from analystbench.skill_optimization.registry import SkillRegistryService
 from analystbench.storage.content import canonical_json, content_hash
 
 METHOD_KEY_RE = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9)])?$"
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._()\[\]-]{0,98}[A-Za-z0-9)\]])?$"
 )
 RESERVED_METHOD_KEYS = {"result", "run", "inputs", "artifacts", "_artifacts", "logs"}
 ALLOWED_PLACEHOLDERS = {"input", "input_dir", "workspace", "tool_dir"}
@@ -229,8 +230,8 @@ class EvaluationMethodService:
         if not METHOD_KEY_RE.fullmatch(key) or key.lower() in RESERVED_METHOD_KEYS:
             raise AnalystBenchError(
                 "evaluation_method_invalid",
-                "测评方式 key 必须以字母或数字开头，以字母、数字或右括号结尾，"
-                "只能包含字母、数字、点、括号、-、_，且不能使用保留名。",
+                "测评方式 key 必须以字母或数字开头，以字母、数字、右圆括号或右方括号结尾，"
+                "只能包含字母、数字、点、圆括号、方括号、-、_，且不能使用保留名。",
             )
         if not (name or "").strip() or not command_template.strip():
             raise AnalystBenchError("evaluation_method_invalid", "Key 和命令不能为空。")
@@ -259,8 +260,8 @@ class EvaluationMethodService:
             raise AnalystBenchError(
                 "evaluation_method_invalid", "命令使用 {tool_dir} 时必须配置工具目录。"
             )
-        if not 1 <= timeout_seconds <= 7200:
-            raise AnalystBenchError("evaluation_method_invalid", "超时必须在 1 到 7200 秒之间。")
+        if not 1 <= timeout_seconds <= 21600:
+            raise AnalystBenchError("evaluation_method_invalid", "超时必须在 1 到 21600 秒之间。")
         if not 1024 <= max_output_bytes <= 100 * 1024 * 1024:
             raise AnalystBenchError(
                 "evaluation_method_invalid", "输出上限必须在 1 KiB 到 100 MiB。"
@@ -275,7 +276,7 @@ class EvaluationMethodService:
         name: str | None,
         command_template: str,
         tool_dir: str | None = None,
-        timeout_seconds: int = 1800,
+        timeout_seconds: int = 21600,
         max_output_bytes: int = 10 * 1024 * 1024,
         concurrency_limit: int = 1,
     ) -> EvaluationMethod:
@@ -923,10 +924,16 @@ class EvaluationSubmissionService:
                     )
                 initial_version = version
             else:
-                skill, initial_version = registry.adopt_host_skill(
-                    harness_id=harness_id,
-                    skill_key=skill_key,
+                managed = registry.resolve_managed_host_skill(
+                    harness_id=harness_id, skill_key=skill_key
                 )
+                if managed is None:
+                    skill, initial_version = registry.adopt_host_skill(
+                        harness_id=harness_id,
+                        skill_key=skill_key,
+                    )
+                else:
+                    skill, initial_version = managed
             binding = registry.find_binding(
                 skill_id=skill.id,
                 evaluation_target_id=target.id,
@@ -1783,6 +1790,41 @@ class EvaluationSubmissionService:
         self._update_submission(submission_id)
         return next(item for item in self.list_case_runs(submission_id) if item.id == case_run_id)
 
+    @staticmethod
+    def _effective_model_timeout(
+        session: Session,
+        method_id: str,
+        fallback: int,
+    ) -> int:
+        model_id = session.scalar(
+            select(EvaluationTarget.model_id).where(
+                EvaluationTarget.materialized_method_id == method_id
+            )
+        )
+        if model_id is None:
+            model_id = session.scalar(
+                select(EvaluationTarget.model_id)
+                .join(
+                    EvaluationVariant,
+                    EvaluationVariant.evaluation_target_id == EvaluationTarget.id,
+                )
+                .where(EvaluationVariant.materialized_method_id == method_id)
+            )
+        if model_id is None:
+            return fallback
+        model_key = session.scalar(
+            select(EvaluationModel.model_key).where(EvaluationModel.id == model_id)
+        )
+        if model_key is None:
+            return fallback
+        timeout = session.scalar(
+            select(EvaluationModel.timeout_seconds)
+            .where(EvaluationModel.model_key == model_key)
+            .order_by(EvaluationModel.version_number.desc())
+            .limit(1)
+        )
+        return int(timeout if timeout is not None else fallback)
+
     def execute_method_run(self, method_run_id: str) -> None:
         cancel_before_start = False
         with transaction(self.session_factory) as session:
@@ -1815,7 +1857,9 @@ class EvaluationSubmissionService:
                     "key": method.method_key,
                     "tool_dir": method.tool_dir,
                     "command_template": method.command_template,
-                    "timeout_seconds": method.timeout_seconds,
+                    "timeout_seconds": self._effective_model_timeout(
+                        session, method.id, method.timeout_seconds
+                    ),
                     "max_output_bytes": method.max_output_bytes,
                 }
                 case_path = case_run.case_path
@@ -2145,7 +2189,7 @@ class EvaluationSubmissionService:
                     if submission.status == "cancelled":
                         case_run.status = "cancelled"
                         case_run.scoring_status = "skipped"
-                    elif successes:
+                    elif successes == len(statuses):
                         case_run.status = "scoring"
                         case_run.scoring_status = "queued"
                         self.jobs.enqueue(
@@ -2154,10 +2198,25 @@ class EvaluationSubmissionService:
                             {"evaluation_case_run_id": case_run.id},
                         )
                     else:
+                        failed_methods = self._failed_method_names(
+                            session, case_run.id
+                        )
                         case_run.status = "failed"
                         case_run.scoring_status = "skipped"
                         case_run.error_json = canonical_json(
-                            {"code": "all_methods_failed", "message": "所有测评方式均失败。"}
+                            {
+                                "code": (
+                                    "all_methods_failed"
+                                    if successes == 0
+                                    else "partial_methods_failed"
+                                ),
+                                "message": (
+                                    "所有测评方式均失败。"
+                                    if successes == 0
+                                    else "部分测评方式失败，已跳过评分。"
+                                ),
+                                "failed_methods": failed_methods,
+                            }
                         )
         self._write_case_state_by_method(method_run_id)
         with transaction(self.session_factory) as session:
@@ -2167,6 +2226,23 @@ class EvaluationSubmissionService:
             assert case_run is not None
             submission_id = case_run.submission_id
         self._update_submission(submission_id)
+
+    @staticmethod
+    def _failed_method_names(session: Session, case_run_id: str) -> list[str]:
+        rows = session.execute(
+            select(EvaluationMethod.method_key, EvaluationSubmissionMethodRun.status)
+            .join(
+                EvaluationSubmissionMethodRun,
+                EvaluationSubmissionMethodRun.method_id == EvaluationMethod.id,
+            )
+            .where(
+                EvaluationSubmissionMethodRun.case_run_id == case_run_id,
+                EvaluationSubmissionMethodRun.status.in_(TERMINAL_METHOD_STATES),
+                EvaluationSubmissionMethodRun.status != "succeeded",
+            )
+            .order_by(EvaluationMethod.method_key)
+        )
+        return [f"{method_key}（{status}）" for method_key, status in rows]
 
     def execute_case_scoring(self, case_run_id: str) -> None:
         with transaction(self.session_factory) as session:
@@ -2226,7 +2302,18 @@ class EvaluationSubmissionService:
         for _, method in method_rows:
             report_path = run_directory / f"{method.method_key}.md"
             text = report_path.read_text(encoding="utf-8")
-            reports.append(report_payload_from_text(report_path.name, text))
+            candidate_name = (
+                method.name
+                if method.method_key.startswith("sv-")
+                else method.method_key
+            )
+            reports.append(
+                report_payload_from_text(
+                    report_path.name,
+                    text,
+                    candidate_name=candidate_name,
+                )
+            )
         try:
             case_payload = json.loads(case_file.read_text(encoding="utf-8"))
             result = evaluate_direct(

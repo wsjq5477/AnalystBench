@@ -116,6 +116,85 @@ def test_detail_surface_keeps_global_summary_and_explicit_pagination() -> None:
     assert encoded["version_metadata"]["version-1"]["created_at"] == ("2026-08-12T00:00:00+00:00")
 
 
+def test_delete_experiment_surface_delegates_to_service() -> None:
+    calls: list[str] = []
+
+    class DeleteService:
+        def delete(self, experiment_id: str) -> dict[str, int]:
+            calls.append(experiment_id)
+            return {"experiments_deleted": 1}
+
+    result = optimization_routes.delete_experiment(
+        "experiment-1",
+        optimization_request(DeleteService()),  # type: ignore[arg-type]
+    )
+
+    assert result == {"experiments_deleted": 1}
+    assert calls == ["experiment-1"]
+
+
+def test_capabilities_publish_strategy_defaults_removed_limits_and_protections() -> None:
+    settings = SimpleNamespace(
+        skill_optimization_max_epochs=5,
+        skill_optimization_candidate_count=2,
+        skill_optimization_screening_case_count=2,
+        skill_optimization_validation_repeats=3,
+        skill_optimization_max_repeats=7,
+        skill_optimization_early_stop_patience=2,
+        skill_optimization_min_overall_delta=1.0,
+        skill_optimization_max_latency_growth=0.2,
+        skill_optimization_max_token_growth=0.2,
+        skill_optimization_max_files=200,
+        skill_optimization_max_total_bytes=2 * 1024 * 1024,
+        skill_optimization_max_single_file_bytes=256 * 1024,
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings)))
+
+    result = optimization_routes.optimization_capabilities(request)  # type: ignore[arg-type]
+
+    assert result["defaults"]["candidate_count"] == 2
+    assert result["ranges"]["candidate_count"]["maximum"] == 4
+    assert result["patch_policy"]["content_size_limits_removed"] is True
+    assert result["patch_policy"]["removed_limits"] == [
+        "max_changed_files",
+        "max_added_tokens",
+        "max_deleted_tokens",
+        "max_single_file_change_ratio",
+    ]
+    assert result["fixed_strategy"][0] == {
+        "key": "screening_survivors",
+        "value": 1,
+        "reason": "当前状态机每轮只对最优候选做成对验证。",
+    }
+    assert result["evidence_policy"]["claims_truncated"] is False
+    assert result["ranges"]["judge_max_output_bytes"]["maximum"] == 100 * 1024 * 1024
+    assert result["system_protections"]
+
+
+def test_experiment_create_accepts_public_advanced_policy_fields() -> None:
+    payload = optimization_routes.ExperimentCreate(
+        name="advanced",
+        skill_id="skill-1",
+        base_skill_version_id="version-1",
+        evaluation_target_id="target-1",
+        data_snapshot_id="snapshot-1",
+        optimizer_policy_version_id="policy-1",
+        verifier_bundle_version_id="verifier-1",
+        candidate_count=4,
+        screening_case_count=12,
+        validation_repeats=5,
+        max_repeats=9,
+        early_stop_patience=4,
+    )
+
+    assert payload.candidate_count == 4
+    assert payload.validation_repeats == 5
+    with pytest.raises(ValidationError):
+        optimization_routes.ExperimentCreate(
+            **{**payload.model_dump(), "candidate_count": 5}
+        )
+
+
 @pytest.mark.parametrize(
     ("format_name", "content_type", "suffix"),
     [
@@ -304,6 +383,10 @@ def test_openapi_describes_pagination_download_types_and_rollback_lock() -> None
     }
     assert experiment_parameters["limit"]["maximum"] == 500
     assert experiment_parameters["offset"]["minimum"] == 0
+    experiment_item = schema["paths"][
+        "/api/v1/skill-optimization/experiments/{experiment_id}"
+    ]
+    assert "delete" in experiment_item
     event_list = schema["paths"][
         "/api/v1/skill-optimization/experiments/{experiment_id}/events"
     ]["get"]

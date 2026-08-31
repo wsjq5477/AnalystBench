@@ -344,6 +344,13 @@ export const analystBenchApi = {
   listSkillVersions(skillId) {
     return request({ url: `/skills/${skillId}/versions`, method: "get" });
   },
+  importSkillVersion(skillId, data = {}) {
+    return request({
+      url: `/skills/${skillId}/versions`,
+      method: "post",
+      data,
+    });
+  },
   listSkillBindings(skillId) {
     return request({ url: `/skills/${skillId}/bindings`, method: "get" });
   },
@@ -374,6 +381,12 @@ export const analystBenchApi = {
   },
   listOptimizerPolicies() {
     return request({ url: "/skill-optimization/policies", method: "get" });
+  },
+  getOptimizationCapabilities() {
+    return request({
+      url: "/skill-optimization/capabilities",
+      method: "get",
+    });
   },
   createOptimizerPolicy(data) {
     return request({
@@ -413,6 +426,12 @@ export const analystBenchApi = {
       url: "/skill-optimization/experiments",
       method: "post",
       data,
+    });
+  },
+  deleteOptimizationExperiment(experimentId) {
+    return request({
+      url: `/skill-optimization/experiments/${experimentId}`,
+      method: "delete",
     });
   },
   getOptimizationExperimentDetail(experimentId, params = {}) {

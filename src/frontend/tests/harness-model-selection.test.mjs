@@ -8,22 +8,33 @@ test("evaluation UI selects explicit Harness, model, and host Skill combinations
     new URL("../src/app-options.js", import.meta.url),
     "utf8",
   );
+  const api = await readFile(new URL("../src/api.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(app, /新建运行组合/);
   assert.match(app, /Harness × 模型 × Skill（默认全选）/);
   assert.match(app, /<h2>Skill<\/h2>/);
   assert.match(app, /@click="openSkillDialog"/);
+  assert.match(app, /@click="importHostSkillVersion\(skill\)"/);
+  assert.match(app, /导入新版本/);
   assert.match(app, /v-model="skillForm\.harness_id" @change="scanHarnessSkills"/);
   assert.match(app, /v-model="submissionForm\.target_selection_keys" multiple/);
   assert.match(app, /@click="deleteEvaluationHarness\(harness\)"/);
   assert.match(app, /@click="deleteEvaluationModel\(model\)"/);
+  assert.match(app, /全局并发数/);
+  assert.match(app, /全局超时（秒）/);
+  assert.doesNotMatch(app, /harnessForm\.(?:timeout_seconds|concurrency_limit)/);
   assert.match(options, /target_selections:/);
   assert.match(options, /skill_key: skillKey \|\| null/);
   assert.match(options, /listHostSkills\(\s*this\.skillForm\.harness_id/);
+  assert.match(options, /importHostSkillVersion\(skill\)/);
+  assert.match(options, /created_by: "web-ui"/);
+  assert.match(api, /importSkillVersion\(skillId, data = \{\}\)/);
+  assert.match(api, /url: `\/skills\/\$\{skillId\}\/versions`/);
   assert.doesNotMatch(options, /listHostSkills\(\)\.catch/);
   assert.match(options, /allEvaluationSelectionKeys/);
   assert.match(options, /archiveEvaluationHarness\(harness.id\)/);
   assert.match(options, /archiveEvaluationModel\(model.id\)/);
+  assert.match(options, /reviseEvaluationModel\(this\.editingModelId, payload\)/);
 });
 
 test("dashboard defaults both comparison constraints to Average", async () => {

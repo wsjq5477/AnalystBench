@@ -80,8 +80,9 @@ hmdiagAgent(deepseek-v4-flash)
 
 设置页只暴露运行所需的最小字段：
 
-- Harness：`key`、命令模板、超时时间、共享并发数。
-- Model：一个模型名称；该值同时作为 key、显示名和传给 `{model}` 的 argv 参数。
+- Harness：`key` 和命令模板。
+- Model：模型名称、全局超时时间和全局并发数；名称同时作为 key、显示名和传给
+  `{model}` 的 argv 参数。
 - Harness 是否需要模型由命令模板是否包含 `{model}` 自动推断。
 
 `name`、`family`、`tool_dir`、独立 `argument` 和输出上限继续作为后端兼容及
@@ -102,9 +103,7 @@ Harness 继续采用同 Key 单调递增版本。冻结版本至少包含：
   "model_policy": "required",
   "tool_dir": "/opt/claude-native",
   "command_template": "claude -p \"分析一个日志：{input}\" --model {model}",
-  "timeout_seconds": 1800,
   "max_output_bytes": 10485760,
-  "concurrency_limit": 2,
   "source_revision": {
     "kind": "git",
     "revision": "commit-sha",
@@ -124,7 +123,7 @@ Harness Version 负责：
 
 - 工程入口、Prompt、Skill/native 等 Harness 行为。
 - `{input}`、`{input_dir}`、`{workspace}`、`{tool_dir}` 和 `{model}` 命令模板。
-- 超时、最大输出和跨模型共享的 Harness 并发上限。
+- 最大输出限制。
 - 可获取时记录外部工程 Git commit 或制品 digest；dirty 状态必须进入运行清单。
 
 冻结数据库配置不等于冻结外部 `tool_dir` 内容。正式运行必须重新采集实际
@@ -133,7 +132,7 @@ Harness Version 负责：
 
 ### Model Version
 
-Model 是轻量选择目录，不管理本地运行配置：
+Model 是轻量选择目录，同时承载模型提供商维度的全局运行限制：
 
 ```json
 {
@@ -142,6 +141,8 @@ Model 是轻量选择目录，不管理本地运行配置：
   "name": "GLM 5.1",
   "version": 1,
   "argument": "glm5.1",
+  "timeout_seconds": 21600,
+  "concurrency_limit": 1,
   "status": "frozen",
   "content_hash": "sha256:..."
 }
@@ -152,7 +153,9 @@ Model 是轻量选择目录，不管理本地运行配置：
 - `key` 是 AnalystBench 内部稳定身份。
 - `argument` 是默认传给 Harness `{model}` 的单个 argv 参数。
 - Model 不保存 endpoint、凭据或生成参数。
-- 修改 `argument` 创建新版本，不能原地改变已冻结版本。
+- `timeout_seconds` 和 `concurrency_limit` 按 Model Key 跨所有 Harness 与历史 Model
+  Version 全局生效；最新版本的限制是当前运行门禁。
+- 修改 `argument` 或运行限制创建新版本，不能原地改变已冻结版本。
 - 同 Key 的历史版本继续可读，提交页面默认展示最新冻结且未归档版本。
 
 ### Evaluation Target
@@ -166,7 +169,6 @@ Evaluation Target 同时是兼容绑定和可运行组合：
   "harness_version_id": "uuid",
   "model_version_id": "uuid",
   "model_argument": "glm5.1",
-  "concurrency_limit": null,
   "status": "frozen",
   "content_hash": "sha256:...",
   "probe": {
@@ -184,9 +186,9 @@ Evaluation Target 同时是兼容绑定和可运行组合：
 - 同一 Harness Version 与 Model Version 最多存在一个未归档 Target。
 - `target_key` 使用 `<harness-key>@<model-key>`；无模型 Target 使用 Harness Key。
 - Harness Key 和 Model Key 不允许包含 `@`，Target Key 必须是安全、跨平台的报告
-  文件名 stem。
-- Target 的可选 `concurrency_limit` 只限制该组合；为空时不增加组合级限制。
-- Target 冻结后不可修改；改变模型参数映射或限制创建新 Target。
+  文件名 stem；允许模型供应商标识中使用圆括号和方括号，例如 `GLM-5.2[1m]`。
+- Target 不配置并发或超时，避免同一 Model 经不同 Harness 绕过全局门禁。
+- Target 冻结后不可修改；改变模型参数映射创建新 Target。
 
 示例：
 
@@ -301,13 +303,10 @@ Target Run 沿用 Method Run 状态机、取消、超时、产物收集和重试
 同时满足：
 
 1. Worker 全局并发上限。
-2. Harness Version 并发上限，统计该 Harness 跨所有 Model 的活动 Target Run。
-3. Target 自身可选并发上限。
+2. Model Key 全局并发上限，统计该 Model 跨所有 Harness 和历史 Model Version 的
+   活动 Target Run。
 
-Model 并发和供应商限流不属于 P19；由 Harness 本地配置处理。未来确有跨 Harness
-共享模型资源限流需求时，再增加独立 Model 资源门禁。
-
-Harness 和 Target 限制必须在 JobQueue 的原子 claim 边界检查，不能依赖偶然的
+Model 限制必须在 JobQueue 的原子 claim 边界检查，不能依赖偶然的
 Worker 数量。租约续期、owner 校验和终态写入继续复用现有机制。
 
 重试使用原 Target 快照，不重新解析最新 Model 或最新 Harness 版本。改变 Harness、
@@ -449,8 +448,8 @@ POST      /api/v1/evaluation-targets/{id}:archive
 
 设置页只保留：
 
-1. Harness：工程、版本、命令、模型策略和共享并发。
-2. Model：显示名和命令行参数。
+1. Harness：工程、版本、命令和模型策略。
+2. Model：显示名、命令行参数、全局并发和全局超时。
 
 运行组合不是用户配置资源。提交和定时测评页面按 Harness 分组直接展示可选 Model，
 Target 只作为后端不可变快照用于历史追溯、执行和对比。
@@ -518,7 +517,7 @@ script-only                    -> script-only
 - 同一 Case 的报告、得分、状态和 P18 耗时按 Target Key 一一对应。
 - 可以固定 Harness 比较不同 Model，也可以固定 Model 比较不同 Harness。
 - 聚合同时展示质量、覆盖率、生成成功率、中位耗时、P95 和样本数。
-- Harness 共享并发和 Target 并发在原子 Job claim 中生效。
+- Model 全局并发在原子 Job claim 中跨 Harness 生效，执行时使用 Model 最新全局超时。
 - 定时计划固定 Target，不因新增 Model 自动扩大。
 - 旧 Method、Submission、Schedule、`generation.methods[]` 和直接文件结果继续可读。
 - 全量迁移、API、Worker、评分、前端、生产构建和兼容回归通过。

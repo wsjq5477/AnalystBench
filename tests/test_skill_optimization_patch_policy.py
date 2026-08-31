@@ -1,6 +1,5 @@
 import json
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,11 +10,6 @@ from analystbench.errors import AnalystBenchError
 from analystbench.skill_optimization.patch import StructuredPatchApplier
 
 
-@dataclass
-class _Settings:
-    skill_optimization_max_skill_tokens: int = 12_000
-
-
 class _Registry:
     def __init__(
         self,
@@ -24,7 +18,6 @@ class _Registry:
         editable_paths: list[str] | None = None,
     ) -> None:
         self.source = source
-        self.settings = _Settings()
         self.parent = SimpleNamespace(id="parent-version", skill_id="skill")
         self.skill = SimpleNamespace(
             id="skill",
@@ -45,10 +38,6 @@ class _Registry:
     def materialize_version(self, version_id: str, destination: Path) -> None:
         assert version_id == self.parent.id
         shutil.copytree(self.source, destination)
-
-    def skill_limits(self, skill: SimpleNamespace) -> tuple[None, int]:
-        assert skill.id == self.skill.id
-        return None, self.settings.skill_optimization_max_skill_tokens
 
     def import_version(self, skill_id: str, **kwargs: Any) -> SimpleNamespace:
         assert skill_id == self.skill.id
@@ -189,7 +178,7 @@ def test_epoch_budget_schedule_uses_current_then_last_budget(tmp_path: Path) -> 
     assert registry.imported_files is None
 
 
-def test_changed_file_budget_is_enforced_on_final_diff(tmp_path: Path) -> None:
+def test_legacy_changed_file_budget_is_ignored(tmp_path: Path) -> None:
     applier, registry, _source = _applier(
         tmp_path,
         files={
@@ -199,25 +188,18 @@ def test_changed_file_budget_is_enforced_on_final_diff(tmp_path: Path) -> None:
         editable_paths=["SKILL.md", "references/*.md"],
     )
 
-    with pytest.raises(AnalystBenchError) as error:
-        applier.apply(
-            parent_version_id="parent-version",
-            structured_patch={
-                "operations": [
-                    {"op": "append", "path": "SKILL.md", "content": "x"},
-                    {
-                        "op": "append",
-                        "path": "references/guide.md",
-                        "content": "y",
-                    },
-                ]
-            },
-            policy={"max_changed_files": 1},
-        )
-    assert error.value.code == "edit_budget_exceeded"
-    assert error.value.details[0]["rule"] == "max_changed_files"
-    assert error.value.details[0]["actual"] == 2
-    assert registry.imported_files is None
+    result = applier.apply(
+        parent_version_id="parent-version",
+        structured_patch={
+            "operations": [
+                {"op": "append", "path": "SKILL.md", "content": "x"},
+                {"op": "append", "path": "references/guide.md", "content": "y"},
+            ]
+        },
+        policy={"max_changed_files": 1},
+    )
+    assert result.stats.changed_files == ("SKILL.md", "references/guide.md")
+    assert registry.imported_files is not None
 
 
 @pytest.mark.parametrize(
@@ -240,7 +222,7 @@ def test_changed_file_budget_is_enforced_on_final_diff(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_added_and_deleted_token_budgets_return_stable_details(
+def test_legacy_added_and_deleted_token_budgets_are_ignored(
     tmp_path: Path,
     operation: dict[str, str],
     policy: dict[str, object],
@@ -248,49 +230,37 @@ def test_added_and_deleted_token_budgets_return_stable_details(
 ) -> None:
     applier, registry, _source = _applier(tmp_path)
 
-    with pytest.raises(AnalystBenchError) as error:
-        applier.apply(
-            parent_version_id="parent-version",
-            structured_patch={"operations": [operation]},
-            policy=policy,
-            epoch_number=3,
-        )
-    assert error.value.code == "edit_budget_exceeded"
-    assert error.value.details[0]["rule"] == expected_rule
-    assert error.value.details[0]["actual"] > error.value.details[0]["limit"]
-    assert error.value.details[0]["epoch_number"] == 3
-    assert registry.imported_files is None
+    result = applier.apply(
+        parent_version_id="parent-version",
+        structured_patch={"operations": [operation]},
+        policy=policy,
+        epoch_number=3,
+    )
+    assert result.version.id == "candidate-version"
+    assert result.stats.operation_count == 1
+    assert expected_rule in {"max_added_tokens", "max_deleted_tokens"}
+    assert registry.imported_files is not None
 
 
-def test_single_file_change_ratio_rejects_large_rewrite(tmp_path: Path) -> None:
+def test_single_file_change_ratio_no_longer_rejects_large_rewrite(tmp_path: Path) -> None:
     before = "a" * 100
     applier, registry, _source = _applier(tmp_path, files={"SKILL.md": before})
 
-    with pytest.raises(AnalystBenchError) as error:
-        applier.apply(
-            parent_version_id="parent-version",
-            structured_patch={
-                "operations": [
-                    {
-                        "op": "replace",
-                        "path": "SKILL.md",
-                        "old": before,
-                        "new": "b" * 100,
-                    }
-                ]
-            },
-        )
-    assert error.value.code == "edit_budget_exceeded"
-    assert error.value.details == [
-        {
-            "rule": "max_single_file_change_ratio",
-            "actual": 1.0,
-            "limit": 0.25,
-            "epoch_number": 1,
-            "path": "SKILL.md",
-        }
-    ]
-    assert registry.imported_files is None
+    result = applier.apply(
+        parent_version_id="parent-version",
+        structured_patch={
+            "operations": [
+                {
+                    "op": "replace",
+                    "path": "SKILL.md",
+                    "old": before,
+                    "new": "b" * 100,
+                }
+            ]
+        },
+    )
+    assert result.stats.per_file["SKILL.md"].change_ratio == 1.0
+    assert registry.imported_files == {"SKILL.md": "b" * 100}
 
 
 def test_append_cannot_create_a_missing_file(tmp_path: Path) -> None:
@@ -339,9 +309,6 @@ def test_invalid_policy_has_a_stable_field_detail(tmp_path: Path) -> None:
         ({"allowed_operations": []}, None, "allowed_operations"),
         ({"allowed_operations": [1]}, None, "allowed_operations"),
         ({"edit_budget_schedule": []}, None, "edit_budget_schedule"),
-        ({"max_changed_files": 0}, None, "max_changed_files"),
-        ({"max_added_tokens": -1}, None, "max_added_tokens"),
-        ({"max_single_file_change_ratio": True}, None, "max_single_file_change_ratio"),
         ({}, 0, "epoch_number"),
     ],
 )
@@ -433,7 +400,7 @@ def test_patch_operations_fail_closed_with_stable_codes(
     assert registry.imported_files is None
 
 
-def test_delete_is_versioned_and_token_limit_is_enforced(tmp_path: Path) -> None:
+def test_delete_is_versioned(tmp_path: Path) -> None:
     applier, registry, source = _applier(
         tmp_path,
         files={
@@ -453,15 +420,22 @@ def test_delete_is_versioned_and_token_limit_is_enforced(tmp_path: Path) -> None
     assert registry.imported_files == {"SKILL.md": "# Demo\n\nInitial instructions.\n"}
     assert (source / "references/obsolete.md").is_file()
 
-    registry.settings.skill_optimization_max_skill_tokens = 1
-    with pytest.raises(AnalystBenchError) as raised:
-        applier.apply(
-            parent_version_id="parent-version",
-            structured_patch={
-                "operations": [
-                    {"op": "append", "path": "SKILL.md", "content": "x"}
-                ]
-            },
-            policy={"max_single_file_change_ratio": 1.0},
-        )
-    assert raised.value.code == "skill_token_budget_exceeded"
+
+def test_large_skill_package_has_no_hidden_token_limit(tmp_path: Path) -> None:
+    original = "x" * 100_000
+    applier, registry, _source = _applier(
+        tmp_path,
+        files={"SKILL.md": original},
+    )
+
+    result = applier.apply(
+        parent_version_id="parent-version",
+        structured_patch={
+            "operations": [
+                {"op": "append", "path": "SKILL.md", "content": "y"}
+            ]
+        },
+    )
+
+    assert result.version.id == "candidate-version"
+    assert registry.imported_files == {"SKILL.md": f"{original}y"}

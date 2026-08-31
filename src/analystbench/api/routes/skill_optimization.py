@@ -9,8 +9,16 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from analystbench.skill_optimization.experiment import OptimizationExperimentService
-from analystbench.skill_optimization.preflight import SkillOptimizationPreflightService
+from analystbench.skill_optimization.experiment import (
+    EXPERIMENT_POLICY_LIMITS,
+    OPTIMIZER_ROLE_SPECS,
+    OptimizationExperimentService,
+)
+from analystbench.skill_optimization.patch import DEFAULT_PATCH_POLICY
+from analystbench.skill_optimization.preflight import (
+    DEFAULT_MINIMUM_FREE_BYTES,
+    SkillOptimizationPreflightService,
+)
 from analystbench.skill_optimization.reporting import (
     build_optimization_ledger,
     render_optimization_ledger_csv,
@@ -77,6 +85,11 @@ class ExperimentCreate(BaseModel):
     optimizer_policy_version_id: str
     verifier_bundle_version_id: str
     max_epochs: int | None = Field(default=None, ge=1)
+    candidate_count: int | None = Field(default=None, ge=1, le=4)
+    screening_case_count: int | None = Field(default=None, ge=1, le=1000)
+    validation_repeats: int | None = Field(default=None, ge=1, le=7)
+    max_repeats: int | None = Field(default=None, ge=1, le=15)
+    early_stop_patience: int | None = Field(default=None, ge=1, le=20)
     created_by: str | None = Field(default=None, max_length=128)
 
 
@@ -94,6 +107,140 @@ class PreflightRequest(BaseModel):
 
 def service(request: Request) -> OptimizationExperimentService:
     return request.app.state.skill_optimization_service
+
+
+@router.get("/skill-optimization/capabilities")
+def optimization_capabilities(request: Request) -> dict[str, Any]:
+    """Describe every user-facing strategy default and server safety ceiling."""
+
+    settings = request.app.state.settings
+    return {
+        "schema_version": "skill_optimization.capabilities.v1",
+        "defaults": {
+            "max_epochs": settings.skill_optimization_max_epochs,
+            "candidate_count": settings.skill_optimization_candidate_count,
+            "screening_case_count": settings.skill_optimization_screening_case_count,
+            "validation_repeats": settings.skill_optimization_validation_repeats,
+            "max_repeats": settings.skill_optimization_max_repeats,
+            "early_stop_patience": settings.skill_optimization_early_stop_patience,
+            "min_overall_delta": settings.skill_optimization_min_overall_delta,
+            "max_latency_growth": settings.skill_optimization_max_latency_growth,
+            "max_token_growth": settings.skill_optimization_max_token_growth,
+            "edit_budget_schedule": DEFAULT_PATCH_POLICY["edit_budget_schedule"],
+            "screening_minimum_delta": -1.0,
+            "screening_max_latency_growth": 0.50,
+            "screening_critical_dimension_min_delta": -5.0,
+            "bootstrap_samples": 2000,
+            "bootstrap_confidence": 0.95,
+            "critical_dimension_min_delta": 0.0,
+            "critical_family_max_regression": -2.0,
+            "min_candidate_win_probability": 0.0,
+            "require_bootstrap_lower_bound_positive": True,
+            "require_token_usage": True,
+            "reject_failure_increase": True,
+            "reject_new_failure_tags": True,
+            "critical_dimensions": ["root_cause", "classification"],
+            "protected_guardrail_metrics": [
+                "forbidden_hit_count",
+                "missing_chain_count",
+            ],
+            "optimizer_execution_attempts": 3,
+            "format_repair_enabled": True,
+            "optimizer_timeout_seconds": 1800,
+            "optimizer_max_output_bytes": 10 * 1024 * 1024,
+            "judge_timeout_seconds": 600,
+            "judge_max_output_bytes": 2 * 1024 * 1024,
+            "package_test_timeout_seconds": 30,
+        },
+        "ranges": {
+            "max_epochs": {"minimum": 1, "maximum": settings.skill_optimization_max_epochs},
+            **EXPERIMENT_POLICY_LIMITS,
+            "edit_operations_per_epoch": {"minimum": 1, "maximum": 50},
+            "bootstrap_samples": {"minimum": 0, "maximum": 100000},
+            "bootstrap_confidence": {"exclusive_minimum": 0.5, "exclusive_maximum": 1.0},
+            "optimizer_timeout_seconds": {"minimum": 1, "maximum": 7200},
+            "optimizer_max_output_bytes": {
+                "minimum": 1024,
+                "maximum": 100 * 1024 * 1024,
+            },
+            "judge_timeout_seconds": {"minimum": 1, "maximum": 7200},
+            "judge_max_output_bytes": {
+                "minimum": 1024,
+                "maximum": 100 * 1024 * 1024,
+            },
+            "package_test_timeout_seconds": {"minimum": 1, "maximum": 300},
+            "optimizer_execution_attempts": {"minimum": 1, "maximum": 5},
+        },
+        "package_ceiling": {
+            "max_files": settings.skill_optimization_max_files,
+            "max_total_bytes": settings.skill_optimization_max_total_bytes,
+            "max_single_file_bytes": settings.skill_optimization_max_single_file_bytes,
+            "minimum_free_bytes": DEFAULT_MINIMUM_FREE_BYTES,
+        },
+        "patch_policy": {
+            "supported_operations": sorted(DEFAULT_PATCH_POLICY["allowed_operations"]),
+            "content_size_limits_removed": True,
+            "removed_limits": [
+                "max_changed_files",
+                "max_added_tokens",
+                "max_deleted_tokens",
+                "max_single_file_change_ratio",
+            ],
+        },
+        "evidence_policy": {
+            "claims_truncated": False,
+            "failed_cases_truncated": False,
+            "rejected_history_truncated": False,
+            "failed_case_threshold_removed": True,
+            "label_length": 128,
+            "format_repair_input_chars": 8000,
+            "static_finding_details": 50,
+            "diagnostic_tail_chars": 2000,
+        },
+        "optimizer_roles": [
+            {"role": item["role"], "mission": item["mission"]}
+            for item in OPTIMIZER_ROLE_SPECS
+        ],
+        "fixed_strategy": [
+            {
+                "key": "screening_survivors",
+                "value": 1,
+                "reason": "当前状态机每轮只对最优候选做成对验证。",
+            },
+            {
+                "key": "optimizer_role_execution",
+                "value": "sequential",
+                "reason": "保持 Runner 输出与事件顺序可复现。",
+            },
+            {
+                "key": "gray_zone_repeat_targets",
+                "value": [5, 7],
+                "reason": "统计灰区优先补到 5 次、再补到 7 次，且不超过用户设置的最大重复数。",
+            },
+            {
+                "key": "statistical_gray_win_probability",
+                "value": 0.55,
+                "reason": "只对有轻微正向胜率但置信区间跨 0 的独立验证追加运行。",
+            },
+            {
+                "key": "independent_validation_epochs",
+                "value": 1,
+                "reason": "避免根据同一 Validation 结果反复调参。",
+            },
+        ],
+        "system_protections": [
+            "禁止路径逃逸、符号链接和 setuid/setgid 文件",
+            "Skill 根目录必须包含 SKILL.md",
+            "Case 与同源组不能跨 Train/Validation 切分",
+            "冻结后的 Case、日志和 Eval Spec 不允许漂移",
+            "Optimizer 不接收 Validation、Hidden、Holdout 或标准答案正文",
+            "凭据、私有路径、隐藏测试访问和网络外传会被拦截",
+            "候选必须从当前 Active 不可变版本派生",
+            "晋升使用原子绑定并拒绝覆盖并发变更",
+            "Patch 只接受结构化操作和唯一文本锚点",
+            "独立验证固定一个 Epoch，避免反复适配 Validation",
+        ],
+    }
 
 
 @router.post("/skill-optimization/policies", status_code=status.HTTP_201_CREATED)
@@ -232,6 +379,11 @@ def list_experiments(
 @router.get("/skill-optimization/experiments/{experiment_id}")
 def get_experiment(experiment_id: str, request: Request) -> dict[str, Any]:
     return experiment_view(service(request).get(experiment_id))
+
+
+@router.delete("/skill-optimization/experiments/{experiment_id}")
+def delete_experiment(experiment_id: str, request: Request) -> dict[str, int]:
+    return service(request).delete(experiment_id)
 
 
 @router.post("/skill-optimization/experiments/{experiment_id}:start")

@@ -259,7 +259,14 @@ class EvalSpecService:
         try:
             spec = EvalSpecV1.model_validate(payload)
         except ValidationError as exc:
-            return [item["msg"] for item in exc.errors()]
+            errors = []
+            for item in exc.errors():
+                location = "".join(
+                    f"[{part}]" if isinstance(part, int) else f".{part}"
+                    for part in item["loc"]
+                ).lstrip(".")
+                errors.append(f"{location}: {item['msg']}" if location else item["msg"])
+            return errors
         errors: list[str] = []
         if spec.case_revision_id != case_revision_id:
             errors.append("case_revision_id must match the draft binding")

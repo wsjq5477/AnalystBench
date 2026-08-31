@@ -646,7 +646,8 @@ CREATE TABLE decision_records (
 设置层在未显式配置时仍有
 `<workspace_root_path>/skill-optimization` 兼容派生值，但启用自优化时的严格预检
 要求 `ANALYSTBENCH_SKILL_OPTIMIZATION_MANAGED_ROOT` 显式配置为已存在、
-可写的绝对路径。该目录不得指向用户源 Skill、AnalystBench 源码仓库、
+可写的目录。相对路径按进程启动目录解析，并在设置层归一化为绝对路径。
+该目录不得指向用户源 Skill、
 `results` 或 Worker workspace。大文本和结构化摘要继续进入现有
 `ContentStore`。
 
@@ -702,8 +703,7 @@ V1 新导入使用 `analystbench.skill-package.v2`。步骤为：
   "limits": {
     "max_files": 200,
     "max_total_bytes": 2097152,
-    "max_single_file_bytes": 262144,
-    "max_skill_tokens": 12000
+    "max_single_file_bytes": 262144
   }
 }
 ```
@@ -931,13 +931,11 @@ V1 仅支持 `append`、`insert_after`、`replace`、`delete`。
 
 ```yaml
 max_operations: 4
-max_changed_files: 2
-max_added_tokens: 600
-max_deleted_tokens: 300
-max_single_file_change_ratio: 0.25
 ```
 
-超限错误码：`edit_budget_exceeded`。
+`max_operations` 只限制结构化 Patch 的操作数，超限错误码为
+`edit_budget_exceeded`。不再限制改动文件数、新增内容、删除内容或
+单文件改动比例；旧版策略携带这四个字段时按兼容输入忽略。
 
 ---
 
@@ -1361,6 +1359,7 @@ GET    /api/v1/skill-optimization/data-snapshots
 POST   /api/v1/skill-optimization/experiments
 GET    /api/v1/skill-optimization/experiments
 GET    /api/v1/skill-optimization/experiments/{id}
+DELETE /api/v1/skill-optimization/experiments/{id}
 POST   /api/v1/skill-optimization/experiments/{id}:start
 POST   /api/v1/skill-optimization/experiments/{id}:resume
 POST   /api/v1/skill-optimization/experiments/{id}:cancel
@@ -1513,11 +1512,10 @@ src/frontend/src/
 
 ```text
 skill_optimization_enabled = false
-skill_optimization_managed_root = <explicit-existing-writable-absolute-path>
+skill_optimization_managed_root = <explicit-existing-writable-path>
 skill_optimization_max_files = 200
 skill_optimization_max_total_bytes = 2097152
 skill_optimization_max_single_file_bytes = 262144
-skill_optimization_max_skill_tokens = 12000
 skill_optimization_max_epochs = 5
 skill_optimization_candidate_count = 2
 skill_optimization_validation_repeats = 3
@@ -1526,7 +1524,6 @@ skill_optimization_min_overall_delta = 1.0
 skill_optimization_minimum_independent_validation_cases = 8
 skill_optimization_max_latency_growth = 0.20
 skill_optimization_max_token_growth = 0.20
-skill_optimization_test_timeout_seconds = 120
 ```
 
 编辑预算、Failure Tags、门禁和 Prompt 不应全部成为进程级 Settings；它们属于冻结的 `OptimizerPolicyVersion` 和 `VerifierBundleVersion`。Settings 只提供系统上限和默认值。非法配置必须在 API/Worker 启动时给出稳定错误，不能运行到候选阶段才失败。
@@ -1995,8 +1992,6 @@ skill_patch_path_forbidden
 skill_patch_target_missing
 skill_patch_anchor_invalid
 edit_budget_exceeded
-skill_token_budget_exceeded
-
 skill_content_security_violation
 skill_case_leak_detected
 skill_reference_check_failed

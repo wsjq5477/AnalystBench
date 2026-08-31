@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     skill_optimization_max_single_file_bytes: int = Field(
         default=256 * 1024, ge=1, le=100 * 1024 * 1024
     )
-    skill_optimization_max_skill_tokens: int = Field(default=12000, ge=1)
     skill_optimization_max_epochs: int = Field(default=5, ge=1, le=100)
     skill_optimization_candidate_count: int = Field(default=2, ge=1, le=4)
     skill_optimization_screening_case_count: int = Field(default=2, ge=1, le=1000)
@@ -50,7 +49,6 @@ class Settings(BaseSettings):
     )
     skill_optimization_max_latency_growth: float = Field(default=0.20, ge=0)
     skill_optimization_max_token_growth: float = Field(default=0.20, ge=0)
-    skill_optimization_test_timeout_seconds: int = Field(default=120, ge=1, le=3600)
     service_startup_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     log_level: str = "INFO"
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
@@ -75,11 +73,12 @@ class Settings(BaseSettings):
 
     @property
     def skill_optimization_root_path(self) -> Path:
-        return (
+        configured = (
             self.skill_optimization_managed_root
             if self.skill_optimization_managed_root is not None
             else self.workspace_root_path / "skill-optimization"
         )
+        return configured.expanduser().resolve()
 
 
 @lru_cache

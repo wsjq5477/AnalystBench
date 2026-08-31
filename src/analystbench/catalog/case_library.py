@@ -20,6 +20,7 @@ from analystbench.db.models import (
     BenchmarkRun,
     CandidateGenerationRun,
     CandidateReport,
+    Case,
     CaseDraft,
     CaseRevision,
     CaseTrace,
@@ -33,7 +34,7 @@ from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError, ConflictError, NotFoundError
 from analystbench.evaluation.benchmark import BenchmarkService
 from analystbench.evaluation.comparison import ComparisonService
-from analystbench.evaluation.spec import EvalSpecService, EvalSpecV1
+from analystbench.evaluation.spec import EvalSpecService, EvalSpecV1, ForbiddenClaim
 from analystbench.execution.runner import AgentRunnerError, create_runner
 from analystbench.runtime.jobs import JobQueue
 from analystbench.scoring.reporting import build_human_summary
@@ -81,6 +82,7 @@ def _generation_error_payload(exc: Exception) -> dict[str, str]:
     payload = {
         "code": str(getattr(exc, "code", "generation_failed")),
         "message": str(exc),
+        "stage": "generation",
     }
     for stream_name in ("stdout", "stderr"):
         tail = _error_output_tail(getattr(exc, stream_name, None))
@@ -192,6 +194,9 @@ def _normalize_structured_reference(payload: dict[str, Any]) -> None:
     draft = payload.get("eval_spec_draft")
     if not isinstance(case, dict) or not isinstance(draft, dict):
         return
+    strategy = draft.get("scoring_strategy")
+    if isinstance(strategy, dict) and strategy.get("mode") == "root_category_chain":
+        draft["forbidden_claims"] = []
     reference = case.get("reference_answer")
     if not isinstance(reference, str):
         return
@@ -257,6 +262,9 @@ def _normalize_structured_reference(payload: dict[str, Any]) -> None:
         )
     draft["claims"] = claims
     draft["causal_edges"] = []
+    # The fixed root/category/analysis-chain mode has no negative scoring rules.
+    # Do not retain model-invented forbidden claims without explicit penalties.
+    draft["forbidden_claims"] = []
     draft["scoring_strategy"] = copy.deepcopy(ROOT_CATEGORY_CHAIN_STRATEGY)
 
 
@@ -292,12 +300,15 @@ class CaseLibraryService:
             raise AnalystBenchError("configuration_error", "generation settings are unavailable")
         if not reference_answer.strip():
             raise AnalystBenchError("draft_invalid", "reference_answer cannot be empty")
+        active_runner_configuration = dict(runner_configuration or {})
+        if runner_id == "claude":
+            active_runner_configuration.setdefault("environment_mode", "local")
         source = {
             "reference_answer": reference_answer,
             "problem_statement": problem_statement,
             "case_key": case_key,
             "runner_id": runner_id,
-            "runner_configuration": runner_configuration or {},
+            "runner_configuration": active_runner_configuration,
             "source_filename": source_filename,
             "test_set": test_set,
             "category": category,
@@ -410,6 +421,10 @@ scoring_strategy 固定为 {{"mode":"root_category_chain","root_cause_score":100
 "category_score":20,"chain_total_score":60}}。
 quote 必须是标准答案中的连续原文。
 同时输出 forbidden_claims、unresolved_items 数组；不确定内容写入 unresolved_items。
+forbidden_claims 只有在标准答案明确给出错误结论、严重级别和扣分时才允许非空；
+否则必须为 []。非空时每项只能包含 id、statement、severity、penalty、failure_gate、notes：
+id 依次为 forbidden-1、forbidden-2；severity 只能是 critical、high、medium、low；
+penalty 必须是非负整数；failure_gate 必须是布尔值；不得包含 type、reason、review_required。
 所有 Claim 的 review_required 均为 true。"""
 
     @staticmethod
@@ -533,6 +548,7 @@ quote 必须是标准答案中的连续原文。
                 "invalid_state", "Case must pass field checks and receive overall approval first"
             )
         working = json.loads(item.working_json)
+        _normalize_structured_reference(working)
         case = working["case"]
         draft = working["eval_spec_draft"]
         case_key = item.case_key or ""
@@ -659,15 +675,20 @@ quote 必须是标准答案中的连续原文。
             with transaction(self.session_factory) as session:
                 stored = session.get(CaseDraft, draft_id)
                 assert stored is not None
-                stored.status = "failed"
+                stored.status = "ready"
                 stored.error_json = canonical_json(
-                    {"code": getattr(exc, "code", "publish_failed"), "message": str(exc)}
+                    {
+                        "code": getattr(exc, "code", "publish_failed"),
+                        "message": str(exc),
+                        "stage": "publish",
+                    }
                 )
             raise
         with transaction(self.session_factory) as session:
             stored = session.get(CaseDraft, draft_id)
             assert stored is not None
             stored.status = "published"
+            stored.working_json = canonical_json(working)
             stored.resources_json = canonical_json(resources)
             stored.error_json = "{}"
             session.flush()
@@ -722,8 +743,16 @@ quote 必须是标准答案中的连续原文。
                 session.delete(trace)
             session.flush()
             revision = session.get(CaseRevision, revision_id)
+            case_id = revision.case_id if revision is not None else None
             if revision is not None:
                 session.delete(revision)
+                session.flush()
+            if case_id is not None and not session.scalar(
+                select(CaseRevision.id).where(CaseRevision.case_id == case_id)
+            ):
+                case = session.get(Case, case_id)
+                if case is not None:
+                    session.delete(case)
 
     def replace_published(self, draft_id: str, published_draft_id: str) -> CaseDraft:
         """Publish an approved replacement and preserve the previous immutable version."""
@@ -1015,6 +1044,30 @@ quote 必须是标准答案中的连续原文。
                 )
             )
             edges = []
+        forbidden_claims = draft.get("forbidden_claims", [])
+        forbidden_claims_valid = isinstance(forbidden_claims, list)
+        if forbidden_claims_valid:
+            try:
+                validated_forbidden = [
+                    ForbiddenClaim.model_validate(item) for item in forbidden_claims
+                ]
+                forbidden_ids = [item.id for item in validated_forbidden]
+                forbidden_claims_valid = len(forbidden_ids) == len(set(forbidden_ids))
+            except ValidationError:
+                forbidden_claims_valid = False
+        if not forbidden_claims_valid:
+            issues.append(
+                _question(
+                    "eval_spec_draft.forbidden_claims",
+                    "invalid_forbidden_claims",
+                    "forbidden_claims 与当前评分契约不兼容；禁止项必须包含 id、statement、"
+                    "severity、penalty，且只能附加 failure_gate、notes。建议排除这些未经"
+                    "人工定义扣分规则的生成项。",
+                    forbidden_claims,
+                    [],
+                    [[]],
+                )
+            )
         strategy = draft.get("scoring_strategy", {"mode": "weighted_sum"})
         strategy_mode = strategy.get("mode") if isinstance(strategy, dict) else None
         if strategy_mode == "root_category_chain":

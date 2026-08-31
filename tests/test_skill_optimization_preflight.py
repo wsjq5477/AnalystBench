@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -95,7 +96,7 @@ def write_case(settings: Settings, case_path: str, *, source_group: str) -> None
 
 def create_ready_context(settings: Settings, session_factory: Any) -> dict[str, Any]:
     skill_base_dir = settings.results_formal_path.parent / "harness-config"
-    source = skill_base_dir / "skills" / "demo"
+    source = skill_base_dir / "demo"
     source.mkdir(parents=True)
     (source / "SKILL.md").write_text("# Demo\n", encoding="utf-8")
 
@@ -249,11 +250,16 @@ def test_base_preflight_passes_and_cleans_writable_probe(tmp_path: Path) -> None
     assert checks["database_core_tables"]["status"] == "PASS"
 
 
-def test_preflight_reports_disabled_relative_root_and_missing_tools(tmp_path: Path) -> None:
+def test_preflight_resolves_relative_root_and_reports_missing_tools(
+    tmp_path: Path,
+) -> None:
+    relative_root = tmp_path / "relative-managed-root"
+    relative_root.mkdir()
+    configured_relative_root = Path(os.path.relpath(relative_root, Path.cwd()))
     settings, session_factory = configured(
         tmp_path,
         enabled=False,
-        managed_root=Path("relative-managed-root"),
+        managed_root=configured_relative_root,
     )
     result = SkillOptimizationPreflightService(
         session_factory,
@@ -266,12 +272,16 @@ def test_preflight_reports_disabled_relative_root_and_missing_tools(tmp_path: Pa
     checks = checks_by_code(result)
     assert checks["feature_switch"]["status"] == "FAIL"
     assert checks["managed_root_configured"]["status"] == "PASS"
-    assert checks["managed_root_absolute"]["status"] == "FAIL"
-    assert checks["managed_root_writable"]["status"] == "FAIL"
+    assert checks["managed_root_absolute"]["status"] == "PASS"
+    assert checks["managed_root_absolute"]["details"] == {
+        "path": str(relative_root),
+        "configured_path": str(configured_relative_root),
+    }
+    assert checks["managed_root_writable"]["status"] == "PASS"
     assert checks["git_executable"]["status"] == "FAIL"
     assert checks["agent_runners"]["status"] == "FAIL"
     assert checks["package_test_sandbox"]["status"] == "WARN"
-    assert not Path("relative-managed-root").exists()
+    assert list(relative_root.iterdir()) == []
 
 
 def test_context_preflight_checks_frozen_compatible_inputs(tmp_path: Path) -> None:

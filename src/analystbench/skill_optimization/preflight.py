@@ -352,7 +352,8 @@ class SkillOptimizationPreflightService:
         )
 
     def _check_managed_root(self) -> list[PreflightCheck]:
-        root = self.settings.skill_optimization_root_path.expanduser()
+        configured_root = self.settings.skill_optimization_managed_root
+        root = self.settings.skill_optimization_root_path
         explicitly_configured = self.settings.skill_optimization_managed_root is not None
         checks = [
             PreflightCheck(
@@ -368,11 +369,16 @@ class SkillOptimizationPreflightService:
                 code="managed_root_absolute",
                 status="PASS" if root.is_absolute() else "FAIL",
                 message=(
-                    "Managed root 是绝对路径。"
+                    "Managed root 已解析为绝对路径。"
                     if root.is_absolute()
-                    else "Managed root 必须配置为绝对路径。"
+                    else "Managed root 无法解析为绝对路径。"
                 ),
-                details={"path": str(root)},
+                details={
+                    "path": str(root),
+                    "configured_path": (
+                        str(configured_root) if configured_root is not None else None
+                    ),
+                },
             )
         ]
         if not root.is_dir():

@@ -21,7 +21,7 @@ class EvaluationMethodCreate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     command_template: str = Field(min_length=1)
     tool_dir: str | None = None
-    timeout_seconds: int = Field(default=1800, ge=1, le=7200)
+    timeout_seconds: int = Field(default=21600, ge=1, le=21600)
     max_output_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
     concurrency_limit: int = Field(default=1, ge=1, le=32)
 
@@ -32,7 +32,7 @@ class EvaluationMethodRevise(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     command_template: str | None = Field(default=None, min_length=1)
     tool_dir: str | None = None
-    timeout_seconds: int | None = Field(default=None, ge=1, le=7200)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=21600)
     max_output_bytes: int | None = Field(default=None, ge=1024)
     concurrency_limit: int | None = Field(default=None, ge=1, le=32)
 

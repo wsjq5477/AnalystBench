@@ -33,4 +33,14 @@ test("Skill optimization selects a host combination and keeps drafts until cance
   assert.match(options, /harness_id: combination\.harness\.id/);
   assert.match(options, /evaluation_target_id: target\.id/);
   assert.match(options, /combination\.skill\.key/);
+
+  assert.match(app, /高级策略/);
+  assert.match(app, /不再限制改动文件数、新增内容、删除内容或单文件改动比例/);
+  assert.match(app, /optimizationCapabilities\?\.system_protections/);
+  assert.match(app, /optimizationCapabilities\?\.fixed_strategy/);
+  assert.match(options, /getOptimizationCapabilities\(\)/);
+  assert.match(options, /candidate_count: Number\(form\.candidate_count\)/);
+  assert.match(options, /bootstrap_samples: Number\(form\.bootstrap_samples\)/);
+  assert.doesNotMatch(options, /max_added_tokens: 600/);
+  assert.doesNotMatch(options, /max_single_file_change_ratio: 0\.25/);
 });

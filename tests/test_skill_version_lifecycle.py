@@ -291,6 +291,37 @@ def test_per_skill_limits_are_enforced_on_later_imports(tmp_path: Path) -> None:
     assert too_many_files.value.code == "skill_package_too_large"
 
 
+def test_removed_token_limit_is_rejected_for_new_skills_and_ignored_for_legacy_skills(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory = configured(tmp_path)
+    source = tmp_path / "source-skill"
+    write_skill(source, "# Demo\n\n" + "x" * 100_000)
+    registry = SkillRegistryService(session_factory, settings)  # type: ignore[arg-type]
+
+    with pytest.raises(AnalystBenchError) as unsupported:
+        registry.create(
+            skill_key="unsupported",
+            name="Unsupported",
+            source_path=str(source),
+            limits={"max_skill_tokens": 1},
+        )
+    assert unsupported.value.code == "skill_limits_invalid"
+
+    skill = registry.create(
+        skill_key="legacy",
+        name="Legacy",
+        source_path=str(source),
+    )
+    with transaction(session_factory) as session:  # type: ignore[arg-type]
+        stored = session.get(type(skill), skill.id)
+        assert stored is not None
+        stored.limits_json = '{"max_skill_tokens":1}'
+
+    version = registry.import_version(skill.id, source_type="initial")
+    assert version.skill_id == skill.id
+
+
 def test_failed_initial_import_can_discard_only_the_empty_new_skill(
     tmp_path: Path,
 ) -> None:

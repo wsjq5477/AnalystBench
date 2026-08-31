@@ -160,6 +160,16 @@ def compare_paired(
             }
         )
     deltas = [float(item["delta"]) for item in pairs]
+    baseline_score = (
+        float(statistics.mean(float(item["baseline_score"]) for item in pairs))
+        if pairs
+        else None
+    )
+    candidate_score = (
+        float(statistics.mean(float(item["candidate_score"]) for item in pairs))
+        if pairs
+        else None
+    )
     overall_delta = float(statistics.mean(deltas)) if deltas else None
     confidence_interval: list[float] | None = None
     win_probability: float | None = None
@@ -247,6 +257,8 @@ def compare_paired(
     )
     return {
         "case_count": len(pairs),
+        "baseline_score": baseline_score,
+        "candidate_score": candidate_score,
         "overall_delta": overall_delta,
         "bootstrap_confidence": confidence,
         "bootstrap_seed": seed,

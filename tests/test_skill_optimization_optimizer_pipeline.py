@@ -9,9 +9,6 @@ import pytest
 from analystbench.errors import AnalystBenchError
 from analystbench.execution.runner import AgentRunnerError
 from analystbench.skill_optimization.evidence import (
-    MAX_CLAIM_FINDINGS_PER_REPORT,
-    MAX_CLAIM_FINDINGS_PER_SUMMARY,
-    MAX_FAILED_CASES,
     build_evidence_summary,
     extract_report_evidence,
 )
@@ -48,7 +45,7 @@ def _bare_service(backoff: object | None = None) -> OptimizationExperimentServic
     return service
 
 
-def test_train_evidence_is_bounded_and_never_copies_answer_or_report_text() -> None:
+def test_train_evidence_is_complete_and_never_copies_answer_or_report_text() -> None:
     secret = "STANDARD_ANSWER_AND_REPORT_TEXT_MUST_NOT_LEAK"
     claims = [
         {
@@ -62,7 +59,7 @@ def test_train_evidence_is_bounded_and_never_copies_answer_or_report_text() -> N
             "relation": "match" if index % 2 else "missing",
             "keyword_match": bool(index % 2),
         }
-        for index in range(MAX_CLAIM_FINDINGS_PER_REPORT + 10)
+        for index in range(42)
     ]
     evidence = extract_report_evidence(
         {
@@ -85,7 +82,7 @@ def test_train_evidence_is_bounded_and_never_copies_answer_or_report_text() -> N
         "claude",
     )
 
-    assert len(evidence["claim_findings"]) == MAX_CLAIM_FINDINGS_PER_REPORT
+    assert len(evidence["claim_findings"]) == 42
     assert evidence["metrics"]["claim_coverage"] == 0.75
     assert "unsafe_text_metric" not in evidence["metrics"]
     assert "root_cause:match" in evidence["success_patterns"]
@@ -99,14 +96,15 @@ def test_train_evidence_is_bounded_and_never_copies_answer_or_report_text() -> N
             "succeeded": True,
             **evidence,
         }
-        for index in range(MAX_FAILED_CASES + 20)
+        for index in range(70)
     ]
     summary = build_evidence_summary(signals)
 
     assert summary["evidence_scope"] == "train_only"
     assert summary["schema_version"] == "optimizer_evidence.v1"
-    assert len(summary["claim_findings"]) == MAX_CLAIM_FINDINGS_PER_SUMMARY
-    assert len(summary["failed_cases"]) == MAX_FAILED_CASES
+    assert len(summary["claim_findings"]) == 42 * 70
+    assert len(summary["failed_cases"]) == 70
+    assert summary["truncation"]["applied"] is False
     assert summary["metrics"]["claim_coverage"]["median"] == 0.75
     assert summary["success_patterns"]["root_cause:match"] > 0
     assert secret not in json.dumps(summary)

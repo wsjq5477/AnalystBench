@@ -27,7 +27,9 @@ from analystbench.errors import AnalystBenchError
 from analystbench.execution.resolver import resolve_executable
 from analystbench.storage.content import canonical_json, content_hash
 
-KEY_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._()-]{0,98}[A-Za-z0-9)])?$")
+KEY_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._()\[\]-]{0,98}[A-Za-z0-9)\]])?$"
+)
 RESERVED_KEYS = {"result", "run", "inputs", "artifacts", "_artifacts", "logs"}
 BASE_PLACEHOLDERS = {"input", "input_dir", "workspace", "tool_dir"}
 ALL_PLACEHOLDERS = BASE_PLACEHOLDERS | {"model", "skill"}
@@ -39,8 +41,8 @@ def _key(value: str, *, label: str) -> str:
     if not KEY_RE.fullmatch(normalized) or normalized.lower() in RESERVED_KEYS:
         raise AnalystBenchError(
             "evaluation_target_invalid",
-            f"{label} key 必须以字母或数字开头，以字母、数字或右括号结尾，"
-            "只能包含字母、数字、点、括号、-、_，且不能使用保留名。",
+            f"{label} key 必须以字母或数字开头，以字母、数字、右圆括号或右方括号结尾，"
+            "只能包含字母、数字、点、圆括号、方括号、-、_，且不能使用保留名。",
         )
     return normalized
 
@@ -72,9 +74,7 @@ def _validate_command(
     command_template: str,
     tool_dir: str | None,
     model_policy: str,
-    timeout_seconds: int,
     max_output_bytes: int,
-    concurrency_limit: int,
 ) -> list[str]:
     if model_policy not in {"required", "none"}:
         raise AnalystBenchError("evaluation_target_invalid", "模型策略只能为 required 或 none。")
@@ -105,12 +105,8 @@ def _validate_command(
         raise AnalystBenchError(
             "evaluation_target_invalid", "无模型 Harness 命令不能包含 {model}。"
         )
-    if not 1 <= timeout_seconds <= 7200:
-        raise AnalystBenchError("evaluation_target_invalid", "超时必须在 1 到 7200 秒之间。")
     if not 1024 <= max_output_bytes <= 100 * 1024 * 1024:
         raise AnalystBenchError("evaluation_target_invalid", "输出上限必须在 1 KiB 到 100 MiB。")
-    if not 1 <= concurrency_limit <= 32:
-        raise AnalystBenchError("evaluation_target_invalid", "并发限制必须在 1 到 32。")
     return argv
 
 
@@ -192,9 +188,7 @@ class EvaluationHarnessService:
         command_template: str,
         tool_dir: str | None = None,
         skill_base_dir: str | None = None,
-        timeout_seconds: int = 1800,
         max_output_bytes: int = 10 * 1024 * 1024,
-        concurrency_limit: int = 1,
     ) -> EvaluationHarness:
         key = _key(harness_key, label="Harness")
         normalized_name = (name or key).strip()
@@ -207,9 +201,7 @@ class EvaluationHarnessService:
             command_template=command_template,
             tool_dir=normalized_tool_dir,
             model_policy=model_policy,
-            timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
-            concurrency_limit=concurrency_limit,
         )
         with transaction(self.session_factory) as session:
             version = int(
@@ -229,9 +221,7 @@ class EvaluationHarnessService:
                 "tool_dir": normalized_tool_dir,
                 "skill_base_dir": normalized_skill_base_dir,
                 "command_template": command_template,
-                "timeout_seconds": timeout_seconds,
                 "max_output_bytes": max_output_bytes,
-                "concurrency_limit": concurrency_limit,
             }
             item = EvaluationHarness(
                 id=str(uuid4()),
@@ -243,9 +233,7 @@ class EvaluationHarnessService:
                 tool_dir=normalized_tool_dir,
                 skill_base_dir=normalized_skill_base_dir,
                 command_template=command_template,
-                timeout_seconds=timeout_seconds,
                 max_output_bytes=max_output_bytes,
-                concurrency_limit=concurrency_limit,
                 content_hash=content_hash(canonical_json(manifest).encode("utf-8")),
             )
             session.add(item)
@@ -283,9 +271,7 @@ class EvaluationHarnessService:
             command_template=item.command_template,
             tool_dir=tool_dir,
             model_policy=item.model_policy,
-            timeout_seconds=item.timeout_seconds,
             max_output_bytes=item.max_output_bytes,
-            concurrency_limit=item.concurrency_limit,
         )
         executable = resolve_executable(argv[0])
         tool_dir_ok = tool_dir is None or Path(tool_dir).is_dir()
@@ -350,9 +336,7 @@ class EvaluationHarnessService:
             skill_base_dir=changes.get(
                 "skill_base_dir", current.skill_base_dir
             ),
-            timeout_seconds=changes.get("timeout_seconds", current.timeout_seconds),
             max_output_bytes=changes.get("max_output_bytes", current.max_output_bytes),
-            concurrency_limit=changes.get("concurrency_limit", current.concurrency_limit),
         )
 
     def archive(self, harness_id: str) -> EvaluationHarness:
@@ -375,9 +359,7 @@ class EvaluationHarnessService:
             "tool_dir": item.tool_dir,
             "skill_base_dir": item.skill_base_dir,
             "command_template": item.command_template,
-            "timeout_seconds": item.timeout_seconds,
             "max_output_bytes": item.max_output_bytes,
-            "concurrency_limit": item.concurrency_limit,
             "status": item.status,
             "content_hash": item.content_hash,
             "probe": json.loads(item.last_probe_json or "{}"),
@@ -390,12 +372,24 @@ class EvaluationModelService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
 
-    def create(self, *, model_key: str, name: str | None, argument: str) -> EvaluationModel:
+    def create(
+        self,
+        *,
+        model_key: str,
+        name: str | None,
+        argument: str,
+        timeout_seconds: int = 21600,
+        concurrency_limit: int = 1,
+    ) -> EvaluationModel:
         key = _key(model_key, label="模型")
         normalized_name = (name or key).strip()
         if not normalized_name:
             raise AnalystBenchError("evaluation_target_invalid", "模型名称不能为空。")
         normalized_argument = _safe_model_argument(argument)
+        if not 1 <= timeout_seconds <= 21600:
+            raise AnalystBenchError("evaluation_target_invalid", "模型超时必须在 1 到 21600 秒之间。")
+        if not 1 <= concurrency_limit <= 32:
+            raise AnalystBenchError("evaluation_target_invalid", "模型并发限制必须在 1 到 32。")
         with transaction(self.session_factory) as session:
             version = int(
                 session.scalar(
@@ -410,6 +404,8 @@ class EvaluationModelService:
                 "name": normalized_name,
                 "version_number": version,
                 "argument": normalized_argument,
+                "timeout_seconds": timeout_seconds,
+                "concurrency_limit": concurrency_limit,
             }
             item = EvaluationModel(
                 id=str(uuid4()),
@@ -417,6 +413,8 @@ class EvaluationModelService:
                 name=normalized_name,
                 version_number=version,
                 argument=normalized_argument,
+                timeout_seconds=timeout_seconds,
+                concurrency_limit=concurrency_limit,
                 status="frozen",
                 content_hash=content_hash(canonical_json(manifest).encode("utf-8")),
             )
@@ -452,6 +450,8 @@ class EvaluationModelService:
             model_key=current.model_key,
             name=changes.get("name", current.name),
             argument=changes.get("argument", current.argument),
+            timeout_seconds=changes.get("timeout_seconds", current.timeout_seconds),
+            concurrency_limit=changes.get("concurrency_limit", current.concurrency_limit),
         )
 
     def archive(self, model_id: str) -> EvaluationModel:
@@ -470,6 +470,8 @@ class EvaluationModelService:
             "name": item.name,
             "version": item.version_number,
             "argument": item.argument,
+            "timeout_seconds": item.timeout_seconds,
+            "concurrency_limit": item.concurrency_limit,
             "status": item.status,
             "content_hash": item.content_hash,
             "created_at": item.created_at,
@@ -508,7 +510,6 @@ class EvaluationTargetService:
         harness_id: str,
         model_id: str | None = None,
         model_argument: str | None = None,
-        concurrency_limit: int | None = None,
     ) -> EvaluationTarget:
         harness = self.harnesses.get(harness_id)
         model = self.models.get(model_id) if model_id else None
@@ -519,8 +520,6 @@ class EvaluationTargetService:
         if harness.model_policy == "none" and model_argument:
             raise AnalystBenchError("evaluation_target_invalid", "无模型 Harness 不能设置模型参数。")
         argument = _safe_model_argument(model_argument or (model.argument if model else "")) if model else None
-        if concurrency_limit is not None and not 1 <= concurrency_limit <= 32:
-            raise AnalystBenchError("evaluation_target_invalid", "组合并发限制必须在 1 到 32。")
         target_key = self._target_key(harness, model)
         with transaction(self.session_factory) as session:
             model_match = (
@@ -533,7 +532,7 @@ class EvaluationTargetService:
                     EvaluationTarget.harness_id == harness.id,
                     model_match,
                     EvaluationTarget.model_argument == argument,
-                    EvaluationTarget.concurrency_limit == concurrency_limit,
+                    EvaluationTarget.concurrency_limit.is_(None),
                     EvaluationTarget.status.in_(("draft", "frozen")),
                 )
             )
@@ -557,7 +556,6 @@ class EvaluationTargetService:
                 "model_id": model.id if model else None,
                 "model_hash": model.content_hash if model else None,
                 "model_argument": argument,
-                "concurrency_limit": concurrency_limit,
             }
             item = EvaluationTarget(
                 id=str(uuid4()),
@@ -566,7 +564,7 @@ class EvaluationTargetService:
                 harness_id=harness.id,
                 model_id=model.id if model else None,
                 model_argument=argument,
-                concurrency_limit=concurrency_limit,
+                concurrency_limit=None,
                 content_hash=content_hash(canonical_json(manifest).encode("utf-8")),
             )
             session.add(item)
@@ -673,11 +671,10 @@ class EvaluationTargetService:
                     .order_by(EvaluationHarness.harness_key, EvaluationTarget.target_key, EvaluationTarget.version_number.desc())
                 )
             )
-            for target, harness, model in rows:
-                session.expunge(target)
-                session.expunge(harness)
-                if model is not None:
-                    session.expunge(model)
+            # Multiple target rows can share the same Harness or Model instance
+            # through SQLAlchemy's identity map. Detach the session once instead
+            # of expunging repeated instances row by row.
+            session.expunge_all()
             return rows
 
     def probe(self, target_id: str) -> EvaluationTarget:
@@ -743,9 +740,9 @@ class EvaluationTargetService:
                 "model_hash": model.content_hash if model else None,
                 "tool_dir": harness.tool_dir,
                 "command_template": command_template,
-                "timeout_seconds": harness.timeout_seconds,
+                "timeout_seconds": model.timeout_seconds if model else 21600,
                 "max_output_bytes": harness.max_output_bytes,
-                "concurrency_limit": stored.concurrency_limit or 32,
+                "concurrency_limit": model.concurrency_limit if model else 32,
             }
             method_hash = content_hash(
                 canonical_json(method_manifest).encode("utf-8")
@@ -773,9 +770,9 @@ class EvaluationTargetService:
                 method.name = self.display_name(harness, model)
                 method.tool_dir = harness.tool_dir
                 method.command_template = command_template
-                method.timeout_seconds = harness.timeout_seconds
+                method.timeout_seconds = model.timeout_seconds if model else 21600
                 method.max_output_bytes = harness.max_output_bytes
-                method.concurrency_limit = stored.concurrency_limit or 32
+                method.concurrency_limit = model.concurrency_limit if model else 32
                 method.content_hash = method_hash
             method.status = "frozen"
             method.last_probe_json = stored.last_probe_json
@@ -812,7 +809,6 @@ class EvaluationTargetService:
             "harness": EvaluationHarnessService.view(harness),
             "model": EvaluationModelService.view(model) if model else None,
             "model_argument": target.model_argument,
-            "concurrency_limit": target.concurrency_limit,
             "status": target.status,
             "content_hash": target.content_hash,
             "probe": json.loads(target.last_probe_json or "{}"),
@@ -852,7 +848,6 @@ class EvaluationTargetService:
                     "version": target.version_number,
                     "display_name": self.display_name(harness, model),
                     "model_argument": target.model_argument,
-                    "concurrency_limit": target.concurrency_limit,
                     "content_hash": target.content_hash,
                     "materialized_method_id": target.materialized_method_id,
                     "harness": {
@@ -873,6 +868,8 @@ class EvaluationTargetService:
                             "name": model.name,
                             "version": model.version_number,
                             "argument": model.argument,
+                            "timeout_seconds": model.timeout_seconds,
+                            "concurrency_limit": model.concurrency_limit,
                             "content_hash": model.content_hash,
                         }
                         if model

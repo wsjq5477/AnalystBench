@@ -100,6 +100,21 @@ def _report() -> str:
     )
 
 
+def test_claude_semantic_judge_uses_local_configuration_by_default(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(workspace_root_path=tmp_path / "workspaces")
+
+    default_judge = SemanticJudge(settings, "claude")
+    bare_judge = SemanticJudge(settings, "claude", {"environment_mode": "bare"})
+    opencode_judge = SemanticJudge(settings, "opencode")
+
+    assert default_judge.configuration["environment_mode"] == "local"
+    assert default_judge.configuration["timeout_seconds"] == 3600
+    assert bare_judge.configuration["environment_mode"] == "bare"
+    assert "environment_mode" not in opencode_judge.configuration
+
+
 def test_partial_match_rejects_a_different_subject() -> None:
     with pytest.raises(ValidationError):
         SemanticAlignment.model_validate(
