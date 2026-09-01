@@ -1289,7 +1289,7 @@ def test_partial_method_failure_skips_scoring_and_names_failed_method(
     assert case_run["error"] == {
         "code": "partial_methods_failed",
         "message": "部分测评方式失败，已跳过评分。",
-        "failed_methods": ["sv-demo（timeout）"],
+        "failed_methods": ["codeagent-native@glm-5.2（timeout）"],
     }
     variant_run = next(item for item in case_run["methods"] if item["key"] == "sv-demo")
     assert variant_run["name"] == "codeagent-native@glm-5.2"
@@ -1306,6 +1306,10 @@ def test_partial_method_failure_skips_scoring_and_names_failed_method(
         if item["candidate_name"] == "codeagent-native@glm-5.2"
     )
     assert variant_summary["status"] == "timeout"
+    variant_generation = next(
+        item for item in result["generation"]["methods"] if item["key"] == "sv-demo"
+    )
+    assert variant_generation["name"] == "codeagent-native@glm-5.2"
     assert result["error"] == case_run["error"]
 
 

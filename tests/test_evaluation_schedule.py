@@ -188,6 +188,7 @@ def test_run_now_creates_normal_submission_and_preserves_next_run(
         )
         assert created.status_code == 201
         schedule = created.json()
+        assert schedule["methods"][0]["name"] == "nightly-script"
         next_run = schedule["next_run_at"]
         queued = client.post(
             f"/api/v1/evaluation-schedules/{schedule['id']}:run-now"

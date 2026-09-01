@@ -352,7 +352,12 @@ class EvaluationMethodService:
                             select(EvaluationTarget.materialized_method_id).where(
                                 EvaluationTarget.materialized_method_id.is_not(None)
                             )
-                        )
+                        ),
+                        ~EvaluationMethod.id.in_(
+                            select(EvaluationVariant.materialized_method_id).where(
+                                EvaluationVariant.materialized_method_id.is_not(None)
+                            )
+                        ),
                     )
                     .order_by(
                         EvaluationMethod.method_key, EvaluationMethod.version_number.desc()
@@ -2237,7 +2242,11 @@ class EvaluationSubmissionService:
     @staticmethod
     def _failed_method_names(session: Session, case_run_id: str) -> list[str]:
         rows = session.execute(
-            select(EvaluationMethod.method_key, EvaluationSubmissionMethodRun.status)
+            select(
+                EvaluationMethod.method_key,
+                EvaluationMethod.name,
+                EvaluationSubmissionMethodRun.status,
+            )
             .join(
                 EvaluationSubmissionMethodRun,
                 EvaluationSubmissionMethodRun.method_id == EvaluationMethod.id,
@@ -2249,7 +2258,10 @@ class EvaluationSubmissionService:
             )
             .order_by(EvaluationMethod.method_key)
         )
-        return [f"{method_key}（{status}）" for method_key, status in rows]
+        return [
+            f"{_candidate_name(method_key, method_name)}（{status}）"
+            for method_key, method_name, status in rows
+        ]
 
     def execute_case_scoring(self, case_run_id: str) -> None:
         with transaction(self.session_factory) as session:
@@ -2653,6 +2665,7 @@ class EvaluationSubmissionService:
         return {
             "method_id": method.id,
             "key": method.method_key,
+            "name": _candidate_name(method.method_key, method.name),
             "version": method.version_number,
             "status": method_run.status,
             "attempt": method_run.attempt,

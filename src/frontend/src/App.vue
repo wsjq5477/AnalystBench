@@ -235,7 +235,7 @@ export default appOptions;
               <button v-for="submission in evaluationSubmissions" :key="submission.id" :class="['submission-item', { active: selectedSubmissionId === submission.id }]" @click="selectEvaluationSubmission(submission.id)">
                 <strong>{{ submission.dataset_key }} · {{ submission.timestamp }}</strong>
                 <span :class="submission.status === 'completed' ? 'tag-match' : submission.status === 'failed' || submission.status === 'completed_with_errors' ? 'tag-missing' : 'tag-partial'">{{ submission.status }}</span>
-                <small>{{ submission.case_count }} Case · {{ submission.target_ids?.length ? submission.targets.map((item) => item.display_name || item.key).join('、') : submission.methods.map((item) => item.key).join('、') }}<template v-if="submission.schedule_run_id"> · 定时</template></small>
+                <small>{{ submission.case_count }} Case · {{ submission.target_ids?.length ? submission.targets.map((item) => item.display_name || item.key).join('、') : submission.methods.map((item) => item.name || item.key).join('、') }}<template v-if="submission.schedule_run_id"> · 定时</template></small>
               </button>
             </div>
             <div class="submission-cases">
@@ -965,7 +965,7 @@ export default appOptions;
           <p class="form-note">命令在隔离目录执行，仅能看到本次复制的原始日志。标准输出会保存为对应的 Markdown 报告。</p>
           <div v-if="visibleEvaluationMethods.length" class="method-list">
             <div v-for="method in visibleEvaluationMethods" :key="method.id" class="method-row">
-              <div><strong>{{ method.key }} <small>v{{ method.version }}</small></strong><code>{{ method.command_template }}</code><span v-if="method.tool_dir">工具目录：{{ method.tool_dir }}</span></div>
+              <div><strong>{{ method.name || method.key }} <small>v{{ method.version }}</small></strong><code>{{ method.command_template }}</code><span v-if="method.tool_dir">工具目录：{{ method.tool_dir }}</span></div>
               <span :class="method.status === 'frozen' ? 'tag-match' : method.status === 'archived' ? 'tag-missing' : 'tag-partial'">{{ method.status }}</span>
               <span :class="method.probe?.available ? 'tag-match' : 'tag-partial'">{{ method.probe?.available ? '命令可用' : '未检测' }}</span>
               <button v-if="method.status === 'draft'" class="ghost-button" @click="probeEvaluationMethod(method)">检测</button>
@@ -1100,7 +1100,7 @@ export default appOptions;
             <legend>旧测评方式</legend>
             <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
               <input v-model="submissionForm.method_ids" type="checkbox" :value="method.id" />
-              <span><strong>{{ method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
+              <span><strong>{{ method.name || method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
             </label>
             <p v-if="!frozenEvaluationMethods.length" class="form-note">没有可用方式，请先到设置页新建、检测并冻结。</p>
           </template>
@@ -1239,7 +1239,7 @@ export default appOptions;
           <legend>旧测评方式（固定到当前版本）</legend>
           <label v-for="method in frozenEvaluationMethods" :key="method.id" class="check-row">
             <input v-model="scheduleForm.method_ids" type="checkbox" :value="method.id" />
-            <span><strong>{{ method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
+            <span><strong>{{ method.name || method.key }} v{{ method.version }}</strong><code>{{ method.command_template }}</code></span>
           </label>
         </fieldset>
         <div class="form-grid schedule-time-grid">

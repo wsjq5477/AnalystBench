@@ -1995,7 +1995,9 @@ export default {
       const target = targets.find((item) => item.target_key === candidateName);
       if (target) return target.duration_ms ?? null;
       const methods = this.selectedResultData?.generation?.methods || [];
-      const method = methods.find((item) => item.key === candidateName);
+      const method = methods.find(
+        (item) => item.name === candidateName || item.key === candidateName,
+      );
       return method?.duration_ms ?? null;
     },
     formatMethodTimestamp(value) {

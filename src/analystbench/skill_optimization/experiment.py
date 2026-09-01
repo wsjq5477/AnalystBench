@@ -42,7 +42,7 @@ from analystbench.db.models import (
 )
 from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.evaluation.submission import EvaluationSubmissionService
+from analystbench.evaluation.submission import EvaluationSubmissionService, _candidate_name
 from analystbench.execution.runner import AgentRunnerError, create_runner
 from analystbench.runtime.jobs import JobQueue
 from analystbench.skill_optimization.evidence import (
@@ -1999,7 +1999,8 @@ class OptimizationExperimentService:
                                 result_path.read_text(encoding="utf-8")
                             )
                             report_evidence = extract_report_evidence(
-                                result, method.method_key
+                                result,
+                                _candidate_name(method.method_key, method.name),
                             )
                         except (OSError, json.JSONDecodeError):
                             pass

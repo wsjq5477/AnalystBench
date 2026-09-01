@@ -45,6 +45,67 @@ def _safe_result_segment(value: str, field: str) -> str:
     return normalized
 
 
+def _candidate_name_aliases(data: dict[str, Any]) -> dict[str, str]:
+    """Return reliable internal-key to display-name aliases persisted in a result."""
+
+    generation = data.get("generation") or {}
+    if not isinstance(generation, dict):
+        return {}
+    methods = generation.get("methods") or []
+    if not isinstance(methods, list):
+        return {}
+    aliases: dict[str, str] = {}
+    for method in methods:
+        if not isinstance(method, dict):
+            continue
+        method_key = method.get("key")
+        method_name = method.get("name")
+        if (
+            isinstance(method_key, str)
+            and method_key.startswith("sv-")
+            and isinstance(method_name, str)
+            and method_name
+        ):
+            aliases[method_key] = method_name
+    return aliases
+
+
+def _normalize_candidate_names(data: dict[str, Any]) -> dict[str, Any]:
+    """Hide historical internal Variant keys when a persisted mapping is available."""
+
+    aliases = _candidate_name_aliases(data)
+    if not aliases:
+        return data
+    containers = [data]
+    summary = data.get("summary")
+    if isinstance(summary, dict):
+        containers.append(summary)
+    for container in containers:
+        reports = container.get("reports") or []
+        if isinstance(reports, list):
+            for report in reports:
+                if isinstance(report, dict):
+                    candidate_name = report.get("candidate_name")
+                    if isinstance(candidate_name, str) and candidate_name in aliases:
+                        report["candidate_name"] = aliases[candidate_name]
+        ranking = container.get("ranking") or []
+        if isinstance(ranking, list):
+            container["ranking"] = [
+                aliases.get(item, item) if isinstance(item, str) else item
+                for item in ranking
+            ]
+        comparisons = container.get("comparisons") or []
+        if isinstance(comparisons, list):
+            for comparison in comparisons:
+                if not isinstance(comparison, dict):
+                    continue
+                for field in ("baseline", "candidate"):
+                    value = comparison.get(field)
+                    if isinstance(value, str) and value in aliases:
+                        comparison[field] = aliases[value]
+    return data
+
+
 def results_dirs(request: Request) -> tuple[Path, Path]:
     """Resolve the tmp and formal results directories from app settings."""
     settings: Settings = request.app.state.settings
@@ -53,6 +114,7 @@ def results_dirs(request: Request) -> tuple[Path, Path]:
 
 def _extract_result_meta(data: dict[str, Any], rel_path: Path, source: str) -> dict[str, Any]:
     """Extract metadata from a result JSON and its relative path for listing."""
+    _normalize_candidate_names(data)
     if source == "tmp":
         # tmp format: {case_key}/{timestamp}/result.json
         if len(rel_path.parts) >= 2:
@@ -190,23 +252,27 @@ def _generation_durations(data: dict[str, Any]) -> dict[str, float]:
     generation = data.get("generation") or {}
     if not isinstance(generation, dict):
         return durations
-    for field, key_field in (("methods", "key"), ("targets", "target_key")):
+    for field, key_fields in (
+        ("methods", ("key", "name")),
+        ("targets", ("target_key", "display_name")),
+    ):
         items = generation.get(field) or []
         if not isinstance(items, list):
             continue
         for item in items:
             if not isinstance(item, dict):
                 continue
-            candidate_name = item.get(key_field)
             duration = item.get("duration_ms")
-            if (
-                isinstance(candidate_name, str)
-                and candidate_name
-                and isinstance(duration, (int, float))
+            if not (
+                isinstance(duration, (int, float))
                 and not isinstance(duration, bool)
                 and duration >= 0
             ):
-                durations[candidate_name] = float(duration)
+                continue
+            for key_field in key_fields:
+                candidate_name = item.get(key_field)
+                if isinstance(candidate_name, str) and candidate_name:
+                    durations[candidate_name] = float(duration)
     return durations
 
 
@@ -245,6 +311,7 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 data = json.loads(json_file.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
+            _normalize_candidate_names(data)
             if data.get("mode") != "direct_file":
                 continue
             if data.get("result_purpose") == "skill_optimization":
@@ -1026,6 +1093,7 @@ def delete_direct_result(result_id: str, request: Request) -> None:
 
 def _migrate_summary(data: dict[str, Any]) -> dict[str, Any]:
     """Apply field-name migrations to the summary.reports of a result JSON."""
+    _normalize_candidate_names(data)
     summary = data.get("summary")
     if isinstance(summary, dict):
         for report in summary.get("reports", []):

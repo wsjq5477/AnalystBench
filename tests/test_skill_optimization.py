@@ -25,7 +25,10 @@ from analystbench.db.models import (
 from analystbench.db.session import create_database_engine, create_session_factory
 from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.evaluation.submission import EvaluationSubmissionService
+from analystbench.evaluation.submission import (
+    EvaluationMethodService,
+    EvaluationSubmissionService,
+)
 from analystbench.skill_optimization.evidence import (
     build_evidence_summary,
     extract_report_evidence,
@@ -210,6 +213,9 @@ def test_registry_uses_internal_git_and_installs_only_frozen_skill(
     assert internal_repository.is_dir()
     assert not (source / ".git").exists()
     assert variant.materialized_method_id != base_method_id
+    assert EvaluationMethodService(  # type: ignore[arg-type]
+        session_factory, settings
+    ).list() == []
 
     workspace = tmp_path / "run-workspace"
     workspace.mkdir()

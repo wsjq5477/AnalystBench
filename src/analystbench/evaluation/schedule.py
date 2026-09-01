@@ -24,7 +24,7 @@ from analystbench.db.models import (
 )
 from analystbench.db.transaction import transaction
 from analystbench.errors import AnalystBenchError
-from analystbench.evaluation.submission import EvaluationSubmissionService
+from analystbench.evaluation.submission import EvaluationSubmissionService, _candidate_name
 from analystbench.evaluation.target import EvaluationTargetService
 from analystbench.runtime.jobs import JobQueue
 from analystbench.storage.content import canonical_json
@@ -253,6 +253,7 @@ class EvaluationScheduleService:
                 {
                     "id": method.id,
                     "key": method.method_key,
+                    "name": _candidate_name(method.method_key, method.name),
                     "version": method.version_number,
                 }
                 for method in methods
@@ -817,6 +818,7 @@ class EvaluationScheduleService:
                 {
                     "id": method.id,
                     "key": method.method_key,
+                    "name": _candidate_name(method.method_key, method.name),
                     "version": method.version_number,
                     "status": method.status,
                 }

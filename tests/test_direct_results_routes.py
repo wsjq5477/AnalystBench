@@ -11,6 +11,7 @@ from analystbench.api.routes.direct_results import (
     PromotePayload,
     ResultVisibilityPayload,
     delete_direct_result,
+    get_direct_result,
     get_direct_result_stats,
     list_direct_results,
     move_direct_result,
@@ -183,6 +184,67 @@ def test_stats_exposes_average_generation_duration(tmp_path: Path) -> None:
     assert stats["test_sets"][0]["categories"][0]["candidates"][0][
         "avg_duration_ms"
     ] == 1200
+
+
+def test_variant_display_name_is_used_for_result_reads_and_stats(tmp_path: Path) -> None:
+    settings = Settings(
+        results_tmp_path=tmp_path / "results" / "tmp",
+        results_formal_path=tmp_path / "results",
+    )
+    result_id = "kdiag/deadlock/case_a/runs/202607271000"
+    result_directory = settings.results_formal_path / result_id
+    result_directory.mkdir(parents=True)
+    (result_directory / "result.json").write_text(
+        json.dumps(
+            {
+                "id": result_id,
+                "mode": "direct_file",
+                "status": "completed",
+                "summary": {
+                    "reports": [
+                        {
+                            "candidate_name": "sv-1234567890abcdef",
+                            "score": "80",
+                            "passed": True,
+                        }
+                    ],
+                    "ranking": ["sv-1234567890abcdef"],
+                    "comparisons": [
+                        {
+                            "baseline": "script",
+                            "candidate": "sv-1234567890abcdef",
+                        }
+                    ],
+                },
+                "generation": {
+                    "methods": [
+                        {
+                            "key": "sv-1234567890abcdef",
+                            "name": "codeagent-native@glm-5.2",
+                            "duration_ms": 1200,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    request = request_for(settings)
+
+    listed = list_direct_results(request)
+    result = get_direct_result(result_id, request)
+    stats = get_direct_result_stats(request)
+
+    assert listed[0]["reports"][0]["candidate_name"] == "codeagent-native@glm-5.2"
+    assert result["summary"]["reports"][0]["candidate_name"] == (
+        "codeagent-native@glm-5.2"
+    )
+    assert result["summary"]["ranking"] == ["codeagent-native@glm-5.2"]
+    assert result["summary"]["comparisons"][0]["candidate"] == (
+        "codeagent-native@glm-5.2"
+    )
+    assert stats["candidates"][0]["name"] == "codeagent-native@glm-5.2"
+    assert stats["candidates"][0]["avg_duration_ms"] == 1200
 
 
 def test_stats_exposes_latest_metrics_at_every_scope(tmp_path: Path) -> None:
