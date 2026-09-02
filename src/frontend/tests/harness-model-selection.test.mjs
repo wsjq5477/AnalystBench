@@ -22,6 +22,10 @@ test("evaluation UI selects explicit Harness, model, and host Skill combinations
   assert.match(app, /@click="deleteEvaluationModel\(model\)"/);
   assert.match(app, /全局并发数/);
   assert.match(app, /全局超时（秒）/);
+  assert.match(app, /v-model="modelForm\.name"/);
+  assert.match(app, /v-model="modelForm\.argument"/);
+  assert.match(app, /Benchmark 使用显示名称/);
+  assert.match(app, /\{model\} → \{\{ model\.argument \}\}/);
   assert.match(app, /methodRun\.name \|\| methodRun\.key/);
   assert.doesNotMatch(app, /harnessForm\.(?:timeout_seconds|concurrency_limit)/);
   assert.match(options, /target_selections:/);
@@ -36,6 +40,10 @@ test("evaluation UI selects explicit Harness, model, and host Skill combinations
   assert.match(options, /archiveEvaluationHarness\(harness.id\)/);
   assert.match(options, /archiveEvaluationModel\(model.id\)/);
   assert.match(options, /reviseEvaluationModel\(this\.editingModelId, payload\)/);
+  assert.match(options, /name: form\.name\.trim\(\)/);
+  assert.match(options, /argument: form\.argument\.trim\(\)/);
+  assert.match(options, /dashboardTarget\(candidate\)/);
+  assert.match(options, /target\?\.display_name \|\| candidateName/);
 });
 
 test("dashboard defaults both comparison constraints to Average", async () => {

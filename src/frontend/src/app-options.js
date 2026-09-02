@@ -128,6 +128,8 @@ export default {
       editingModelId: "",
       modelForm: {
         key: "",
+        name: "",
+        argument: "",
         timeout_seconds: 21600,
         concurrency_limit: 1,
       },
@@ -479,14 +481,14 @@ export default {
     dashboardModelOptions() {
       return [...new Set(
         this.activeCandidates
-          .map((candidate) => this.splitEvaluationTargetName(candidate.name).model)
+          .map((candidate) => this.dashboardTarget(candidate).model)
           .filter((model) => model !== "-"),
       )].sort((left, right) => left.localeCompare(right));
     },
     dashboardHarnessOptions() {
       return [...new Set(
         this.activeCandidates
-          .map((candidate) => this.splitEvaluationTargetName(candidate.name))
+          .map((candidate) => this.dashboardTarget(candidate))
           .filter((target) => target.model !== "-")
           .map((target) => target.harness),
       )].sort((left, right) => left.localeCompare(right));
@@ -513,7 +515,7 @@ export default {
     dashboardComparisonGroups() {
       const groups = new Map();
       this.activeCandidates.forEach((candidate) => {
-        const target = this.splitEvaluationTargetName(candidate.name);
+        const target = this.dashboardTarget(candidate);
         const isBaseline = target.model === "-";
         const selectedFilter =
           this.dashboardComparisonDimension === "harness"
@@ -565,7 +567,7 @@ export default {
     performanceScatterSeries() {
       const groups = new Map();
       this.activeCandidates.forEach((candidate) => {
-        const target = this.splitEvaluationTargetName(candidate.name);
+        const target = this.dashboardTarget(candidate);
         if (target.model === "-") return;
         const duration = Number(candidate.avg_duration_ms);
         const score = Number(candidate.avg_score);
@@ -595,7 +597,7 @@ export default {
     },
     performanceScatterBaseline() {
       const baseline = this.activeCandidates.find((candidate) => {
-        const target = this.splitEvaluationTargetName(candidate.name);
+        const target = this.dashboardTarget(candidate);
         return (
           target.model === "-" &&
           target.harness.toLowerCase() === "script" &&
@@ -604,7 +606,7 @@ export default {
       });
       if (!baseline) return null;
       return {
-        label: this.splitEvaluationTargetName(baseline.name).harness,
+        label: this.dashboardTarget(baseline).harness,
         value: Number(baseline.avg_score),
       };
     },
@@ -653,7 +655,7 @@ export default {
             String(left.name).localeCompare(String(right.name)),
         )
         .map((candidate, index) => {
-          const target = this.splitEvaluationTargetName(candidate.name);
+          const target = this.dashboardTarget(candidate);
           return {
             name: candidate.name,
             rank: index + 1,
@@ -1277,6 +1279,22 @@ export default {
         model: value.slice(separatorIndex + 1) || "-",
       };
     },
+    dashboardTarget(candidate) {
+      if (candidate && typeof candidate === "object") {
+        const harness = String(candidate.harness || "").trim();
+        const model = String(candidate.model || "").trim();
+        if (harness) {
+          return { harness, model: model || "-" };
+        }
+      }
+      return this.splitEvaluationTargetName(candidate?.name || candidate);
+    },
+    resultCandidateDisplayName(candidateName) {
+      const target = (this.selectedResultData?.generation?.targets || []).find(
+        (item) => item.target_key === candidateName,
+      );
+      return target?.display_name || candidateName;
+    },
     relationTagClass(relation) {
       if (relation === "match") return "tag-match";
       if (relation === "partial_match") return "tag-partial";
@@ -1594,11 +1612,15 @@ export default {
       this.modelForm = model
         ? {
             key: model.key,
+            name: model.name,
+            argument: model.argument,
             timeout_seconds: model.timeout_seconds,
             concurrency_limit: model.concurrency_limit,
           }
         : {
             key: "",
+            name: "",
+            argument: "",
             timeout_seconds: 21600,
             concurrency_limit: 1,
           };
@@ -1607,12 +1629,22 @@ export default {
     async saveEvaluationModel() {
       const form = this.modelForm;
       if (!form.key.trim()) {
-        this.showToast("请填写模型名称");
+        this.showToast("请填写模型 Key");
+        return;
+      }
+      if (!form.name.trim()) {
+        this.showToast("请填写显示名称");
+        return;
+      }
+      if (!form.argument.trim()) {
+        this.showToast("请填写传递名称");
         return;
       }
       this.modelSaving = true;
       try {
         const payload = {
+          name: form.name.trim(),
+          argument: form.argument.trim(),
           timeout_seconds: form.timeout_seconds,
           concurrency_limit: form.concurrency_limit,
         };

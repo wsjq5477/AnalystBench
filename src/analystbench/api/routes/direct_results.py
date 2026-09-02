@@ -276,6 +276,65 @@ def _generation_durations(data: dict[str, Any]) -> dict[str, float]:
     return durations
 
 
+def _target_display_metadata(data: dict[str, Any]) -> dict[str, dict[str, str | None]]:
+    """Return display labels for stable Target keys persisted in a result."""
+
+    generation = data.get("generation") or {}
+    if not isinstance(generation, dict):
+        return {}
+    targets = generation.get("targets") or []
+    if not isinstance(targets, list):
+        return {}
+    method_names_by_id: dict[str, set[str]] = {}
+    methods = generation.get("methods") or []
+    if isinstance(methods, list):
+        for method in methods:
+            if not isinstance(method, dict):
+                continue
+            method_id = method.get("method_id")
+            if not isinstance(method_id, str) or not method_id:
+                continue
+            for field in ("key", "name"):
+                candidate_name = method.get(field)
+                if isinstance(candidate_name, str) and candidate_name:
+                    method_names_by_id.setdefault(method_id, set()).add(candidate_name)
+    metadata: dict[str, dict[str, str | None]] = {}
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        target_key = target.get("target_key")
+        harness = target.get("harness") or {}
+        model = target.get("model")
+        if not isinstance(target_key, str) or not target_key:
+            continue
+        if not isinstance(harness, dict):
+            harness = {}
+        if model is not None and not isinstance(model, dict):
+            model = {}
+        harness_name = harness.get("name") or harness.get("key")
+        model_name = (model.get("name") or model.get("key")) if model else None
+        display_name = target.get("display_name")
+        if not isinstance(display_name, str) or not display_name:
+            display_name = None
+        if not isinstance(harness_name, str) or not harness_name:
+            harness_name = None
+        if not isinstance(model_name, str) or not model_name:
+            model_name = None
+        if display_name or harness_name or model_name:
+            item_metadata = {
+                "display_name": display_name,
+                "harness": harness_name,
+                "model": model_name,
+            }
+            candidate_names = {target_key}
+            method_id = target.get("method_id")
+            if isinstance(method_id, str):
+                candidate_names.update(method_names_by_id.get(method_id, set()))
+            for candidate_name in candidate_names:
+                metadata[candidate_name] = item_metadata
+    return metadata
+
+
 @router.get("/direct-results/stats")
 def get_direct_result_stats(request: Request) -> dict[str, Any]:
     """Aggregate average scores per test_set, category, and case_dir from formal results."""
@@ -291,6 +350,8 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
     durations: dict[
         str, dict[str, dict[str, dict[str, list[float]]]]
     ] = {}  # ts > cat > case_dir > candidate -> [duration_ms]
+    candidate_metadata: dict[str, dict[str, str | None]] = {}
+    candidate_metadata_runs: dict[str, str] = {}
     daily_case_scores: dict[
         str, dict[str, dict[str, dict[str, list[float]]]]
     ] = {}  # date > ts > cat/case_dir > candidate -> [scores]
@@ -353,8 +414,15 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
                 summary.get("reports") if isinstance(summary, dict) else data.get("reports", [])
             )
             generation_durations = _generation_durations(data)
+            result_target_metadata = _target_display_metadata(data)
             for report in reports:
                 candidate_name = report.get("candidate_name", "")
+                target_metadata = result_target_metadata.get(candidate_name)
+                if target_metadata and result_sort_key >= candidate_metadata_runs.get(
+                    candidate_name, ""
+                ):
+                    candidate_metadata[candidate_name] = target_metadata
+                    candidate_metadata_runs[candidate_name] = result_sort_key
                 score = float(report.get("score", 0))
                 duration = report.get("duration_ms", generation_durations.get(candidate_name))
                 if ts_key not in scores:
@@ -468,7 +536,7 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
         latest_durations: list[float],
         latest_run_keys: list[str],
     ) -> dict[str, Any]:
-        return {
+        view = {
             "name": candidate_name,
             "avg_score": round(_avg(average_scores), 2),
             "avg_duration_ms": (
@@ -480,6 +548,10 @@ def get_direct_result_stats(request: Request) -> dict[str, Any]:
             ),
             "latest_run_key": max(latest_run_keys, default=""),
         }
+        metadata = candidate_metadata.get(candidate_name)
+        if metadata:
+            view.update(metadata)
+        return view
 
     def _daily_rows(test_set: str | None = None) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []

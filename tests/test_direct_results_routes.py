@@ -186,6 +186,79 @@ def test_stats_exposes_average_generation_duration(tmp_path: Path) -> None:
     ] == 1200
 
 
+def test_stats_exposes_persisted_target_display_names(tmp_path: Path) -> None:
+    settings = Settings(
+        results_tmp_path=tmp_path / "results" / "tmp",
+        results_formal_path=tmp_path / "results",
+    )
+    result_directory = (
+        settings.results_formal_path
+        / "kdiag"
+        / "deadlock"
+        / "case_a"
+        / "runs"
+        / "202607281000"
+    )
+    result_directory.mkdir(parents=True)
+    (result_directory / "result.json").write_text(
+        json.dumps(
+            {
+                "id": "kdiag/deadlock/case_a/runs/202607281000",
+                "mode": "direct_file",
+                "status": "completed",
+                "reports": [
+                    {
+                        "candidate_name": "sv-example",
+                        "score": "88",
+                        "passed": True,
+                    }
+                ],
+                "generation": {
+                    "methods": [
+                        {
+                            "method_id": "method-1",
+                            "key": "sv-example",
+                            "duration_ms": 1200,
+                        }
+                    ],
+                    "targets": [
+                        {
+                            "method_id": "method-1",
+                            "target_key": "claude-native@glm-5.3",
+                            "display_name": "Claude Native · glm-5.3",
+                            "harness": {
+                                "key": "claude-native",
+                                "name": "Claude Native",
+                            },
+                            "model": {
+                                "key": "glm-5.3",
+                                "name": "glm-5.3",
+                                "argument": "glm-5.3-500k",
+                            },
+                            "duration_ms": 1200,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats = get_direct_result_stats(request_for(settings))
+
+    assert stats["candidates"][0] == {
+        "name": "sv-example",
+        "display_name": "Claude Native · glm-5.3",
+        "harness": "Claude Native",
+        "model": "glm-5.3",
+        "avg_score": 88.0,
+        "avg_duration_ms": 1200,
+        "latest_score": 88.0,
+        "latest_duration_ms": 1200,
+        "latest_run_key": "20260728100000000000",
+    }
+
+
 def test_variant_display_name_is_used_for_result_reads_and_stats(tmp_path: Path) -> None:
     settings = Settings(
         results_tmp_path=tmp_path / "results" / "tmp",

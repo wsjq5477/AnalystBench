@@ -19,7 +19,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - 提交测评时若只有一个已冻结测评方式则默认选中；步骤校验失败必须显示原因，不能仅依赖无反馈的禁用按钮。
 - 提交测评第一步允许逐个选择 Case，默认勾选全部日志就绪项；缺日志 Case 置灰并自动跳过，不能阻塞其他已选 Case。
 - 提交测评生成的结果直接属于正式结果；批次结束后自动切换到正式结果并打开本批次结果，已结束批次保留“查看正式结果”入口。
-- 测评方式只要求填写一个 Key，不再单独填写显示名称；界面统一显示 Key，且 Key 支持 `claude(glm5.1)-native`、`agent(deepseek)`、`GLM-5.2[1m]` 这类可安全作为文件名的字符，包括以右圆括号或右方括号结尾。
+- 旧测评方式只要求填写一个 Key，不再单独填写显示名称；界面统一显示 Key，且 Key 支持 `claude(glm5.1)-native`、`agent(deepseek)`、`GLM-5.2[1m]` 这类可安全作为文件名的字符，包括以右圆括号或右方括号结尾。Harness × Model 配置中的 Model 则分别保存稳定 Key、Benchmark 显示名称和传给 Harness `{model}` 的名称，例如显示 `glm-5.3`、实际传递 `glm-5.3-500k`。
 - 设置页不自动扫描全部宿主机 Skill；点击“新建 Skill”后先选择冻结 Harness，再只读扫描该 Harness 的 `{skill_base_dir}/*/SKILL.md` 并从下拉框选择。`skill_base_dir` 就是直接包含各 Skill 子目录的根目录，后端不得固定追加 `skills`；该流程只保存已有 Skill，不在宿主机创建目录。
 - 设置页每个已保存 Skill 必须提供网页内“导入新版本”操作；只有用户点击后才重新读取该 Skill 的宿主目录并创建不可变 Managed 版本，不能要求用户手工调用 API，也不能覆盖历史版本或自动切换现有 Target 的 Active 绑定。
 - 普通测评、定时测评和 Skill 自优化统一选择明确的 `Harness × Model × Skill` 组合；普通测评保留“无 Skill”基线，自优化必须选择宿主机已有 Skill。选中后后端自动建立内部不可变版本，用户不填写 Skill Key、来源目录或注册方式。自优化弹窗只有点击“取消”才关闭，点击遮罩不得丢失已填写内容。

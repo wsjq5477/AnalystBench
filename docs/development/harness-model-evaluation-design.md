@@ -151,6 +151,7 @@ Model 是轻量选择目录，同时承载模型提供商维度的全局运行�
 规则：
 
 - `key` 是 AnalystBench 内部稳定身份。
+- `name` 是 Benchmark、提交记录和结果视图使用的显示名称。
 - `argument` 是默认传给 Harness `{model}` 的单个 argv 参数。
 - Model 不保存 endpoint、凭据或生成参数。
 - `timeout_seconds` 和 `concurrency_limit` 按 Model Key 跨所有 Harness 与历史 Model

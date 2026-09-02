@@ -299,7 +299,7 @@ export default appOptions;
                 <div class="panel-title">Overall Score <span>(Higher Is Better)</span></div>
                 <div class="result-score-list">
                   <div v-for="(report, idx) in resultRankedReports" :key="'sc-' + report.candidate_name" class="result-score-row" :style="{ '--row-color': resultColors[idx] }">
-                    <span class="result-score-name"><i></i>{{ report.candidate_name }}</span>
+                    <span class="result-score-name"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</span>
                     <strong>{{ parseFloat(report.score).toFixed(1) }}</strong>
                     <span class="result-score-duration">生成耗时 {{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</span>
                     <i class="result-score-bar"><b :style="{ width: `${parseFloat(report.score)}%` }" /></i>
@@ -314,7 +314,7 @@ export default appOptions;
                   <tbody>
                     <tr v-for="(report, idx) in parseSummary(selectedResultData).reports" :key="report.candidate_name">
                       <td>{{ idx + 1 }}</td>
-                      <td :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</td>
+                      <td :class="toneFromName(report.candidate_name)"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</td>
                       <td>{{ parseFloat(report.score).toFixed(1) }}</td>
                       <td>{{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</td>
                       <td><span :class="report.passed ? 'tag-match' : 'tag-missing'">{{ report.passed ? '通过' : '未通过' }}</span></td>
@@ -325,7 +325,7 @@ export default appOptions;
                 </table>
               </section>
               <section v-for="report in parseSummary(selectedResultData).reports" :key="report.candidate_name" class="surface claim-detail-section">
-                <div class="panel-heading"><h3 :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</h3><span>得分 {{ parseFloat(report.score).toFixed(1) }} / 100</span></div>
+                <div class="panel-heading"><h3 :class="toneFromName(report.candidate_name)"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</h3><span>得分 {{ parseFloat(report.score).toFixed(1) }} / 100</span></div>
                 <table class="claim-detail-table">
                   <thead><tr><th>评分项</th><th>类型</th><th>判定</th><th>得分</th><th>关键字匹配</th><th>结论语义</th></tr></thead>
                   <tbody>
@@ -380,7 +380,7 @@ export default appOptions;
                   <thead><tr><th>报告</th><th>覆盖率</th><th>根因精确</th><th>矛盾数</th><th>禁止命中</th><th>缺失链数</th></tr></thead>
                   <tbody>
                     <tr v-for="report in parseSummary(selectedResultData).reports" :key="'m-' + report.candidate_name">
-                      <td :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</td>
+                      <td :class="toneFromName(report.candidate_name)"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</td>
                       <td>{{ (Number(report.metrics.claim_coverage) * 100).toFixed(1) }}%</td>
                       <td><span :class="Boolean(report.metrics.root_cause_exact) ? 'tag-match' : 'tag-missing'">{{ Boolean(report.metrics.root_cause_exact) ? '是' : '否' }}</span></td>
                       <td>{{ report.metrics.contradiction_count }}</td>
@@ -442,7 +442,7 @@ export default appOptions;
                   <div class="panel-title">Overall Score <span>(Higher Is Better)</span></div>
                   <div class="result-score-list">
                     <div v-for="(report, idx) in resultRankedReports" :key="'sc-' + report.candidate_name" class="result-score-row" :style="{ '--row-color': resultColors[idx] }">
-                      <span class="result-score-name"><i></i>{{ report.candidate_name }}</span>
+                      <span class="result-score-name"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</span>
                       <strong>{{ parseFloat(report.score).toFixed(1) }}</strong>
                       <span class="result-score-duration">生成耗时 {{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</span>
                       <i class="result-score-bar"><b :style="{ width: `${parseFloat(report.score)}%` }" /></i>
@@ -457,7 +457,7 @@ export default appOptions;
                     <tbody>
                       <tr v-for="(report, idx) in parseSummary(selectedResultData).reports" :key="report.candidate_name">
                         <td>{{ idx + 1 }}</td>
-                        <td :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</td>
+                        <td :class="toneFromName(report.candidate_name)"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</td>
                         <td>{{ parseFloat(report.score).toFixed(1) }}</td>
                         <td>{{ formatDuration(resultGenerationDuration(report.candidate_name)) }}</td>
                         <td><span :class="report.passed ? 'tag-match' : 'tag-missing'">{{ report.passed ? '通过' : '未通过' }}</span></td>
@@ -468,7 +468,7 @@ export default appOptions;
                   </table>
                 </section>
                 <section v-for="report in parseSummary(selectedResultData).reports" :key="'f-' + report.candidate_name" class="surface claim-detail-section">
-                  <div class="panel-heading"><h3 :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</h3><span>得分 {{ parseFloat(report.score).toFixed(1) }} / 100</span></div>
+                  <div class="panel-heading"><h3 :class="toneFromName(report.candidate_name)"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</h3><span>得分 {{ parseFloat(report.score).toFixed(1) }} / 100</span></div>
                   <table class="claim-detail-table">
                     <thead><tr><th>评分项</th><th>类型</th><th>判定</th><th>得分</th><th>关键字匹配</th><th>结论语义</th></tr></thead>
                     <tbody>
@@ -523,7 +523,7 @@ export default appOptions;
                     <thead><tr><th>报告</th><th>覆盖率</th><th>根因精确</th><th>矛盾数</th><th>禁止命中</th><th>缺失链数</th></tr></thead>
                     <tbody>
                       <tr v-for="report in parseSummary(selectedResultData).reports" :key="'fm-' + report.candidate_name">
-                        <td :class="toneFromName(report.candidate_name)"><i></i>{{ report.candidate_name }}</td>
+                        <td :class="toneFromName(report.candidate_name)"><i></i>{{ resultCandidateDisplayName(report.candidate_name) }}</td>
                         <td>{{ (Number(report.metrics.claim_coverage) * 100).toFixed(1) }}%</td>
                         <td><span :class="Boolean(report.metrics.root_cause_exact) ? 'tag-match' : 'tag-missing'">{{ Boolean(report.metrics.root_cause_exact) ? '是' : '否' }}</span></td>
                         <td>{{ report.metrics.contradiction_count }}</td>
@@ -997,9 +997,9 @@ export default appOptions;
           <p class="form-note">模型的并发与超时限制对所有 Harness 全局生效；这里不管理 endpoint、密钥或其他供应商参数。</p>
           <div v-if="visibleEvaluationModels.length" class="method-list">
             <div v-for="model in visibleEvaluationModels" :key="model.id" class="method-row">
-              <div><strong>{{ model.key }} <small>v{{ model.version }}</small></strong><code>--model {{ model.argument }}</code><span>全局并发 {{ model.concurrency_limit }} · 超时 {{ model.timeout_seconds }} 秒</span></div>
+              <div><strong>{{ model.name }} <small>v{{ model.version }}</small></strong><code>{model} → {{ model.argument }}</code><span>Key：{{ model.key }} · 全局并发 {{ model.concurrency_limit }} · 超时 {{ model.timeout_seconds }} 秒</span></div>
               <span :class="model.status === 'frozen' ? 'tag-match' : 'tag-missing'">{{ model.status }}</span>
-              <button class="ghost-button" @click="openModelDialog(model)">修改限制</button>
+              <button class="ghost-button" @click="openModelDialog(model)">修改</button>
               <button class="tree-delete" title="删除模型" :disabled="catalogActionId === model.id" @click="deleteEvaluationModel(model)"><IconTrash :size="14" /></button>
             </div>
           </div>
@@ -1172,9 +1172,11 @@ export default appOptions;
 
     <div v-if="showModelDialog" class="dialog-overlay" @click.self="showModelDialog = false">
       <section class="surface dialog-card">
-        <div class="panel-heading"><h2>{{ editingModelId ? '修改模型限制' : '新建模型' }}</h2></div>
-        <p class="form-note">模型名称会直接作为传给 Harness 的 <code>--model</code> 参数；运行限制按模型名称跨所有 Harness 全局共享。</p>
-        <label>模型名称<input v-model="modelForm.key" :disabled="Boolean(editingModelId)" placeholder="glm5.1" /></label>
+        <div class="panel-heading"><h2>{{ editingModelId ? '修改模型' : '新建模型' }}</h2></div>
+        <p class="form-note">Benchmark 使用显示名称；Harness 命令中的 <code>{model}</code> 使用传递名称。Model Key 是稳定身份，创建后不可修改。</p>
+        <label>Model Key<input v-model="modelForm.key" :disabled="Boolean(editingModelId)" placeholder="glm-5.3" /></label>
+        <label>显示名称<input v-model="modelForm.name" placeholder="glm-5.3" /></label>
+        <label>传递名称<input v-model="modelForm.argument" placeholder="glm-5.3-500k" /><span>作为单个参数替换 Harness 命令中的 <code>{model}</code></span></label>
         <div class="form-grid"><label>全局超时（秒）<input v-model.number="modelForm.timeout_seconds" type="number" min="1" max="21600" /></label><label>全局并发数<input v-model.number="modelForm.concurrency_limit" type="number" min="1" max="32" /></label></div>
         <div class="dialog-actions"><button class="ghost-button" @click="showModelDialog = false">取消</button><button class="primary-button" :disabled="modelSaving" @click="saveEvaluationModel">{{ modelSaving ? '保存中…' : editingModelId ? '保存为新版本' : '保存模型' }}</button></div>
       </section>

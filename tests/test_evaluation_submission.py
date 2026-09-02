@@ -135,6 +135,44 @@ def test_model_key_accepts_safe_square_brackets(tmp_path: Path) -> None:
     assert model.argument == "GLM-5.2[1m]"
 
 
+def test_model_display_name_is_distinct_from_harness_argument(tmp_path: Path) -> None:
+    settings = migrated_settings(tmp_path)
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    try:
+        harnesses = EvaluationHarnessService(session_factory, settings)
+        harness = harnesses.create(
+            harness_key="claude-native",
+            name="Claude Native",
+            family=None,
+            model_policy="required",
+            command_template=f"{sys.executable} --model {{model}} {{input}}",
+        )
+        harnesses.probe(harness.id)
+        harnesses.freeze(harness.id)
+        model = EvaluationModelService(session_factory).create(
+            model_key="glm-5.3",
+            name="glm-5.3",
+            argument="glm-5.3-500k",
+        )
+        targets = EvaluationTargetService(session_factory, settings)
+        target = targets.create(harness_id=harness.id, model_id=model.id)
+        targets.probe(target.id)
+        target = targets.freeze(target.id)
+        target_view = targets.target_view(target.id)
+        with transaction(session_factory) as session:
+            method = session.get(EvaluationMethod, target.materialized_method_id)
+            assert method is not None
+            command_template = method.command_template
+    finally:
+        engine.dispose()
+
+    assert target_view["key"] == "claude-native@glm-5.3"
+    assert target_view["display_name"] == "Claude Native · glm-5.3"
+    assert target_view["model_argument"] == "glm-5.3-500k"
+    assert "--model glm-5.3-500k" in command_template
+
+
 def test_method_and_model_allow_six_hour_timeout(tmp_path: Path) -> None:
     settings = migrated_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
@@ -991,7 +1029,7 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
     report_script.write_text(
         "import sys\n"
         "from pathlib import Path\n"
-        "assert sys.argv[1:3] == ['--model', 'glm5.1']\n"
+        "assert sys.argv[1:3] == ['--model', 'glm-5.3-500k']\n"
         "print(Path(sys.argv[3]).read_text(encoding='utf-8'))\n"
         "print('问题分类：SYSTEM_DEADLOCK')\n"
         "print('问题根因：chmod 进程发生系统死锁')\n"
@@ -1020,9 +1058,15 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         ] == "frozen"
         model = client.post(
             "/api/v1/evaluation-models",
-            json={"key": "glm5.1"},
+            json={
+                "key": "glm-5.3",
+                "name": "glm-5.3",
+                "argument": "glm-5.3-500k",
+            },
         )
         assert model.status_code == 201
+        assert model.json()["name"] == "glm-5.3"
+        assert model.json()["argument"] == "glm-5.3-500k"
         assert client.get("/api/v1/evaluation-methods").json() == []
 
         submission = client.post(
@@ -1039,7 +1083,9 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         submission_id = submission.json()["id"]
         assert len(submission.json()["target_ids"]) == 1
         frozen_target = submission.json()["targets"][0]
-        assert frozen_target["key"] == "claude-native@glm5.1"
+        assert frozen_target["key"] == "claude-native@glm-5.3"
+        assert frozen_target["display_name"] == "claude-native · glm-5.3"
+        assert frozen_target["model_argument"] == "glm-5.3-500k"
         assert frozen_target["materialized_method_id"]
         generated_targets = client.get("/api/v1/evaluation-targets").json()
         assert generated_targets[0]["id"] == frozen_target["id"]
@@ -1057,8 +1103,10 @@ def test_target_uses_harness_model_argument_and_exposes_comparison(
         (case_directory / "runs" / timestamp / "result.json").read_text(encoding="utf-8")
     )
     generation = result["generation"]
-    assert generation["targets"][0]["target_key"] == "claude-native@glm5.1"
-    assert generation["targets"][0]["model"]["argument"] == "glm5.1"
+    assert generation["targets"][0]["target_key"] == "claude-native@glm-5.3"
+    assert generation["targets"][0]["display_name"] == "claude-native · glm-5.3"
+    assert generation["targets"][0]["model"]["name"] == "glm-5.3"
+    assert generation["targets"][0]["model"]["argument"] == "glm-5.3-500k"
 
     with TestClient(create_app(settings)) as client:
         case_run = client.get(
